@@ -7,6 +7,7 @@ on:
     paths:
       - 'documentation/**'
       - 'scripts/install-amctl.sh'
+      - 'console/apps/web-ui/public/prompts/**'
       - '.github/workflows/docs-deploy.yml'
 
 jobs:

@@ -157,6 +157,7 @@ jobs:
           cd documentation
           git add versioned_docs/
           git add versioned_sidebars/
+          git add versioned_prompts/
           git add versions.json
           git add docs/_constants.md
           git add src/ || true  # Add src if it exists and has changes

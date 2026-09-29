@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'documentation/**'
+      - 'console/apps/web-ui/public/prompts/**'
       - '.github/workflows/docs-pr-checks.yml'
 
 # Both jobs only check out the repository and run npm; nothing needs write access.

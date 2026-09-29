@@ -1,4 +1,4 @@
-.PHONY: help install start build serve clean version update-version helm-reference
+.PHONY: help install start build serve clean version update-version snapshot-prompts helm-reference
 
 # Cross-platform sed in-place: macOS uses "sed -i ''", Linux uses "sed -i"
 UNAME_S := $(shell uname -s)
@@ -25,6 +25,7 @@ help:
 	@echo "Versioning:"
 	@echo "  make version VERSION=v0.5.x DOCKER_TAG=v0.5.0         - Create new documentation version"
 	@echo "  make update-version VERSION=v0.5.x DOCKER_TAG=v0.5.0  - Recreate existing documentation version"
+	@echo "  make snapshot-prompts VERSION=v0.5.x                  - Re-snapshot AI prompt references for a version"
 
 # Install dependencies
 install:
@@ -51,6 +52,19 @@ clean:
 helm-reference:
 	@node scripts/gen-helm-reference.mjs
 
+# Snapshot the console's AI prompt references so /prompts/<version>/ matches that release.
+CONSOLE_PROMPTS_DIR := ../console/apps/web-ui/public/prompts
+snapshot-prompts:
+ifndef VERSION
+	@echo "Error: VERSION is required"
+	@echo "Usage: make snapshot-prompts VERSION=v0.5.x"
+	@exit 1
+endif
+	@rm -rf versioned_prompts/version-$(VERSION)
+	@mkdir -p versioned_prompts/version-$(VERSION)
+	@cp $(CONSOLE_PROMPTS_DIR)/*.md versioned_prompts/version-$(VERSION)/
+	@echo "✓ Snapshotted AI prompt references to versioned_prompts/version-$(VERSION)"
+
 # Create a new documentation version
 version: helm-reference
 ifndef VERSION
@@ -69,6 +83,7 @@ endif
 		exit 1; \
 	else \
 		npm run docusaurus docs:version $(VERSION); \
+		$(MAKE) --no-print-directory snapshot-prompts VERSION=$(VERSION); \
 		echo "Replacing version placeholders in versioned docs..."; \
 		DOCKER_TAG_NO_V=$$(echo $(DOCKER_TAG) | sed 's/^v//'); \
 		find ./versioned_docs/version-$(VERSION) -type f \( -name "*.md" -o -name "*.mdx" \) ! -name "_constants.md" -exec \
@@ -103,6 +118,7 @@ endif
 	@node -e "const v=require('./versions.json');v.splice(v.indexOf('$(VERSION)'),1);require('fs').writeFileSync('versions.json',JSON.stringify(v,null,2)+'\n')"
 	@echo "Recreating version $(VERSION)..."
 	@npm run docusaurus docs:version $(VERSION)
+	@$(MAKE) --no-print-directory snapshot-prompts VERSION=$(VERSION)
 	@echo "Replacing version placeholders in versioned docs..."
 	@DOCKER_TAG_NO_V=$$(echo $(DOCKER_TAG) | sed 's/^v//'); \
 	find ./versioned_docs/version-$(VERSION) -type f \( -name "*.md" -o -name "*.mdx" \) ! -name "_constants.md" -exec \

@@ -48,9 +48,10 @@ import {
   X as CloseIcon,
 } from "@wso2/oxygen-ui-icons-react";
 import Editor, { type Monaco } from "@monaco-editor/react";
-import type {
-  EvaluatorConfigParam,
-  EvaluatorLevel,
+import {
+  globalConfig,
+  type EvaluatorConfigParam,
+  type EvaluatorLevel,
 } from "@agent-management-platform/types";
 import {
   DataModelReferenceDrawer,
@@ -83,13 +84,23 @@ const _LEVEL_LABELS: Record<string, string> = {
   llm: "llm-level",
 };
 
+// External AI assistants can't reach the console host, so link the docs site's per-version copy.
+function resolveGuideUrl(): string {
+  const match = globalConfig.docsUrl?.match(/^(.*)\/docs\/([^/]+)\/?$/);
+  if (!match) {
+    return `${window.location.origin}/prompts/writing-evaluators.md`;
+  }
+  const [, siteRoot, version] = match;
+  return `${siteRoot}/prompts/${version}/writing-evaluators.md`;
+}
+
 function resolveAiPrompt(
   type: string,
   level: EvaluatorLevel,
   displayName: string,
   description: string,
 ): string {
-  const guideUrl = `${window.location.origin}/prompts/writing-evaluators.md`;
+  const guideUrl = resolveGuideUrl();
   return AI_COPILOT_PROMPT_TEMPLATE.replace(
     "{{TYPE}}",
     _TYPE_LABELS[type] ?? type,

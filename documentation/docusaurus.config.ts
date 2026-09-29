@@ -2,6 +2,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import fs from 'fs';
+import path from 'path';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 const versions: string[] = JSON.parse(fs.readFileSync('./versions.json', 'utf-8'));
@@ -33,6 +34,39 @@ const reorganizedPaths: [string, string][] = [
   ['administration/isolation-tiers/gvisor', 'guides/isolation-tiers/gvisor'],
   ['administration/isolation-tiers/kata', 'guides/isolation-tiers/kata'],
 ];
+
+// Publish the console's AI prompt references at /prompts/<version>/ for external AI assistants.
+const consolePromptsDir = path.resolve(__dirname, '../console/apps/web-ui/public/prompts');
+const versionedPromptsDir = path.resolve(__dirname, 'versioned_prompts');
+
+function promptsSourceFor(version: string): string {
+  const snapshot = path.join(versionedPromptsDir, `version-${version}`);
+  if (fs.existsSync(snapshot)) {
+    return snapshot;
+  }
+  if (/^v\d+/.test(version)) {
+    console.warn(`[prompts] No snapshot for ${version}; serving the current console copy.`);
+  }
+  return consolePromptsDir;
+}
+
+function publishPrompts() {
+  return {
+    name: 'publish-ai-prompts',
+    async postBuild({outDir}: {outDir: string}) {
+      const targets: Record<string, string> = {
+        next: consolePromptsDir,
+        latest: promptsSourceFor(latestVersion),
+      };
+      for (const version of versions) {
+        targets[version] = promptsSourceFor(version);
+      }
+      for (const [version, source] of Object.entries(targets)) {
+        fs.cpSync(source, path.join(outDir, 'prompts', version), {recursive: true});
+      }
+    },
+  };
+}
 
 const config: Config = {
   title: 'WSO2 Agent Manager',
@@ -89,6 +123,7 @@ const config: Config = {
   themes: ['@docusaurus/theme-mermaid'],
 
   plugins: [
+    publishPrompts,
     '@signalwire/docusaurus-plugin-llms-txt',
     require.resolve('docusaurus-lunr-search'),
     [
