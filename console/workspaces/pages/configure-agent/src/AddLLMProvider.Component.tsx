@@ -1125,6 +1125,10 @@ export const AddLLMProviderComponent: React.FC = () => {
           </Alert>
         )}
 
+        {hasBuildInProgress && (
+          <Alert severity="warning">{BUILD_IN_PROGRESS_REASON}</Alert>
+        )}
+
         {/* Actions */}
         <Box sx={{ display: "flex", gap: 1 }}>
           <Button variant="outlined" onClick={() => allowNavigation(() => navigate(backHref))}>
