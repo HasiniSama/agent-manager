@@ -51,6 +51,8 @@ export interface TraceOverview {
   status?: TraceStatus;
   input?: string;
   output?: string;
+  models?: string[];
+  conversationId?: string;
   score?: TraceScore | null;
 }
 

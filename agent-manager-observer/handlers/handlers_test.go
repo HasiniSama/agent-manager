@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/controllers"
@@ -350,17 +351,20 @@ func TestGetLogs_InvalidSortOrder(t *testing.T) {
 	assertBadRequest(t, rec)
 }
 
-// fakeObserverClient is a minimal observer.Client that captures the request
-// passed to QueryLogs so handler tests can assert on pass-through parameters.
+// fakeObserverClient is a minimal observer.Client that captures requests so
+// handler tests can assert on pass-through parameters.
 type fakeObserverClient struct {
-	lastLogsReq observer.LogsQueryRequest
+	traces       []observer.TraceInfo
+	lastLogsReq  observer.LogsQueryRequest
+	lastSpansReq observer.TracesQueryRequest
 }
 
 func (f *fakeObserverClient) QueryTraces(_ context.Context, _ observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
-	return &observer.TracesQueryResponse{}, nil
+	return &observer.TracesQueryResponse{Traces: f.traces, Total: len(f.traces)}, nil
 }
 
-func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, _ observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
+func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
+	f.lastSpansReq = req
 	return &observer.TraceSpansQueryResponse{}, nil
 }
 
@@ -379,6 +383,61 @@ func (f *fakeObserverClient) QueryMetrics(_ context.Context, _ observer.MetricsQ
 
 func (f *fakeObserverClient) NamespaceFor(_ string) string {
 	return "default"
+}
+
+// include=models maps to IncludeAttributes on the span-list request; unknown values are rejected.
+func TestGetTraceOverviews_IncludeQueryParam(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantModels bool
+		wantStatus int
+	}{
+		{name: "models sets Models", query: "&include=models", wantModels: true, wantStatus: http.StatusOK},
+		{name: "models,models sets Models once", query: "&include=models,models", wantModels: true, wantStatus: http.StatusOK},
+		{name: "repeated parameter sets Models", query: "&include=models&include=models", wantModels: true, wantStatus: http.StatusOK},
+		{name: "spaces around items are trimmed", query: "&include=%20models%20,", wantModels: true, wantStatus: http.StatusOK},
+		{name: "absent leaves it off", query: "", wantStatus: http.StatusOK},
+		{name: "empty leaves it off", query: "&include=", wantStatus: http.StatusOK},
+		{name: "tools is rejected", query: "&include=tools", wantStatus: http.StatusBadRequest},
+		{name: "Models is rejected", query: "&include=Models", wantStatus: http.StatusBadRequest},
+		{name: "one bad item rejects the list", query: "&include=models,tools", wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeObserverClient{traces: []observer.TraceInfo{{TraceID: "trace-1", RootSpanID: "root", SpanCount: 2}}}
+			h := NewHandler(controllers.NewTracingController(fake), nil)
+
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/traces?"+baseParams()+tt.query, nil)
+			rec := httptest.NewRecorder()
+			h.GetTraceOverviews(rec, r)
+
+			assertStatus(t, rec, tt.wantStatus)
+			if tt.wantStatus != http.StatusOK {
+				if fake.lastSpansReq.Limit != nil {
+					t.Error("expected no upstream call for a rejected include value")
+				}
+				return
+			}
+			if fake.lastSpansReq.Limit == nil {
+				t.Fatal("expected the trace's spans to be listed upstream, got no QueryTraceSpans call")
+			}
+			if fake.lastSpansReq.IncludeAttributes != tt.wantModels {
+				t.Errorf("IncludeAttributes = %t, want %t for %q", fake.lastSpansReq.IncludeAttributes, tt.wantModels, tt.query)
+			}
+		})
+	}
+}
+
+// Rejected include values name the offending value in the error body.
+func TestParseInclude_ErrorNamesValue(t *testing.T) {
+	_, err := parseInclude([]string{"models,tools"})
+	if err == nil {
+		t.Fatal("expected an error for unknown include value")
+	}
+	if !strings.Contains(err.Error(), `"tools"`) {
+		t.Errorf("error %q does not name the bad value", err)
+	}
 }
 
 func TestGetLogs_SearchPhrasePassedThrough(t *testing.T) {

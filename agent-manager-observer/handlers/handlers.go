@@ -120,6 +120,12 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	include, err := parseInclude(query["include"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	params := controllers.TraceQueryParams{
 		Organization: organization,
 		Project:      &project,
@@ -129,6 +135,7 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 		EndTime:      endTime,
 		Limit:        limit,
 		SortOrder:    sortOrder,
+		Include:      include,
 	}
 
 	result, err := h.controller.GetTraceOverviews(r.Context(), params)
@@ -562,6 +569,24 @@ func parseSortOrder(s, defaultVal string) (string, error) {
 		return "", fmt.Errorf("sortOrder must be 'asc' or 'desc'")
 	}
 	return s, nil
+}
+
+// parseInclude parses the comma-separated include query parameter of
+// GET /api/v1/traces; unknown values are an error.
+func parseInclude(raw []string) (controllers.Include, error) {
+	var include controllers.Include
+	for _, list := range raw {
+		for _, item := range strings.Split(list, ",") {
+			switch v := strings.TrimSpace(item); v {
+			case "":
+			case "models":
+				include.Models = true
+			default:
+				return controllers.Include{}, fmt.Errorf("invalid include value %q: must be one of 'models'", v)
+			}
+		}
+	}
+	return include, nil
 }
 
 // validateLogTimeRange ports validateTimes from

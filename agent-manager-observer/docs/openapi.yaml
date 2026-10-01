@@ -87,6 +87,24 @@ paths:
             maximum: 1000
             default: 10
         - $ref: "#/components/parameters/sortOrder"
+        - name: include
+          in: query
+          required: false
+          style: form
+          explode: false
+          description: |
+            Opt-in span-derived fields to fill on every trace, as a comma-separated
+            list. The parameter may be repeated. Unknown values return 400.
+
+            - `models`: read model names from the trace's span list, requested with
+              inline attributes. It adds one span-list call for traces that otherwise
+              need none, and makes the span-list call heavier for the rest. Traces
+              above the span-count threshold return no `models` either way.
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [models]
       responses:
         "200":
           description: Trace overview list
@@ -720,6 +738,20 @@ components:
             - type: object
             - type: array
               items: {}
+        models:
+          type: array
+          description: |
+            Distinct model names across the trace's LLM spans, first-seen order.
+            Only present when `include=models`, or when the LLM spans were
+            fetched for other reasons (to fill `input`, `output` or `tokenUsage`).
+            Absent otherwise, and absent when no LLM span names a model.
+          items:
+            type: string
+          example: ["gpt-4o", "gpt-4o-mini"]
+        conversationId:
+          type: string
+          description: gen_ai.conversation.id of the root span.
+          example: conv-42
 
     TraceOverviewListResponse:
       type: object

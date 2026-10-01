@@ -36,7 +36,7 @@ type fakeObserverClient struct {
 	rootSpan *observer.SpanDetailsResponse
 	// traces is the list returned by QueryTraces (export path).
 	traces []observer.TraceInfo
-	// spans is the list returned by QueryTraceSpans.
+	// spans is the QueryTraceSpans result; attributes are stripped unless requested.
 	spans []observer.SpanInfo
 	// spanDetails maps spanID → detail response for GetSpanDetails lookups
 	// (excluding root, which is rootSpan).
@@ -60,7 +60,16 @@ func (f *fakeObserverClient) QueryTraces(_ context.Context, _ observer.TracesQue
 func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
 	atomic.AddInt32(&f.queryTraceSpansCalls, 1)
 	f.lastSpansReq = req
-	return &observer.TraceSpansQueryResponse{Spans: f.spans, Total: len(f.spans)}, nil
+	spans := f.spans
+	if !req.IncludeAttributes {
+		spans = make([]observer.SpanInfo, len(f.spans))
+		for i, s := range f.spans {
+			s.Attributes = nil
+			s.ResourceAttributes = nil
+			spans[i] = s
+		}
+	}
+	return &observer.TraceSpansQueryResponse{Spans: spans, Total: len(spans)}, nil
 }
 
 func (f *fakeObserverClient) NamespaceFor(_ string) string {
@@ -141,7 +150,7 @@ func TestEnrichTraceOverview_RootHasEntityAndUsageShortCircuits(t *testing.T) {
 	fake := &fakeObserverClient{rootSpan: &observer.SpanDetailsResponse{SpanID: "root"}}
 	c := NewTracingController(fake)
 
-	input, output, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from root, got input=%v output=%v", input, output)
@@ -167,7 +176,7 @@ func TestEnrichTraceOverview_RootEntityTokensUsedWhenNoLeaves(t *testing.T) {
 	fake := &fakeObserverClient{rootSpan: &observer.SpanDetailsResponse{SpanID: "root"}}
 	c := NewTracingController(fake)
 
-	_, _, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	_, _, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if tokens == nil || tokens.TotalTokens != 13 {
 		t.Errorf("expected entity.output fallback tokens, got %+v", tokens)
@@ -202,7 +211,7 @@ func TestEnrichTraceOverview_FallsBackToChildChainSpan(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	input, output, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from chain child, got input=%v output=%v", input, output)
@@ -249,7 +258,7 @@ func TestEnrichTraceOverview_AggregatesFromLeafLLMSpans(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	input, output, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if input != "first user msg" {
 		t.Errorf("input = %v, want first user msg", input)
@@ -309,7 +318,7 @@ func TestEnrichTraceOverview_LangGraphSumsLeavesOverEntityOutput(t *testing.T) {
 	fake := &fakeObserverClient{spans: spans, spanDetails: details}
 	c := NewTracingController(fake)
 
-	input, output, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(24), root, testFetchSem())
+	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(24), root, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from workflow span, got input=%v output=%v", input, output)
@@ -326,7 +335,7 @@ func TestEnrichTraceOverview_AllEmptyReturnsNil(t *testing.T) {
 	fake := &fakeObserverClient{spans: []observer.SpanInfo{}}
 	c := NewTracingController(fake)
 
-	input, output, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(1), root, testFetchSem())
+	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(1), root, testFetchSem())
 
 	if input != nil || output != nil || tokens != nil {
 		t.Errorf("expected all nil, got input=%v output=%v tokens=%+v", input, output, tokens)
@@ -365,7 +374,7 @@ func TestEnrichTraceOverview_LeafCapHonoredAndPartialFlagged(t *testing.T) {
 	// cap (maxLLMLeavesPerTrace) is what should trigger Partial. Using
 	// threshold-1 expresses "below the skip threshold" independently of
 	// whether the guard ever tightens from > to >=.
-	_, _, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(skipLeafAggregationSpanCountThreshold-1), root, testFetchSem())
+	_, _, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(skipLeafAggregationSpanCountThreshold-1), root, testFetchSem())
 
 	if tokens == nil {
 		t.Fatalf("expected tokens, got nil")
@@ -403,7 +412,7 @@ func TestEnrichTraceOverview_FailedLeafFetchFlagsPartial(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	_, _, tokens := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	_, _, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if tokens == nil {
 		t.Fatalf("expected tokens, got nil")
@@ -434,7 +443,7 @@ func TestEnrichTraceOverview_SkipsLeafAggregationForHugeTraces(t *testing.T) {
 	c := NewTracingController(fake)
 
 	hugeTrace := baseTraceInfo(skipLeafAggregationSpanCountThreshold + 1)
-	input, output, tokens := c.enrichTraceOverview(context.Background(), baseParams(), hugeTrace, root, testFetchSem())
+	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), hugeTrace, root, testFetchSem())
 
 	if input != nil || output != nil || tokens != nil {
 		t.Errorf("expected nil for huge trace, got input=%v output=%v tokens=%+v", input, output, tokens)
@@ -499,5 +508,372 @@ func TestExportTraces_UsesBulkAttributes(t *testing.T) {
 	}
 	if _, ok := root.Attributes["traceloop.entity.input"]; !ok {
 		t.Error("expected root span to retain bulk-fetched attributes")
+	}
+}
+
+// overviewFake scripts one trace for GetTraceOverviews tests.
+func overviewFake(rootAttrs map[string]interface{}, spans []observer.SpanInfo, details map[string]*observer.SpanDetailsResponse) *fakeObserverClient {
+	info := baseTraceInfo(len(spans) + 1)
+	return &fakeObserverClient{
+		traces:      []observer.TraceInfo{info},
+		rootSpan:    &observer.SpanDetailsResponse{SpanID: "root", SpanName: "invoke_agent LangGraph", Attributes: rootAttrs},
+		spans:       spans,
+		spanDetails: details,
+	}
+}
+
+func singleOverview(t *testing.T, c *TracingController, params TraceQueryParams) opensearch.TraceOverview {
+	t.Helper()
+	resp, err := c.GetTraceOverviews(context.Background(), params)
+	if err != nil {
+		t.Fatalf("GetTraceOverviews returned error: %v", err)
+	}
+	if len(resp.Traces) != 1 {
+		t.Fatalf("expected 1 trace overview, got %d", len(resp.Traces))
+	}
+	return resp.Traces[0]
+}
+
+func assertModels(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("models = %v, want %v", got, want)
+		}
+	}
+}
+
+// Empty root and no chain span: models come from the fetched leaves.
+func TestGetTraceOverviews_ModelsFromLeafLLMSpans(t *testing.T) {
+	start := time.Now().Add(-10 * time.Minute)
+	fake := overviewFake(
+		map[string]interface{}{
+			"gen_ai.operation.name":  "invoke_agent",
+			"gen_ai.conversation.id": "conv-42",
+		},
+		[]observer.SpanInfo{
+			{SpanID: "leaf-1", SpanName: "openai.chat", ParentSpanID: "root", StartTime: start},
+			{SpanID: "leaf-2", SpanName: "openai.chat", ParentSpanID: "root", StartTime: start.Add(1 * time.Minute)},
+			{SpanID: "leaf-3", SpanName: "openai.chat", ParentSpanID: "root", StartTime: start.Add(2 * time.Minute)},
+		},
+		map[string]*observer.SpanDetailsResponse{
+			"leaf-1": {
+				SpanID: "leaf-1", SpanName: "openai.chat",
+				Attributes: map[string]interface{}{
+					"gen_ai.request.model":       "gpt-4o",
+					"gen_ai.response.model":      "gpt-4o-2024-08-06",
+					"gen_ai.input.messages":      `[{"role":"user","parts":[{"type":"text","content":"hello"}]}]`,
+					"gen_ai.output.messages":     `[{"role":"assistant","parts":[{"type":"text","content":"hi"}]}]`,
+					"gen_ai.usage.input_tokens":  float64(10),
+					"gen_ai.usage.output_tokens": float64(2),
+				},
+			},
+			"leaf-2": {
+				SpanID: "leaf-2", SpanName: "openai.chat",
+				Attributes: map[string]interface{}{
+					"gen_ai.request.model":       "gpt-4o-mini",
+					"gen_ai.usage.input_tokens":  float64(5),
+					"gen_ai.usage.output_tokens": float64(1),
+				},
+			},
+			"leaf-3": {
+				SpanID: "leaf-3", SpanName: "openai.chat",
+				Attributes: map[string]interface{}{
+					"gen_ai.response.model":      "gpt-4o-2024-08-06",
+					"gen_ai.output.messages":     `[{"role":"assistant","parts":[{"type":"text","content":"bye"}]}]`,
+					"gen_ai.usage.input_tokens":  float64(5),
+					"gen_ai.usage.output_tokens": float64(1),
+				},
+			},
+		},
+	)
+	c := NewTracingController(fake)
+
+	ov := singleOverview(t, c, baseParams())
+
+	assertModels(t, ov.Models, []string{"gpt-4o-2024-08-06", "gpt-4o-mini"})
+	if ov.ConversationID != "conv-42" {
+		t.Errorf("conversationId = %q, want conv-42", ov.ConversationID)
+	}
+	if ov.Input != "hello" || ov.Output != "bye" {
+		t.Errorf("input/output = %v/%v, want hello/bye", ov.Input, ov.Output)
+	}
+	if ov.TokenUsage == nil || ov.TokenUsage.TotalTokens != 24 {
+		t.Errorf("tokenUsage = %+v, want total 24", ov.TokenUsage)
+	}
+	// root + 3 leaves, each fetched once.
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 4 {
+		t.Errorf("expected 4 GetSpanDetails calls (root + 3 leaves), got %d", got)
+	}
+}
+
+// Chain span fills step 2; Include.Models adds Models from the span list without extra fetches.
+func TestGetTraceOverviews_ChainSpanShortCircuit_IncludeModels(t *testing.T) {
+	for _, includeModels := range []bool{true, false} {
+		t.Run(fmt.Sprintf("include.models=%t", includeModels), func(t *testing.T) {
+			fake := chainSpanFake()
+			c := NewTracingController(fake)
+			params := baseParams()
+			params.Include.Models = includeModels
+
+			ov := singleOverview(t, c, params)
+
+			if includeModels {
+				assertModels(t, ov.Models, []string{"gpt-4o", "claude-sonnet-4-5"})
+			} else if ov.Models != nil {
+				t.Errorf("models = %v, want nil without Include.Models", ov.Models)
+			}
+			if ov.ConversationID != "" {
+				t.Errorf("conversationId = %q, want empty (root has none)", ov.ConversationID)
+			}
+			if ov.TokenUsage == nil || ov.TokenUsage.TotalTokens != 25 {
+				t.Errorf("tokenUsage = %+v, want the chain span's 25, not the leaf sum", ov.TokenUsage)
+			}
+			if ov.Output != "chain out" {
+				t.Errorf("output = %v, want the chain span's output", ov.Output)
+			}
+			// root + chain, with or without the flag: models never cost a
+			// leaf fetch.
+			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 2 {
+				t.Errorf("expected 2 GetSpanDetails calls (root + chain), got %d", got)
+			}
+			if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
+				t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)
+			}
+			if fake.lastSpansReq.IncludeAttributes != includeModels {
+				t.Errorf("QueryTraceSpans IncludeAttributes = %t, want %t", fake.lastSpansReq.IncludeAttributes, includeModels)
+			}
+		})
+	}
+}
+
+// chainSpanFake scripts a LangGraph-shaped trace: empty root, chain span, two LLM leaves.
+func chainSpanFake() *fakeObserverClient {
+	start := time.Now().Add(-10 * time.Minute)
+	chainAttrs := map[string]interface{}{
+		"traceloop.entity.input":     `{"inputs":"chain in"}`,
+		"traceloop.entity.output":    `{"outputs":{"messages":[{"kwargs":{"content":"chain out"}}]}}`,
+		"gen_ai.usage.input_tokens":  float64(20),
+		"gen_ai.usage.output_tokens": float64(5),
+	}
+	leaf1Attrs := map[string]interface{}{
+		"gen_ai.response.model":      "gpt-4o",
+		"gen_ai.input.messages":      `[{"role":"user","parts":[{"type":"text","content":"leaf in"}]}]`,
+		"gen_ai.output.messages":     `[{"role":"assistant","parts":[{"type":"text","content":"leaf out"}]}]`,
+		"gen_ai.usage.input_tokens":  float64(999),
+		"gen_ai.usage.output_tokens": float64(999),
+	}
+	leaf2Attrs := map[string]interface{}{
+		"gen_ai.request.model": "claude-sonnet-4-5",
+	}
+	return overviewFake(
+		map[string]interface{}{},
+		[]observer.SpanInfo{
+			{SpanID: "chain-1", SpanName: "LangGraph.workflow", ParentSpanID: "root", StartTime: start, Attributes: chainAttrs},
+			{SpanID: "leaf-1", SpanName: "ChatOpenAI.chat", ParentSpanID: "chain-1", StartTime: start.Add(1 * time.Minute), Attributes: leaf1Attrs},
+			{SpanID: "leaf-2", SpanName: "ChatAnthropic.chat", ParentSpanID: "chain-1", StartTime: start.Add(2 * time.Minute), Attributes: leaf2Attrs},
+		},
+		map[string]*observer.SpanDetailsResponse{
+			"chain-1": {SpanID: "chain-1", SpanName: "LangGraph.workflow", Attributes: chainAttrs},
+			"leaf-1":  {SpanID: "leaf-1", SpanName: "ChatOpenAI.chat", ParentSpanID: "chain-1", Attributes: leaf1Attrs},
+			"leaf-2":  {SpanID: "leaf-2", SpanName: "ChatAnthropic.chat", ParentSpanID: "chain-1", Attributes: leaf2Attrs},
+		},
+	)
+}
+
+// completeRootAttrs is a root span that fills input, output and tokens by
+// itself, so the cascade has nothing left to fetch.
+func completeRootAttrs() map[string]interface{} {
+	return map[string]interface{}{
+		"gen_ai.operation.name":      "invoke_agent",
+		"gen_ai.conversation.id":     "conv-9",
+		"traceloop.entity.input":     `{"inputs":"hello there"}`,
+		"traceloop.entity.output":    `{"outputs":{"messages":[{"kwargs":{"content":"hi back"}}]}}`,
+		"gen_ai.usage.input_tokens":  float64(10),
+		"gen_ai.usage.output_tokens": float64(3),
+	}
+}
+
+// Root-complete trace: Include.Models adds exactly one span-list call and nothing else.
+func TestGetTraceOverviews_RootComplete_IncludeModels(t *testing.T) {
+	for _, includeModels := range []bool{true, false} {
+		t.Run(fmt.Sprintf("include.models=%t", includeModels), func(t *testing.T) {
+			start := time.Now().Add(-10 * time.Minute)
+			fake := overviewFake(
+				completeRootAttrs(),
+				[]observer.SpanInfo{
+					{SpanID: "leaf-1", SpanName: "openai.chat", ParentSpanID: "root", StartTime: start,
+						Attributes: map[string]interface{}{"gen_ai.response.model": "gpt-4o", "gen_ai.usage.input_tokens": float64(999)}},
+					{SpanID: "leaf-2", SpanName: "openai.chat", ParentSpanID: "root", StartTime: start.Add(1 * time.Minute),
+						Attributes: map[string]interface{}{"gen_ai.request.model": "gpt-4o-mini"}},
+				},
+				nil,
+			)
+			c := NewTracingController(fake)
+			params := baseParams()
+			params.Include.Models = includeModels
+
+			ov := singleOverview(t, c, params)
+
+			if includeModels {
+				assertModels(t, ov.Models, []string{"gpt-4o", "gpt-4o-mini"})
+			} else if ov.Models != nil {
+				t.Errorf("models = %v, want nil without Include.Models", ov.Models)
+			}
+			if ov.ConversationID != "conv-9" {
+				t.Errorf("conversationId = %q, want conv-9", ov.ConversationID)
+			}
+			if ov.TokenUsage == nil || ov.TokenUsage.TotalTokens != 13 {
+				t.Errorf("tokenUsage = %+v, want the root's 13, not the leaf usage", ov.TokenUsage)
+			}
+			if ov.Input == nil || ov.Output == nil {
+				t.Errorf("input/output = %v/%v, want the root's values", ov.Input, ov.Output)
+			}
+			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
+				t.Errorf("expected exactly 1 GetSpanDetails call (root only), got %d", got)
+			}
+			wantLists := int32(0)
+			if includeModels {
+				wantLists = 1
+			}
+			if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != wantLists {
+				t.Errorf("expected %d QueryTraceSpans calls, got %d", wantLists, got)
+			}
+			if includeModels && !fake.lastSpansReq.IncludeAttributes {
+				t.Error("expected QueryTraceSpans to request IncludeAttributes=true")
+			}
+		})
+	}
+}
+
+// Same scenario through enrichTraceOverview directly: the models path makes
+// no GetSpanDetails call at all.
+func TestEnrichTraceOverview_IncludeModelsFetchesNoSpanDetails(t *testing.T) {
+	root := makeRootSpan("root", completeRootAttrs())
+	fake := &fakeObserverClient{
+		spans: []observer.SpanInfo{
+			{SpanID: "leaf-1", SpanName: "openai.chat", ParentSpanID: "root", StartTime: time.Now(),
+				Attributes: map[string]interface{}{"gen_ai.response.model": "gpt-4o"}},
+		},
+	}
+	c := NewTracingController(fake)
+	params := baseParams()
+	params.Include.Models = true
+
+	_, _, _, models := c.enrichTraceOverview(context.Background(), params, baseTraceInfo(2), root, testFetchSem())
+
+	assertModels(t, models, []string{"gpt-4o"})
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("expected 0 GetSpanDetails calls, got %d", got)
+	}
+	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
+		t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)
+	}
+}
+
+// Models read from the span list are not subject to maxLLMLeavesPerTrace:
+// every leaf's model is reported, still with only the root fetched.
+func TestGetTraceOverviews_IncludeModelsNotCappedAtLeafLimit(t *testing.T) {
+	const totalLeaves = maxLLMLeavesPerTrace + 5
+	start := time.Now().Add(-1 * time.Hour)
+	spans := make([]observer.SpanInfo, 0, totalLeaves)
+	want := make([]string, 0, totalLeaves)
+	for i := 0; i < totalLeaves; i++ {
+		model := fmt.Sprintf("model-%02d", i)
+		want = append(want, model)
+		spans = append(spans, observer.SpanInfo{
+			SpanID: fmt.Sprintf("leaf-%02d", i), SpanName: "openai.chat", ParentSpanID: "root",
+			StartTime:  start.Add(time.Duration(i) * time.Second),
+			Attributes: map[string]interface{}{"gen_ai.response.model": model},
+		})
+	}
+	fake := overviewFake(completeRootAttrs(), spans, nil)
+	c := NewTracingController(fake)
+	params := baseParams()
+	params.Include.Models = true
+
+	ov := singleOverview(t, c, params)
+
+	assertModels(t, ov.Models, want)
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
+		t.Errorf("expected exactly 1 GetSpanDetails call (root only), got %d", got)
+	}
+	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
+		t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)
+	}
+}
+
+// The span-count threshold still gates the models path: a root-complete
+// trace above it is not listed at all, flag or no flag.
+func TestGetTraceOverviews_IncludeModelsSkipsHugeTraces(t *testing.T) {
+	fake := overviewFake(
+		completeRootAttrs(),
+		[]observer.SpanInfo{
+			{SpanID: "leaf-1", SpanName: "openai.chat", ParentSpanID: "root", StartTime: time.Now(),
+				Attributes: map[string]interface{}{"gen_ai.response.model": "gpt-4o"}},
+		},
+		nil,
+	)
+	fake.traces[0].SpanCount = skipLeafAggregationSpanCountThreshold + 1
+	c := NewTracingController(fake)
+	params := baseParams()
+	params.Include.Models = true
+
+	ov := singleOverview(t, c, params)
+
+	if ov.Models != nil {
+		t.Errorf("models = %v, want nil above the span-count threshold", ov.Models)
+	}
+	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 0 {
+		t.Errorf("expected 0 QueryTraceSpans calls, got %d", got)
+	}
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
+		t.Errorf("expected exactly 1 GetSpanDetails call (root only), got %d", got)
+	}
+}
+
+// No LLM spans with Include.Models: Models is nil, ConversationID still comes
+// from the root, and only the span list is fetched beyond the root.
+func TestGetTraceOverviews_NoLLMSpansLeavesModelsEmpty(t *testing.T) {
+	start := time.Now().Add(-10 * time.Minute)
+	fake := overviewFake(
+		map[string]interface{}{
+			"gen_ai.operation.name":      "invoke_agent",
+			"gen_ai.conversation.id":     "conv-7",
+			"traceloop.entity.input":     `{"inputs":"hello there"}`,
+			"traceloop.entity.output":    `{"outputs":{"messages":[{"kwargs":{"content":"hi back"}}]}}`,
+			"gen_ai.usage.input_tokens":  float64(10),
+			"gen_ai.usage.output_tokens": float64(3),
+		},
+		[]observer.SpanInfo{
+			{SpanID: "tool-1", SpanName: "search_web.tool", ParentSpanID: "root", StartTime: start},
+		},
+		map[string]*observer.SpanDetailsResponse{
+			"tool-1": {SpanID: "tool-1", SpanName: "search_web.tool", Attributes: map[string]interface{}{"gen_ai.tool.name": "search_web"}},
+		},
+	)
+	c := NewTracingController(fake)
+	params := baseParams()
+	params.Include.Models = true
+
+	ov := singleOverview(t, c, params)
+
+	if ov.Models != nil {
+		t.Errorf("models = %v, want nil", ov.Models)
+	}
+	if ov.ConversationID != "conv-7" {
+		t.Errorf("conversationId = %q, want conv-7", ov.ConversationID)
+	}
+	if ov.TokenUsage == nil || ov.TokenUsage.TotalTokens != 13 {
+		t.Errorf("tokenUsage = %+v, want root's 13", ov.TokenUsage)
+	}
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
+		t.Errorf("expected only the root GetSpanDetails call, got %d", got)
+	}
+	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
+		t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)
 	}
 }
