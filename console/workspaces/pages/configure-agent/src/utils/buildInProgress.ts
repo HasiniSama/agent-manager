@@ -40,7 +40,7 @@ export function useHasBuildInProgress(
   params: { orgName?: string; projName?: string; agentName?: string },
   options?: { enabled?: boolean },
 ): boolean {
-  const { data, refetch } = useGetAgentBuilds(
+  const { data, isLoading, refetch } = useGetAgentBuilds(
     {
       orgName: params.orgName ?? "",
       projName: params.projName ?? "",
@@ -66,5 +66,8 @@ export function useHasBuildInProgress(
     return () => window.clearInterval(id);
   }, [canQuery, hasBuildInProgress, refetch]);
 
-  return hasBuildInProgress;
+  // Treat the first load as blocking so a save cannot slip through to the
+  // service's 409 before the build list arrives. Gating on canQuery keeps cached
+  // data from blocking agents this check does not apply to.
+  return canQuery && (isLoading || hasBuildInProgress);
 }
