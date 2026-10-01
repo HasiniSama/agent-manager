@@ -219,8 +219,10 @@ type TokenUsage struct {
 
 // TraceOverviewResponse represents the response for trace overview queries
 type TraceOverviewResponse struct {
-	Traces     []TraceOverview `json:"traces"`
-	TotalCount int             `json:"totalCount"`
+	Traces       []TraceOverview `json:"traces"`
+	TotalCount   int             `json:"totalCount"`
+	LookedBackTo string          `json:"lookedBackTo"`
+	Truncated    bool            `json:"truncated"`
 }
 
 // FullTrace represents a complete trace with all spans and metadata

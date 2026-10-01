@@ -67,6 +67,11 @@ paths:
         Returns paginated trace overviews for a component. Each trace includes input, output, token usage,
         and status extracted from the root span — the same richness as the v1 list endpoint.
         Uses the Observer Service instead of OpenSearch. No offset; use `limit` for page size.
+
+        The filter parameters (`status`, `minDurationMs`, `minTokens`, `minSpanCount`, `model`,
+        `conversationId`) are optional and combine with AND. They are applied to the fetched page
+        after enrichment, so a filtered response can hold fewer than `limit` traces. With no filter
+        set the request costs the same upstream calls as an unfiltered list.
       operationId: listTraces
       security:
         - bearerAuth: []
@@ -105,6 +110,12 @@ paths:
             items:
               type: string
               enum: [models]
+        - $ref: "#/components/parameters/traceStatusFilter"
+        - $ref: "#/components/parameters/minDurationMsFilter"
+        - $ref: "#/components/parameters/minTokensFilter"
+        - $ref: "#/components/parameters/minSpanCountFilter"
+        - $ref: "#/components/parameters/modelFilter"
+        - $ref: "#/components/parameters/conversationIdFilter"
       responses:
         "200":
           description: Trace overview list
@@ -483,6 +494,65 @@ components:
         type: string
         enum: [asc, desc]
         default: desc
+    traceStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: |
+        `error` keeps traces whose status reports at least one error; `ok` keeps the rest,
+        including traces with no status.
+      schema:
+        type: string
+        enum: [error, ok]
+    minDurationMsFilter:
+      name: minDurationMs
+      in: query
+      required: false
+      description: Keep traces whose duration is at least this many milliseconds.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+    minTokensFilter:
+      name: minTokens
+      in: query
+      required: false
+      description: |
+        Keep traces whose `tokenUsage.totalTokens` is at least this value. Traces without
+        `tokenUsage` never match, even with `minTokens=0`.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+    minSpanCountFilter:
+      name: minSpanCount
+      in: query
+      required: false
+      description: Keep traces with at least this many spans.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+    modelFilter:
+      name: model
+      in: query
+      required: false
+      description: |
+        Keep traces where any entry of `models` equals this value exactly. Implies
+        `include=models`, so the server fills `models` on every trace and the request
+        carries that cost. Traces above the span-count threshold have no `models` and
+        never match.
+      schema:
+        type: string
+        example: gpt-4o
+    conversationIdFilter:
+      name: conversationId
+      in: query
+      required: false
+      description: Keep traces whose `conversationId` equals this value exactly.
+      schema:
+        type: string
+        example: conv-42
 
   responses:
     BadRequest:
@@ -758,6 +828,8 @@ components:
       required:
         - traces
         - totalCount
+        - lookedBackTo
+        - truncated
       properties:
         traces:
           type: array
@@ -765,6 +837,22 @@ components:
             $ref: "#/components/schemas/TraceOverview"
         totalCount:
           type: integer
+          description: |
+            Upstream trace count for the window when no filter is set; the number of
+            matching traces in `traces` when any filter is set.
+        lookedBackTo:
+          type: string
+          format: date-time
+          description: |
+            How far back in the window the server examined traces, in UTC with sub-second
+            precision so it can be passed back as a time bound without gaps. Currently always
+            the requested `startTime`.
+          example: "2026-04-01T00:00:00.5Z"
+        truncated:
+          type: boolean
+          description: |
+            True when the server stopped at its examine cap before the window ran out,
+            so older matches may exist before `lookedBackTo`. Currently always false.
 
     SpanSummary:
       type: object

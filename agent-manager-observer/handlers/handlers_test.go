@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -437,6 +438,86 @@ func TestParseInclude_ErrorNamesValue(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `"tools"`) {
 		t.Errorf("error %q does not name the bad value", err)
+	}
+}
+
+func TestGetTraceOverviews_InvalidFilters(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "unknown status", query: "&status=failed"},
+		{name: "status is case-sensitive", query: "&status=ERROR"},
+		{name: "negative minTokens", query: "&minTokens=-1"},
+		{name: "non-numeric minTokens", query: "&minTokens=lots"},
+		{name: "negative minDurationMs", query: "&minDurationMs=-5"},
+		{name: "fractional minDurationMs", query: "&minDurationMs=1.5"},
+		{name: "negative minSpanCount", query: "&minSpanCount=-2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/traces?"+baseParams()+tt.query, nil)
+			rec := httptest.NewRecorder()
+			newHandler().GetTraceOverviews(rec, r)
+			assertBadRequest(t, rec)
+		})
+	}
+}
+
+func TestParseTraceFilters(t *testing.T) {
+	t.Run("absent leaves every filter unset", func(t *testing.T) {
+		f, err := parseTraceFilters(url.Values{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !f.IsZero() {
+			t.Errorf("filters = %+v, want zero", f)
+		}
+	})
+
+	t.Run("all six parse", func(t *testing.T) {
+		q, _ := url.ParseQuery("status=error&minDurationMs=5000&minTokens=0&minSpanCount=20&model=gpt-4o&conversationId=conv-42")
+		f, err := parseTraceFilters(q)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.Status != controllers.TraceStatusError {
+			t.Errorf("status = %q, want error", f.Status)
+		}
+		if f.MinDurationMs == nil || *f.MinDurationMs != 5000 {
+			t.Errorf("minDurationMs = %v, want 5000", f.MinDurationMs)
+		}
+		if f.MinTokens == nil || *f.MinTokens != 0 {
+			t.Errorf("minTokens = %v, want an explicit 0", f.MinTokens)
+		}
+		if f.MinSpanCount == nil || *f.MinSpanCount != 20 {
+			t.Errorf("minSpanCount = %v, want 20", f.MinSpanCount)
+		}
+		if f.Model != "gpt-4o" || f.ConversationID != "conv-42" {
+			t.Errorf("model/conversationId = %q/%q, want gpt-4o/conv-42", f.Model, f.ConversationID)
+		}
+	})
+
+	t.Run("error names the parameter", func(t *testing.T) {
+		_, err := parseTraceFilters(url.Values{"minTokens": {"-1"}})
+		if err == nil || !strings.Contains(err.Error(), "minTokens") {
+			t.Errorf("error = %v, want one naming minTokens", err)
+		}
+	})
+}
+
+// A model filter requests inline attributes without include=models.
+func TestGetTraceOverviews_ModelFilterPassedThrough(t *testing.T) {
+	fake := &fakeObserverClient{traces: []observer.TraceInfo{{TraceID: "trace-1", RootSpanID: "root", SpanCount: 2}}}
+	h := NewHandler(controllers.NewTracingController(fake), nil)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/traces?"+baseParams()+"&model=gpt-4o", nil)
+	rec := httptest.NewRecorder()
+	h.GetTraceOverviews(rec, r)
+
+	assertStatus(t, rec, http.StatusOK)
+	if !fake.lastSpansReq.IncludeAttributes {
+		t.Error("expected the span list to be requested with inline attributes")
 	}
 }
 

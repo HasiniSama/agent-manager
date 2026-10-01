@@ -71,6 +71,7 @@ type TraceQueryParams struct {
 	Limit        int
 	SortOrder    string
 	Include      Include
+	Filters      TraceFilters
 }
 
 // Include is the set of opt-in span-derived fields for a trace list.
@@ -106,8 +107,14 @@ type SpanListResponse struct {
 
 // GetTraceOverviews fetches a page of traces with root-span enrichment (input, output, tokenUsage).
 // It calls QueryTraces once, then fetches root span details in parallel (one per trace in the page).
+// Traces not matching params.Filters are dropped, by summary before enrichment where possible.
 func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
 	log := logger.GetLogger(ctx)
+
+	// A model filter needs Models filled.
+	if params.Filters.Model != "" {
+		params.Include.Models = true
+	}
 
 	sortOrder := params.SortOrder
 	req := observer.TracesQueryRequest{
@@ -128,11 +135,14 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 		return nil, err
 	}
 
-	if len(tracesResp.Traces) == 0 {
-		return &opensearch.TraceOverviewResponse{
-			Traces:     []opensearch.TraceOverview{},
-			TotalCount: tracesResp.Total,
-		}, nil
+	traces := tracesResp.Traces
+	totalCount := tracesResp.Total
+	if !params.Filters.IsZero() {
+		traces = filterTraceInfos(traces, params.Filters)
+		totalCount = 0
+	}
+	if len(traces) == 0 {
+		return newTraceOverviewResponse(params, []opensearch.TraceOverview{}, totalCount), nil
 	}
 
 	// Fetch root spans and run per-trace enrichment in parallel.
@@ -151,12 +161,12 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 		conversationID string
 		err            error
 	}
-	results := make([]result, len(tracesResp.Traces))
+	results := make([]result, len(traces))
 	outerSem := make(chan struct{}, maxConcurrentTraces)
 	innerSem := make(chan struct{}, maxConcurrentFetches)
 	var wg sync.WaitGroup
 
-	for i, t := range tracesResp.Traces {
+	for i, t := range traces {
 		if t.RootSpanID == "" {
 			log.Warn("trace has no rootSpanId, skipping", "traceId", t.TraceID)
 			continue
@@ -189,8 +199,8 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 	}
 	wg.Wait()
 
-	overviews := make([]opensearch.TraceOverview, 0, len(tracesResp.Traces))
-	for i, t := range tracesResp.Traces {
+	overviews := make([]opensearch.TraceOverview, 0, len(traces))
+	for i, t := range traces {
 		res := results[i]
 		if res.err != nil {
 			log.Warn("failed to fetch root span details, skipping trace",
@@ -221,14 +231,28 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 		})
 	}
 
+	enriched := len(overviews)
+	if !params.Filters.IsZero() {
+		overviews = filterOverviews(overviews, params.Filters)
+		totalCount = len(overviews)
+	}
+
 	log.Info("Retrieved trace overviews",
-		"totalCount", len(overviews),
+		"organization", params.Organization,
+		"fetched", len(tracesResp.Traces),
+		"enriched", enriched,
 		"returned", len(overviews))
 
+	return newTraceOverviewResponse(params, overviews, totalCount), nil
+}
+
+func newTraceOverviewResponse(params TraceQueryParams, overviews []opensearch.TraceOverview, totalCount int) *opensearch.TraceOverviewResponse {
 	return &opensearch.TraceOverviewResponse{
-		Traces:     overviews,
-		TotalCount: tracesResp.Total,
-	}, nil
+		Traces:       overviews,
+		TotalCount:   totalCount,
+		LookedBackTo: params.StartTime.UTC().Format(time.RFC3339Nano),
+		Truncated:    false,
+	}
 }
 
 // enrichTraceOverview computes Input/Output/Tokens/Models for one trace-list
