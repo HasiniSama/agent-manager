@@ -68,6 +68,8 @@ type TracingController struct {
 	enrichAll bool
 	// perSpanDetails turns off reusing the span list's inline attributes; tests compare against it.
 	perSpanDetails bool
+	// fullChunks turns off sizing summary-only chunks to the page; tests compare against it.
+	fullChunks bool
 }
 
 // NewTracingController creates a new tracing controller.
@@ -229,6 +231,7 @@ func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQ
 func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, int, error) {
 	cur := params.Cursor
 	asc := params.SortOrder == "asc"
+	summaryOnly := params.Filters.SummaryOnly() && !c.fullChunks
 	matched := make([]opensearch.TraceOverview, 0, params.Limit)
 	seen := make(map[string]struct{})
 	// counted is the matches past the cursor time; rootless is the latest
@@ -281,6 +284,10 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		// its last match and the cursor never passes an unreturned match.
 		for len(fresh) > 0 && examined < maxExaminedTraces {
 			chunk := fresh[:min(lookBackBatchSize, len(fresh), maxExaminedTraces-examined)]
+			// Summary-only survivors all match, so enrich no more than the page still needs.
+			if summaryOnly {
+				chunk = chunk[:summaryChunkLen(chunk, params.Filters, cur, params.Limit-counted)]
+			}
 			fresh = fresh[len(chunk):]
 			byID := make(map[string]opensearch.TraceOverview, len(chunk))
 			for _, ov := range c.enrichTraces(ctx, params, filterTraceInfos(chunk, params.Filters)) {

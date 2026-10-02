@@ -46,13 +46,15 @@ type fakeObserverClient struct {
 	// (excluding root, which is rootSpan).
 	spanDetails map[string]*observer.SpanDetailsResponse
 
-	// mu guards lastSpansReq and spansTraceIDs.
+	// mu guards lastSpansReq, spansTraceIDs and detailSpanIDs.
 	mu sync.Mutex
 	// lastSpansReq records the request passed to the most recent
 	// QueryTraceSpans call so export tests can assert IncludeAttributes.
 	lastSpansReq observer.TracesQueryRequest
 	// spansTraceIDs records the trace ID of every QueryTraceSpans call.
 	spansTraceIDs []string
+	// detailSpanIDs records the span ID of every GetSpanDetails call.
+	detailSpanIDs []string
 
 	// windowed makes QueryTraces apply the request's window, sort order and
 	// limit the way the upstream Observer does.
@@ -164,6 +166,9 @@ func (f *fakeObserverClient) QueryMetrics(_ context.Context, _ observer.MetricsQ
 
 func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, spanID string) (*observer.SpanDetailsResponse, error) {
 	atomic.AddInt32(&f.getSpanDetailsCalls, 1)
+	f.mu.Lock()
+	f.detailSpanIDs = append(f.detailSpanIDs, spanID)
+	f.mu.Unlock()
 	if f.rootSpan != nil && spanID == f.rootSpan.SpanID {
 		return f.rootSpan, nil
 	}

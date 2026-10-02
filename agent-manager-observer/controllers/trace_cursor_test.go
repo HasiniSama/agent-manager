@@ -123,11 +123,13 @@ func TestGetTraceOverviews_CursorPagesWholeWindow(t *testing.T) {
 	tests := []struct {
 		name       string
 		filtered   bool
+		summary    bool
 		matchEvery int
 	}{
 		{name: "unfiltered", matchEvery: 1},
 		{name: "filter matches all", filtered: true, matchEvery: 1},
 		{name: "filter matches 1 in 3", filtered: true, matchEvery: 3},
+		{name: "summary filter matches 1 in 3", filtered: true, summary: true, matchEvery: 3},
 	}
 	for _, sortOrder := range []string{"desc", "asc"} {
 		for _, tt := range tests {
@@ -135,6 +137,10 @@ func TestGetTraceOverviews_CursorPagesWholeWindow(t *testing.T) {
 				fake := overlappingFake(300, tt.matchEvery)
 				c := NewTracingController(fake)
 				params := cursorParams(20, sortOrder, tt.filtered)
+				if tt.summary {
+					longEvery(fake, func(i int) bool { return i%tt.matchEvery == 0 })
+					params.Filters = TraceFilters{MinDurationMs: ptr(1000)}
+				}
 
 				pages := pageAll(t, c, fake, params)
 
@@ -209,16 +215,28 @@ func TestGetTraceOverviews_CursorChangeBeforeCursor(t *testing.T) {
 
 // More traces at one timestamp than fit on a page still make progress.
 func TestGetTraceOverviews_CursorTiesMakeProgress(t *testing.T) {
-	for _, filtered := range []bool{false, true} {
-		t.Run(fmt.Sprintf("filtered=%t", filtered), func(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters *TraceFilters
+	}{
+		{name: "unfiltered", filters: &TraceFilters{}},
+		{name: "filtered"},
+		{name: "summary filter", filters: &TraceFilters{MinSpanCount: ptr(2)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			fake := lookBackFake(60, 1)
 			for i := 10; i < 40; i++ {
 				fake.traces[i].StartTime = fake.traces[10].StartTime
 				fake.traces[i].EndTime = fake.traces[10].StartTime
 			}
 			c := NewTracingController(fake)
+			params := cursorParams(10, "desc", true)
+			if tt.filters != nil {
+				params.Filters = *tt.filters
+			}
 
-			pages := pageAll(t, c, fake, cursorParams(10, "desc", filtered))
+			pages := pageAll(t, c, fake, params)
 
 			assertIDs(t, unionIDs(pages), wantIDs(0, 60, 1))
 		})

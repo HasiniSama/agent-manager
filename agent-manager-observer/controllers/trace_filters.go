@@ -51,6 +51,11 @@ func (f TraceFilters) IsZero() bool {
 	return f == TraceFilters{}
 }
 
+// SummaryOnly reports whether only filters the trace list answers are set.
+func (f TraceFilters) SummaryOnly() bool {
+	return !f.IsZero() && f == TraceFilters{MinDurationMs: f.MinDurationMs, MinSpanCount: f.MinSpanCount}
+}
+
 // LogValue logs only the set filters.
 func (f TraceFilters) LogValue() slog.Value {
 	var attrs []slog.Attr
@@ -128,6 +133,19 @@ func matchesSummary(durationNs int64, spanCount int, f TraceFilters) bool {
 		return false
 	}
 	return true
+}
+
+// summaryChunkLen is the shortest prefix of traces holding need survivors past the cursor time.
+func summaryChunkLen(traces []observer.TraceInfo, f TraceFilters, cur *TraceCursor, need int) int {
+	for i, t := range traces {
+		if matchesSummary(t.DurationNs, t.SpanCount, f) && !atCursor(t.StartTime, cur) {
+			need--
+			if need == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(traces)
 }
 
 // filterTraceInfos drops traces the summary already rules out, before enrichment.
