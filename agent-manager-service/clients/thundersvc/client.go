@@ -517,11 +517,23 @@ func (c *thunderClient) findResourceByName(ctx context.Context, token, resource,
 		pageSize = 100
 		maxPages = 100 // safety cap: 10k items max
 	)
+	var firstID string
 	for page := 0; page < maxPages; page++ {
 		offset := page * pageSize
 		items, err := c.listResourcePage(ctx, token, resource, offset, pageSize)
 		if err != nil {
 			return "", "", err
+		}
+		if len(items) == 0 {
+			return "", "", nil
+		}
+		// Thunder ignores offset/limit and returns the full list on every call.
+		// A page starting with the same item as page 0 means the list has wrapped.
+		if page > 0 && items[0].ID == firstID {
+			return "", "", nil
+		}
+		if page == 0 {
+			firstID = items[0].ID
 		}
 		for _, item := range items {
 			if item.Name == name {
