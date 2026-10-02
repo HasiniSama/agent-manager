@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,13 +40,19 @@ type fakeObserverClient struct {
 	traces []observer.TraceInfo
 	// spans is the QueryTraceSpans result; attributes are stripped unless requested.
 	spans []observer.SpanInfo
+	// spansByTrace, when set, gives each trace its own QueryTraceSpans result.
+	spansByTrace map[string][]observer.SpanInfo
 	// spanDetails maps spanID → detail response for GetSpanDetails lookups
 	// (excluding root, which is rootSpan).
 	spanDetails map[string]*observer.SpanDetailsResponse
 
+	// mu guards lastSpansReq and spansTraceIDs.
+	mu sync.Mutex
 	// lastSpansReq records the request passed to the most recent
 	// QueryTraceSpans call so export tests can assert IncludeAttributes.
 	lastSpansReq observer.TracesQueryRequest
+	// spansTraceIDs records the trace ID of every QueryTraceSpans call.
+	spansTraceIDs []string
 
 	// windowed makes QueryTraces apply the request's window, sort order and
 	// limit the way the upstream Observer does.
@@ -116,13 +123,20 @@ func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQ
 	return &observer.TracesQueryResponse{Traces: traces, Total: total}, nil
 }
 
-func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
+func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, traceID string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
 	atomic.AddInt32(&f.queryTraceSpansCalls, 1)
+	f.mu.Lock()
 	f.lastSpansReq = req
+	f.spansTraceIDs = append(f.spansTraceIDs, traceID)
+	f.mu.Unlock()
 	spans := f.spans
+	if f.spansByTrace != nil {
+		spans = f.spansByTrace[traceID]
+	}
 	if !req.IncludeAttributes {
-		spans = make([]observer.SpanInfo, len(f.spans))
-		for i, s := range f.spans {
+		all := spans
+		spans = make([]observer.SpanInfo, len(all))
+		for i, s := range all {
 			s.Attributes = nil
 			s.ResourceAttributes = nil
 			spans[i] = s

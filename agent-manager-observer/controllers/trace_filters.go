@@ -76,16 +76,8 @@ func (f TraceFilters) LogValue() slog.Value {
 
 // matchesFilters reports whether overview satisfies f.
 func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
-	hasErrors := overview.Status != nil && overview.Status.ErrorCount > 0
-	switch f.Status {
-	case TraceStatusError:
-		if !hasErrors {
-			return false
-		}
-	case TraceStatusOK:
-		if hasErrors {
-			return false
-		}
+	if !matchesRootFilters(overview.Status, overview.ConversationID, f) {
+		return false
 	}
 	if !matchesSummary(overview.DurationInNanos, overview.SpanCount, f) {
 		return false
@@ -96,7 +88,23 @@ func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
 	if f.Model != "" && !slices.ContainsFunc(overview.Models, containsFold(f.Model)) {
 		return false
 	}
-	if f.ConversationID != "" && overview.ConversationID != f.ConversationID {
+	return true
+}
+
+// matchesRootFilters checks the filters the root span alone can answer.
+func matchesRootFilters(status *opensearch.TraceStatus, conversationID string, f TraceFilters) bool {
+	hasErrors := status != nil && status.ErrorCount > 0
+	switch f.Status {
+	case TraceStatusError:
+		if !hasErrors {
+			return false
+		}
+	case TraceStatusOK:
+		if hasErrors {
+			return false
+		}
+	}
+	if f.ConversationID != "" && conversationID != f.ConversationID {
 		return false
 	}
 	return true

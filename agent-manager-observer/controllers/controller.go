@@ -64,6 +64,8 @@ const (
 // TracingController provides tracing functionality via the observer service.
 type TracingController struct {
 	observerClient observer.Client
+	// enrichAll turns off root-filter rejection; tests compare against it.
+	enrichAll bool
 }
 
 // NewTracingController creates a new tracing controller.
@@ -365,7 +367,8 @@ func formatCursor(t time.Time) string {
 }
 
 // enrichTraces fetches root spans and enriches traces in parallel, returning
-// overviews in input order. Traces whose root fetch fails are skipped.
+// overviews in input order. Traces whose root fetch fails are skipped, and so
+// are traces whose root fails matchesRootFilters, before the rest of the cascade.
 func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) []opensearch.TraceOverview {
 	log := logger.GetLogger(ctx)
 
@@ -380,8 +383,11 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 		output         interface{}
 		tokenUsage     *opensearch.TokenUsage
 		models         []string
+		status         *opensearch.TraceStatus
 		conversationID string
-		err            error
+		// rejected marks a trace the root-only filters ruled out.
+		rejected bool
+		err      error
 	}
 	results := make([]result, len(traces))
 	outerSem := make(chan struct{}, maxConcurrentTraces)
@@ -407,6 +413,13 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 				return
 			}
 			enriched := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(t.TraceID, details))
+			// Status is root-only by design.
+			status := opensearch.ExtractTraceStatus([]opensearch.Span{enriched})
+			conversationID := opensearch.ExtractConversationID(&enriched)
+			if !c.enrichAll && !matchesRootFilters(status, conversationID, params.Filters) {
+				results[idx] = result{rejected: true}
+				return
+			}
 			input, output, tokens, models := c.enrichTraceOverview(ctx, params, t, &enriched, innerSem)
 			results[idx] = result{
 				span:           &enriched,
@@ -414,7 +427,8 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 				output:         output,
 				tokenUsage:     tokens,
 				models:         models,
-				conversationID: opensearch.ExtractConversationID(&enriched),
+				status:         status,
+				conversationID: conversationID,
 			}
 		}(i, t)
 	}
@@ -428,11 +442,10 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 				"traceId", t.TraceID, "err", res.err)
 			continue
 		}
-		if res.span == nil {
+		if res.rejected || res.span == nil {
 			continue
 		}
 		rootSpan := res.span
-		traceStatus := opensearch.ExtractTraceStatus([]opensearch.Span{*rootSpan})
 
 		overviews = append(overviews, opensearch.TraceOverview{
 			TraceID:         t.TraceID,
@@ -444,7 +457,7 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 			DurationInNanos: t.DurationNs,
 			SpanCount:       t.SpanCount,
 			TokenUsage:      res.tokenUsage,
-			Status:          traceStatus,
+			Status:          res.status,
 			Input:           res.input,
 			Output:          res.output,
 			Models:          res.models,
@@ -455,7 +468,9 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 }
 
 // enrichTraceOverview computes Input/Output/Tokens/Models for one trace-list
-// row, cascading through three sources in order of cost:
+// row, cascading through three sources in order of cost. enrichTraces calls it
+// only for traces whose root passes matchesRootFilters (status and
+// conversationId), so a rejected trace costs just its root fetch:
 //
 //  1. The root span's own attributes (older Traceloop entity.input/output
 //     and CrewAI roll-up). Free — root span is already fetched.
