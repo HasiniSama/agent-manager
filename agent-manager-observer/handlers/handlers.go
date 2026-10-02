@@ -134,6 +134,15 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var cursor *controllers.TraceCursor
+	if raw := query.Get("cursor"); raw != "" {
+		if cursor, err = controllers.DecodeTraceCursor(raw); err != nil {
+			log.Info("Rejected trace list cursor", "organization", organization, "error", err)
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+	}
+
 	params := controllers.TraceQueryParams{
 		Organization: organization,
 		Project:      &project,
@@ -145,6 +154,7 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 		SortOrder:    sortOrder,
 		Include:      include,
 		Filters:      filters,
+		Cursor:       cursor,
 	}
 
 	result, err := h.controller.GetTraceOverviews(r.Context(), params)

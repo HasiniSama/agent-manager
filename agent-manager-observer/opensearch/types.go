@@ -223,6 +223,7 @@ type TraceOverviewResponse struct {
 	TotalCount   int             `json:"totalCount"`
 	LookedBackTo string          `json:"lookedBackTo"`
 	Truncated    bool            `json:"truncated"`
+	NextCursor   string          `json:"nextCursor,omitempty"`
 }
 
 // FullTrace represents a complete trace with all spans and metadata

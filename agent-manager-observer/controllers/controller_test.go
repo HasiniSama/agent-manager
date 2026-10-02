@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,15 +47,73 @@ type fakeObserverClient struct {
 	// QueryTraceSpans call so export tests can assert IncludeAttributes.
 	lastSpansReq observer.TracesQueryRequest
 
+	// windowed makes QueryTraces apply the request's window, sort order and
+	// limit the way the upstream Observer does.
+	windowed bool
+	// onQueryTraces runs at the start of each QueryTraces call.
+	onQueryTraces func()
+	// tracesReqs records every QueryTraces request.
+	tracesReqs []observer.TracesQueryRequest
+
 	getSpanDetailsCalls  int32
 	queryTraceSpansCalls int32
+	queryTracesCalls     int32
 
 	// defaultNamespace is returned by NamespaceFor, mirroring the real client.
 	defaultNamespace string
 }
 
-func (f *fakeObserverClient) QueryTraces(_ context.Context, _ observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
-	return &observer.TracesQueryResponse{Traces: f.traces, Total: len(f.traces)}, nil
+func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
+	atomic.AddInt32(&f.queryTracesCalls, 1)
+	f.tracesReqs = append(f.tracesReqs, req)
+	if f.onQueryTraces != nil {
+		f.onQueryTraces()
+	}
+	if !f.windowed {
+		return &observer.TracesQueryResponse{Traces: f.traces, Total: len(f.traces)}, nil
+	}
+
+	// Each trace is a root span [StartTime, EndTime] and a zero-length child
+	// span at StartTime. As upstream, a span is in the window when it starts
+	// at or after req.StartTime and ends at or before req.EndTime; the limit
+	// counts traces with any span in the window, and traces whose root is
+	// outside it are dropped afterwards.
+	inWindow := func(start, end time.Time) bool {
+		return !start.Before(req.StartTime) && !end.After(req.EndTime)
+	}
+	type bucket struct {
+		info    observer.TraceInfo
+		hasRoot bool
+	}
+	buckets := make([]bucket, 0, len(f.traces))
+	total := 0
+	for _, t := range f.traces {
+		hasRoot := inWindow(t.StartTime, t.EndTime)
+		if hasRoot || inWindow(t.StartTime, t.StartTime) {
+			buckets = append(buckets, bucket{info: t, hasRoot: hasRoot})
+		}
+		if hasRoot {
+			total++
+		}
+	}
+	asc := req.SortOrder != nil && *req.SortOrder == "asc"
+	sort.SliceStable(buckets, func(i, j int) bool {
+		a, b := buckets[i].info, buckets[j].info
+		if !a.StartTime.Equal(b.StartTime) {
+			return a.StartTime.Before(b.StartTime) == asc
+		}
+		return a.TraceID < b.TraceID
+	})
+	if req.Limit != nil && len(buckets) > *req.Limit {
+		buckets = buckets[:*req.Limit]
+	}
+	traces := make([]observer.TraceInfo, 0, len(buckets))
+	for _, b := range buckets {
+		if b.hasRoot {
+			traces = append(traces, b.info)
+		}
+	}
+	return &observer.TracesQueryResponse{Traces: traces, Total: total}, nil
 }
 
 func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {

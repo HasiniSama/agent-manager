@@ -18,11 +18,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/controllers"
 	"github.com/wso2/agent-manager/agent-manager-observer/observer"
@@ -462,6 +464,36 @@ func TestGetTraceOverviews_InvalidFilters(t *testing.T) {
 			assertBadRequest(t, rec)
 		})
 	}
+}
+
+func TestGetTraceOverviews_InvalidCursor(t *testing.T) {
+	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	tests := map[string]string{
+		"not base64":    "not base64!",
+		"not JSON":      enc("nope"),
+		"negative rank": enc(`{"r":-1,"t":"2026-04-02T00:00:00Z"}`),
+		"missing time":  enc(`{"r":1}`),
+	}
+	for name, cursor := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/traces?"+baseParams()+"&cursor="+url.QueryEscape(cursor), nil)
+			rec := httptest.NewRecorder()
+			newHandler().GetTraceOverviews(rec, r)
+			assertBadRequest(t, rec)
+		})
+	}
+}
+
+func TestGetTraceOverviews_ValidCursorAccepted(t *testing.T) {
+	fake := &fakeObserverClient{traces: []observer.TraceInfo{{TraceID: "trace-1", RootSpanID: "root", SpanCount: 2}}}
+	h := NewHandler(controllers.NewTracingController(fake), nil)
+	cursor := controllers.TraceCursor{Rank: 5, Time: time.Date(2026, 4, 2, 0, 0, 0, 500, time.UTC)}.Encode()
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/traces?"+baseParams()+"&cursor="+cursor, nil)
+	rec := httptest.NewRecorder()
+	h.GetTraceOverviews(rec, r)
+
+	assertStatus(t, rec, http.StatusOK)
 }
 
 func TestParseTraceFilters(t *testing.T) {

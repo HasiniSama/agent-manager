@@ -48,6 +48,17 @@ const (
 	// for "way more than 50 LLM leaves" that keeps the worst-case list-endpoint
 	// cost bounded.
 	skipLeafAggregationSpanCountThreshold = 100
+	// lookBackBatchSize is a filtered list request's first fetch size and the
+	// number of traces it enriches at a time.
+	lookBackBatchSize = 50
+	// maxExaminedTraces caps the traces one filtered list request examines,
+	// bounding its enrichment calls when a filter rarely matches.
+	maxExaminedTraces = 500
+	// maxCursorDepth caps the upstream fetch limit of a list request, which
+	// a deep cursor grows. Each trace bucket carries about six
+	// sub-aggregations, so this stays well under OpenSearch's default
+	// search.max_buckets of 65535.
+	maxCursorDepth = 5000
 )
 
 // TracingController provides tracing functionality via the observer service.
@@ -72,6 +83,8 @@ type TraceQueryParams struct {
 	SortOrder    string
 	Include      Include
 	Filters      TraceFilters
+	// Cursor continues from a previous page of the same window, sort order and filters.
+	Cursor *TraceCursor
 }
 
 // Include is the set of opt-in span-derived fields for a trace list.
@@ -106,21 +119,216 @@ type SpanListResponse struct {
 }
 
 // GetTraceOverviews fetches a page of traces with root-span enrichment (input, output, tokenUsage).
-// It calls QueryTraces once, then fetches root span details in parallel (one per trace in the page).
-// Traces not matching params.Filters are dropped, by summary before enrichment where possible.
+// With no filter and no cursor it calls QueryTraces once and fetches root span details in parallel.
+// With a filter it looks back through the window in batches until the page fills,
+// the window runs out, or maxExaminedTraces traces have been examined.
+// A cursor continues from an earlier page over the same whole window.
 func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
-	log := logger.GetLogger(ctx)
-
 	// A model filter needs Models filled.
 	if params.Filters.Model != "" {
 		params.Include.Models = true
 	}
 
+	var resp *opensearch.TraceOverviewResponse
+	var examined int
+	var err error
+	if params.Filters.IsZero() {
+		resp, examined, err = c.traceOverviewPage(ctx, params)
+	} else {
+		resp, examined, err = c.lookBackForMatches(ctx, params)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	logger.GetLogger(ctx).Info("Retrieved trace overviews",
+		"organization", params.Organization,
+		"filters", params.Filters,
+		"cursor", params.Cursor != nil,
+		"examined", examined,
+		"matched", len(resp.Traces),
+		"truncated", resp.Truncated)
+
+	return resp, nil
+}
+
+// traceOverviewPage serves an unfiltered list. Without a cursor it calls
+// QueryTraces once. With one it fetches the whole window, skips traces before
+// the cursor, and fetches more only when the response comes back short.
+func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, int, error) {
+	cur := params.Cursor
+	asc := params.SortOrder == "asc"
+	fetchLimit := params.Limit
+	if cur != nil {
+		fetchLimit = min(cur.Rank+params.Limit, maxCursorDepth)
+	}
+	for {
+		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, fetchLimit))
+		if err != nil {
+			return nil, 0, err
+		}
+		traces := tracesResp.Traces
+
+		// Traces at the cursor time were on the previous page. They come back
+		// but don't count toward the limit, so a page always moves past ties.
+		page := make([]observer.TraceInfo, 0, min(len(traces), params.Limit))
+		passed, counted := 0, 0
+		last := walkStart(params)
+		for _, t := range traces {
+			if counted == params.Limit {
+				break
+			}
+			passed++
+			if beforeCursor(t.StartTime, cur, asc) {
+				continue
+			}
+			page = append(page, t)
+			last = t.StartTime
+			if !atCursor(t.StartTime, cur) {
+				counted++
+			}
+		}
+		full := counted == params.Limit
+		exhausted := passed == len(traces) && len(traces) >= tracesResp.Total
+		if cur != nil && !full && !exhausted && fetchLimit < maxCursorDepth {
+			fetchLimit = min(2*fetchLimit, maxCursorDepth)
+			continue
+		}
+
+		resp := &opensearch.TraceOverviewResponse{
+			Traces:       c.enrichTraces(ctx, params, page),
+			TotalCount:   tracesResp.Total,
+			LookedBackTo: formatCursor(last),
+		}
+		switch {
+		case exhausted:
+			resp.LookedBackTo = formatCursor(windowEdge(params))
+		case full || cur == nil:
+			rank := passed + rootlessSlots(fetchLimit, len(traces), tracesResp.Total)
+			resp.NextCursor = TraceCursor{Rank: rank, Time: last}.Encode()
+		default:
+			// The cursor is too deep to fetch past.
+			resp.Truncated = true
+		}
+		return resp, len(page), nil
+	}
+}
+
+// lookBackForMatches walks the window in sort order, keeping traces that
+// match params.Filters. It returns the matches and the number of traces
+// examined.
+//
+// Each fetch covers the whole window with a doubled limit and skips trace IDs
+// already seen. The window is never narrowed: the Observer bounds each span's
+// end time, so a narrowed end would drop traces that overlap it. A cursor
+// skips traces before it by time; they are not enriched or examined.
+func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, int, error) {
+	cur := params.Cursor
+	asc := params.SortOrder == "asc"
+	matched := make([]opensearch.TraceOverview, 0, params.Limit)
+	seen := make(map[string]struct{})
+	// counted is the matches past the cursor time; rootless is the latest
+	// fetch's slots spent on traces rooted outside the window.
+	examined, skipped, counted, rootless := 0, 0, 0, 0
+	// last is the last trace examined.
+	last := walkStart(params)
+
+	done := func(lookedBackTo time.Time, truncated, more bool) (*opensearch.TraceOverviewResponse, int, error) {
+		resp := &opensearch.TraceOverviewResponse{
+			Traces:       matched,
+			TotalCount:   len(matched),
+			LookedBackTo: formatCursor(lookedBackTo),
+			Truncated:    truncated,
+		}
+		if more {
+			resp.NextCursor = TraceCursor{Rank: skipped + examined + rootless, Time: last}.Encode()
+		}
+		return resp, examined, nil
+	}
+
+	fetchLimit := lookBackBatchSize
+	if cur != nil {
+		fetchLimit = min(cur.Rank+lookBackBatchSize, maxCursorDepth)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, examined, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+		}
+		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, fetchLimit))
+		if err != nil {
+			return nil, examined, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+		}
+		rootless = rootlessSlots(fetchLimit, len(tracesResp.Traces), tracesResp.Total)
+
+		fresh := make([]observer.TraceInfo, 0, len(tracesResp.Traces))
+		for _, t := range tracesResp.Traces {
+			if _, ok := seen[t.TraceID]; ok {
+				continue
+			}
+			seen[t.TraceID] = struct{}{}
+			if beforeCursor(t.StartTime, cur, asc) {
+				skipped++
+				continue
+			}
+			fresh = append(fresh, t)
+		}
+
+		// Enrich in chunks and walk in sort order, so a full page stops at
+		// its last match and the cursor never passes an unreturned match.
+		for len(fresh) > 0 && examined < maxExaminedTraces {
+			chunk := fresh[:min(lookBackBatchSize, len(fresh), maxExaminedTraces-examined)]
+			fresh = fresh[len(chunk):]
+			byID := make(map[string]opensearch.TraceOverview, len(chunk))
+			for _, ov := range c.enrichTraces(ctx, params, filterTraceInfos(chunk, params.Filters)) {
+				byID[ov.TraceID] = ov
+			}
+			for i, t := range chunk {
+				examined++
+				last = t.StartTime
+				ov, ok := byID[t.TraceID]
+				if !ok || !matchesFilters(ov, params.Filters) {
+					continue
+				}
+				matched = append(matched, ov)
+				// Matches at the cursor time were on the previous page.
+				if !atCursor(t.StartTime, cur) {
+					counted++
+				}
+				if counted == params.Limit {
+					if i == len(chunk)-1 && len(fresh) == 0 && len(seen) >= tracesResp.Total {
+						return done(windowEdge(params), false, false)
+					}
+					return done(t.StartTime, false, true)
+				}
+			}
+		}
+
+		// Total counts every trace in the window. A short response does not
+		// mean the window ran out: the limit also counts traces whose root
+		// span lies outside the window, which the Observer then drops.
+		exhausted := len(fresh) == 0 && len(seen) >= tracesResp.Total
+		// A fetch past skipped+maxExaminedTraces would only add traces the cap rules out.
+		next := min(2*fetchLimit, skipped+maxExaminedTraces, maxCursorDepth)
+		switch {
+		case exhausted:
+			return done(windowEdge(params), false, false)
+		case examined >= maxExaminedTraces || (next <= fetchLimit && fetchLimit < maxCursorDepth):
+			return done(last, true, true)
+		case next <= fetchLimit:
+			// The cursor is too deep to fetch past.
+			return done(last, true, false)
+		}
+		fetchLimit = next
+	}
+}
+
+// traceListRequest builds the QueryTraces request for params' window.
+func (c *TracingController) traceListRequest(params TraceQueryParams, limit int) observer.TracesQueryRequest {
 	sortOrder := params.SortOrder
-	req := observer.TracesQueryRequest{
+	return observer.TracesQueryRequest{
 		StartTime: params.StartTime,
 		EndTime:   params.EndTime,
-		Limit:     &params.Limit,
+		Limit:     &limit,
 		SortOrder: &sortOrder,
 		SearchScope: observer.ComponentSearchScope{
 			Namespace:   c.observerClient.NamespaceFor(params.Organization),
@@ -129,30 +337,44 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 			Environment: params.Environment,
 		},
 	}
+}
 
-	tracesResp, err := c.observerClient.QueryTraces(ctx, req)
-	if err != nil {
-		return nil, err
+// walkStart is where a walk begins: the cursor time, or the window's near edge.
+func walkStart(params TraceQueryParams) time.Time {
+	switch {
+	case params.Cursor != nil:
+		return params.Cursor.Time
+	case params.SortOrder == "asc":
+		return params.StartTime
+	default:
+		return params.EndTime
 	}
+}
 
-	traces := tracesResp.Traces
-	totalCount := tracesResp.Total
-	if !params.Filters.IsZero() {
-		traces = filterTraceInfos(traces, params.Filters)
-		totalCount = 0
+// windowEdge is the end of the window in paging direction.
+func windowEdge(params TraceQueryParams) time.Time {
+	if params.SortOrder == "asc" {
+		return params.EndTime
 	}
-	if len(traces) == 0 {
-		return newTraceOverviewResponse(params, []opensearch.TraceOverview{}, totalCount), nil
-	}
+	return params.StartTime
+}
 
-	// Fetch root spans and run per-trace enrichment in parallel.
+// formatCursor keeps nanoseconds so the cursor pages without gaps.
+func formatCursor(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// enrichTraces fetches root spans and enriches traces in parallel, returning
+// overviews in input order. Traces whose root fetch fails are skipped.
+func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) []opensearch.TraceOverview {
+	log := logger.GetLogger(ctx)
+
 	// outerSem caps how many traces are being enriched at once; innerSem caps
 	// the total observer round-trips across all enrichments in flight (root
 	// fetches plus anything enrichTraceOverview fetches inside).
 	// Two pools avoid the deadlock a single shared pool would hit when every
 	// outer slot is held by a goroutine waiting on a fetch slot.
 	type result struct {
-		idx            int
 		span           *opensearch.Span
 		input          interface{}
 		output         interface{}
@@ -181,13 +403,12 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 			details, err := c.observerClient.GetSpanDetails(ctx, t.TraceID, t.RootSpanID)
 			<-innerSem
 			if err != nil {
-				results[idx] = result{idx: idx, err: err}
+				results[idx] = result{err: err}
 				return
 			}
 			enriched := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(t.TraceID, details))
 			input, output, tokens, models := c.enrichTraceOverview(ctx, params, t, &enriched, innerSem)
 			results[idx] = result{
-				idx:            idx,
 				span:           &enriched,
 				input:          input,
 				output:         output,
@@ -230,29 +451,7 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 			ConversationID:  res.conversationID,
 		})
 	}
-
-	enriched := len(overviews)
-	if !params.Filters.IsZero() {
-		overviews = filterOverviews(overviews, params.Filters)
-		totalCount = len(overviews)
-	}
-
-	log.Info("Retrieved trace overviews",
-		"organization", params.Organization,
-		"fetched", len(tracesResp.Traces),
-		"enriched", enriched,
-		"returned", len(overviews))
-
-	return newTraceOverviewResponse(params, overviews, totalCount), nil
-}
-
-func newTraceOverviewResponse(params TraceQueryParams, overviews []opensearch.TraceOverview, totalCount int) *opensearch.TraceOverviewResponse {
-	return &opensearch.TraceOverviewResponse{
-		Traces:       overviews,
-		TotalCount:   totalCount,
-		LookedBackTo: params.StartTime.UTC().Format(time.RFC3339Nano),
-		Truncated:    false,
-	}
+	return overviews
 }
 
 // enrichTraceOverview computes Input/Output/Tokens/Models for one trace-list

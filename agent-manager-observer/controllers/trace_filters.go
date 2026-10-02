@@ -17,6 +17,7 @@
 package controllers
 
 import (
+	"log/slog"
 	"slices"
 	"time"
 
@@ -47,6 +48,29 @@ type TraceFilters struct {
 // IsZero reports whether no filter is set.
 func (f TraceFilters) IsZero() bool {
 	return f == TraceFilters{}
+}
+
+// LogValue logs only the set filters.
+func (f TraceFilters) LogValue() slog.Value {
+	var attrs []slog.Attr
+	if f.Status != TraceStatusAny {
+		attrs = append(attrs, slog.String("status", string(f.Status)))
+	}
+	for _, m := range []struct {
+		key string
+		val *int64
+	}{{"minDurationMs", f.MinDurationMs}, {"minTokens", f.MinTokens}, {"minSpanCount", f.MinSpanCount}} {
+		if m.val != nil {
+			attrs = append(attrs, slog.Int64(m.key, *m.val))
+		}
+	}
+	if f.Model != "" {
+		attrs = append(attrs, slog.String("model", f.Model))
+	}
+	if f.ConversationID != "" {
+		attrs = append(attrs, slog.String("conversationId", f.ConversationID))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // matchesFilters reports whether overview satisfies f.
@@ -95,16 +119,6 @@ func filterTraceInfos(traces []observer.TraceInfo, f TraceFilters) []observer.Tr
 	for _, t := range traces {
 		if matchesSummary(t.DurationNs, t.SpanCount, f) {
 			matched = append(matched, t)
-		}
-	}
-	return matched
-}
-
-func filterOverviews(overviews []opensearch.TraceOverview, f TraceFilters) []opensearch.TraceOverview {
-	matched := make([]opensearch.TraceOverview, 0, len(overviews))
-	for _, ov := range overviews {
-		if matchesFilters(ov, f) {
-			matched = append(matched, ov)
 		}
 	}
 	return matched
