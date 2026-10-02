@@ -64,7 +64,7 @@ const (
 // TracingController provides tracing functionality via the observer service.
 type TracingController struct {
 	observerClient observer.Client
-	// enrichAll turns off root-filter rejection; tests compare against it.
+	// enrichAll turns off early filter rejection; tests compare against it.
 	enrichAll bool
 }
 
@@ -368,7 +368,8 @@ func formatCursor(t time.Time) string {
 
 // enrichTraces fetches root spans and enriches traces in parallel, returning
 // overviews in input order. Traces whose root fetch fails are skipped, and so
-// are traces whose root fails matchesRootFilters, before the rest of the cascade.
+// are traces whose root fails matchesRootFilters or whose models fail the model
+// filter, before the rest of the cascade.
 func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) []opensearch.TraceOverview {
 	log := logger.GetLogger(ctx)
 
@@ -385,7 +386,7 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 		models         []string
 		status         *opensearch.TraceStatus
 		conversationID string
-		// rejected marks a trace the root-only filters ruled out.
+		// rejected marks a trace the root or model filters ruled out early.
 		rejected bool
 		err      error
 	}
@@ -420,7 +421,11 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 				results[idx] = result{rejected: true}
 				return
 			}
-			input, output, tokens, models := c.enrichTraceOverview(ctx, params, t, &enriched, innerSem)
+			input, output, tokens, models, rejected := c.enrichTraceOverview(ctx, params, t, &enriched, innerSem)
+			if rejected {
+				results[idx] = result{rejected: true}
+				return
+			}
 			results[idx] = result{
 				span:           &enriched,
 				input:          input,
@@ -487,7 +492,9 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 // Each step only fills fields the earlier step left nil.
 //
 // Models come from step 3's leaves, or from the span list's inline attributes
-// when params.Include.Models is set (see modelsFromSpanList).
+// when params.Include.Models is set (see modelsFromSpanList). With a model
+// filter, rejected is true once the models rule the trace out, before steps 2
+// and 3; traces over the span threshold have no models and are rejected first.
 //
 // Token usage from traceloop.entity.output is used only when no step finds a
 // gen_ai.usage.* report.
@@ -501,7 +508,7 @@ func (c *TracingController) enrichTraceOverview(
 	traceInfo observer.TraceInfo,
 	rootSpan *opensearch.Span,
 	fetchSem chan struct{},
-) (input interface{}, output interface{}, tokenUsage *opensearch.TokenUsage, models []string) {
+) (input interface{}, output interface{}, tokenUsage *opensearch.TokenUsage, models []string, rejected bool) {
 	// Step 1: root span attributes.
 	if opensearch.IsCrewAISpan(rootSpan.Attributes) {
 		input, output = opensearch.ExtractCrewAIRootSpanInputOutput(rootSpan)
@@ -517,19 +524,28 @@ func (c *TracingController) enrichTraceOverview(
 	rootComplete := input != nil && output != nil && tokenUsage != nil
 	aggregateLeaves := traceInfo.SpanCount <= skipLeafAggregationSpanCountThreshold
 	modelsFromList := params.Include.Models && aggregateLeaves
+	rejectOnModel := !c.enrichAll && params.Filters.Model != ""
+
+	// Without leaf aggregation the trace has no models.
+	if rejectOnModel && !aggregateLeaves {
+		return nil, nil, nil, nil, true
+	}
 
 	// Nothing left to fetch.
 	if rootComplete && !modelsFromList {
-		return input, output, tokenUsage, nil
+		return input, output, tokenUsage, nil, false
 	}
 
 	// Steps 2 and 3 and inline models all need the span list. Fetch it once.
 	spans, ok := c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, modelsFromList)
 	if !ok {
-		return input, output, cmp.Or(tokenUsage, entityTokens), nil
+		return input, output, cmp.Or(tokenUsage, entityTokens), nil, false
 	}
 	if modelsFromList {
 		models = modelsFromSpanList(traceInfo.TraceID, spans)
+		if rejectOnModel && !matchesModel(models, params.Filters) {
+			return nil, nil, nil, nil, true
+		}
 	}
 
 	// Step 2: immediate child of the root (Traceloop chain span path).
@@ -575,7 +591,7 @@ func (c *TracingController) enrichTraceOverview(
 		}
 	}
 
-	return input, output, cmp.Or(tokenUsage, entityTokens), models
+	return input, output, cmp.Or(tokenUsage, entityTokens), models, false
 }
 
 // fetchTraceSpanSummaries calls QueryTraceSpans for one trace and returns

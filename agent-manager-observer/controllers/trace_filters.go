@@ -85,10 +85,12 @@ func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
 	if f.MinTokens != nil && (overview.TokenUsage == nil || int64(overview.TokenUsage.TotalTokens) < *f.MinTokens) {
 		return false
 	}
-	if f.Model != "" && !slices.ContainsFunc(overview.Models, containsFold(f.Model)) {
-		return false
-	}
-	return true
+	return matchesModel(overview.Models, f)
+}
+
+// matchesModel checks the model filter; a trace with no models fails it.
+func matchesModel(models []string, f TraceFilters) bool {
+	return f.Model == "" || slices.ContainsFunc(models, containsFold(f.Model))
 }
 
 // matchesRootFilters checks the filters the root span alone can answer.

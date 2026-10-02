@@ -65,6 +65,8 @@ type fakeObserverClient struct {
 	getSpanDetailsCalls  int32
 	queryTraceSpansCalls int32
 	queryTracesCalls     int32
+	// attrSpansCalls counts QueryTraceSpans calls with IncludeAttributes.
+	attrSpansCalls int32
 
 	// defaultNamespace is returned by NamespaceFor, mirroring the real client.
 	defaultNamespace string
@@ -125,6 +127,9 @@ func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQ
 
 func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, traceID string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
 	atomic.AddInt32(&f.queryTraceSpansCalls, 1)
+	if req.IncludeAttributes {
+		atomic.AddInt32(&f.attrSpansCalls, 1)
+	}
 	f.mu.Lock()
 	f.lastSpansReq = req
 	f.spansTraceIDs = append(f.spansTraceIDs, traceID)
@@ -223,7 +228,7 @@ func TestEnrichTraceOverview_RootHasEntityAndUsageShortCircuits(t *testing.T) {
 	fake := &fakeObserverClient{rootSpan: &observer.SpanDetailsResponse{SpanID: "root"}}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from root, got input=%v output=%v", input, output)
@@ -249,7 +254,7 @@ func TestEnrichTraceOverview_RootEntityTokensUsedWhenNoLeaves(t *testing.T) {
 	fake := &fakeObserverClient{rootSpan: &observer.SpanDetailsResponse{SpanID: "root"}}
 	c := NewTracingController(fake)
 
-	_, _, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if tokens == nil || tokens.TotalTokens != 13 {
 		t.Errorf("expected entity.output fallback tokens, got %+v", tokens)
@@ -284,7 +289,7 @@ func TestEnrichTraceOverview_FallsBackToChildChainSpan(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from chain child, got input=%v output=%v", input, output)
@@ -331,7 +336,7 @@ func TestEnrichTraceOverview_AggregatesFromLeafLLMSpans(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if input != "first user msg" {
 		t.Errorf("input = %v, want first user msg", input)
@@ -391,7 +396,7 @@ func TestEnrichTraceOverview_LangGraphSumsLeavesOverEntityOutput(t *testing.T) {
 	fake := &fakeObserverClient{spans: spans, spanDetails: details}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(24), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(24), root, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from workflow span, got input=%v output=%v", input, output)
@@ -408,7 +413,7 @@ func TestEnrichTraceOverview_AllEmptyReturnsNil(t *testing.T) {
 	fake := &fakeObserverClient{spans: []observer.SpanInfo{}}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(1), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(1), root, testFetchSem())
 
 	if input != nil || output != nil || tokens != nil {
 		t.Errorf("expected all nil, got input=%v output=%v tokens=%+v", input, output, tokens)
@@ -447,7 +452,7 @@ func TestEnrichTraceOverview_LeafCapHonoredAndPartialFlagged(t *testing.T) {
 	// cap (maxLLMLeavesPerTrace) is what should trigger Partial. Using
 	// threshold-1 expresses "below the skip threshold" independently of
 	// whether the guard ever tightens from > to >=.
-	_, _, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(skipLeafAggregationSpanCountThreshold-1), root, testFetchSem())
+	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(skipLeafAggregationSpanCountThreshold-1), root, testFetchSem())
 
 	if tokens == nil {
 		t.Fatalf("expected tokens, got nil")
@@ -485,7 +490,7 @@ func TestEnrichTraceOverview_FailedLeafFetchFlagsPartial(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	_, _, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
 
 	if tokens == nil {
 		t.Fatalf("expected tokens, got nil")
@@ -516,7 +521,7 @@ func TestEnrichTraceOverview_SkipsLeafAggregationForHugeTraces(t *testing.T) {
 	c := NewTracingController(fake)
 
 	hugeTrace := baseTraceInfo(skipLeafAggregationSpanCountThreshold + 1)
-	input, output, tokens, _ := c.enrichTraceOverview(context.Background(), baseParams(), hugeTrace, root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), hugeTrace, root, testFetchSem())
 
 	if input != nil || output != nil || tokens != nil {
 		t.Errorf("expected nil for huge trace, got input=%v output=%v tokens=%+v", input, output, tokens)
@@ -836,7 +841,7 @@ func TestEnrichTraceOverview_IncludeModelsFetchesNoSpanDetails(t *testing.T) {
 	params := baseParams()
 	params.Include.Models = true
 
-	_, _, _, models := c.enrichTraceOverview(context.Background(), params, baseTraceInfo(2), root, testFetchSem())
+	_, _, _, models, _ := c.enrichTraceOverview(context.Background(), params, baseTraceInfo(2), root, testFetchSem())
 
 	assertModels(t, models, []string{"gpt-4o"})
 	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
