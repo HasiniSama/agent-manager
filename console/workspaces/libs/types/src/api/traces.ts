@@ -73,7 +73,7 @@ export interface TraceFilters {
   minDurationMs?: number;
   minTokens?: number;
   minSpanCount?: number;
-  /** Exact match against any entry in TraceOverview.models. Implies includeModels. */
+  /** Case-insensitive substring of any entry in TraceOverview.models. Implies includeModels. */
   model?: string;
   conversationId?: string;
 }

@@ -554,7 +554,8 @@ components:
       in: query
       required: false
       description: |
-        Keep traces where any entry of `models` equals this value exactly. Implies
+        Keep traces where any entry of `models` contains this value, ignoring case,
+        so `gpt-4o-mini` matches `gpt-4o-mini-2024-07-18`. Implies
         `include=models`, so the server fills `models` on every trace and the request
         carries that cost. Traces above the span-count threshold have no `models` and
         never match.

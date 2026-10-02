@@ -51,8 +51,9 @@ import {
   ConsoleAction,
   useTrack,
 } from "@agent-management-platform/api-client";
-import { TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
+import { TraceColumnsMenu, TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
 import { parseTraceFilters, withTraceFilters } from "./traceFilters";
+import { type TraceColumn, parseTraceColumns, withTraceColumns } from "./traceColumns";
 import {
   Alert,
   Button,
@@ -147,6 +148,17 @@ export const TracesComponent: React.FC = () => {
   const filters = useMemo(() => parseTraceFilters(searchParams), [searchParams]);
   const hasActiveFilters = Object.keys(filters).length > 0;
 
+  const chosenColumns = useMemo(() => parseTraceColumns(searchParams), [searchParams]);
+  // A model filter keeps the Model column on so the matched value shows.
+  const visibleColumns = useMemo<TraceColumn[]>(
+    () => (filters.model && !chosenColumns.includes("model")
+      ? [...chosenColumns, "model"]
+      : chosenColumns),
+    [chosenColumns, filters.model],
+  );
+  // Models cost the server one upstream call per trace, so ask only while the column shows.
+  const includeModels = visibleColumns.includes("model");
+
   const {
     data: traceData,
     isLoading,
@@ -157,6 +169,8 @@ export const TracesComponent: React.FC = () => {
     isLoadingOlder,
     isLoadingNewer,
     hasOlder,
+    truncated,
+    lookedBackTo,
   } = useTraceList(
     organization,
     projectId,
@@ -167,7 +181,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     customStartTime,
     customEndTime,
-    { filters },
+    { filters, includeModels },
   );
 
   // Resolved time range used by the TraceDetails drawer.
@@ -220,6 +234,16 @@ export const TracesComponent: React.FC = () => {
       setSearchParams(next);
     },
     [searchParams, setSearchParams, filters, selectedTrace, traceData],
+  );
+
+  const handleConversationSelect = useCallback(
+    (conversationId: string) => handleFiltersChange({ ...filters, conversationId }),
+    [handleFiltersChange, filters],
+  );
+
+  const handleColumnsChange = useCallback(
+    (columns: TraceColumn[]) => setSearchParams(withTraceColumns(searchParams, columns)),
+    [searchParams, setSearchParams],
   );
 
   // After a filter change, close the drawer only if its trace left the list.
@@ -405,6 +429,15 @@ export const TracesComponent: React.FC = () => {
               )}
             </IconButton>
 
+            {/* Toggles the URL choice; a locked column shows checked without being saved. */}
+            <TraceColumnsMenu
+              visibleColumns={chosenColumns}
+              lockedColumns={
+                filters.model ? { model: "Shown while filtering by model" } : undefined
+              }
+              onChange={handleColumnsChange}
+            />
+
             {/* Refresh Button */}
             <IconButton
               size="small"
@@ -453,9 +486,13 @@ export const TracesComponent: React.FC = () => {
           isLoadingNewer={isLoadingNewer}
           hasOlder={hasOlder}
           hasActiveFilters={hasActiveFilters}
+          truncated={truncated}
+          lookedBackTo={lookedBackTo}
+          visibleColumns={visibleColumns}
           onTraceSelect={handleTraceSelect}
           onLoadOlder={loadOlder}
           onLoadNewer={loadNewer}
+          onConversationSelect={handleConversationSelect}
         />
         <DrawerWrapper
           open={!!selectedTrace}

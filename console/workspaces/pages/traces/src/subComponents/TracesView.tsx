@@ -18,6 +18,8 @@
 
 import React from "react";
 import type { TraceOverview } from "@agent-management-platform/types";
+import { Alert } from "@wso2/oxygen-ui";
+import type { TraceColumn } from "../traceColumns";
 import { TracesTable } from "./TracesTable";
 
 export interface TracesViewProps {
@@ -30,11 +32,16 @@ export interface TracesViewProps {
   isLoadingNewer?: boolean;
   hasOlder?: boolean;
   hasActiveFilters?: boolean;
+  // The server stopped early: the examine cap with hasOlder, the cursor depth cap without.
+  truncated?: boolean;
+  lookedBackTo?: string;
+  visibleColumns?: TraceColumn[];
 
   // Handlers
   onTraceSelect: (traceId: string) => void;
   onLoadOlder?: () => void;
   onLoadNewer?: () => void;
+  onConversationSelect?: (conversationId: string) => void;
 }
 
 export const TracesView: React.FC<TracesViewProps> = ({
@@ -46,23 +53,39 @@ export const TracesView: React.FC<TracesViewProps> = ({
   isLoadingNewer = false,
   hasOlder = false,
   hasActiveFilters = false,
+  truncated = false,
+  lookedBackTo,
+  visibleColumns,
   onTraceSelect,
   onLoadOlder,
   onLoadNewer,
+  onConversationSelect,
 }) => {
   return (
-    <TracesTable
-      isLoading={isLoading}
-      sortOrder={sortOrder}
-      traces={traces}
-      onTraceSelect={onTraceSelect}
-      selectedTrace={selectedTrace}
-      isLoadingOlder={isLoadingOlder}
-      isLoadingNewer={isLoadingNewer}
-      hasOlder={hasOlder}
-      hasActiveFilters={hasActiveFilters}
-      onLoadOlder={onLoadOlder}
-      onLoadNewer={onLoadNewer}
-    />
+    <>
+      {truncated && !isLoading && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {hasOlder
+            ? "Showing matches from the first 500 traces examined. Narrow the time range to see more."
+            : "The list stops here: older traces are more than 5,000 traces into this time range. Narrow the time range to see more."}
+        </Alert>
+      )}
+      <TracesTable
+        isLoading={isLoading}
+        sortOrder={sortOrder}
+        traces={traces}
+        onTraceSelect={onTraceSelect}
+        selectedTrace={selectedTrace}
+        isLoadingOlder={isLoadingOlder}
+        isLoadingNewer={isLoadingNewer}
+        hasOlder={hasOlder}
+        hasActiveFilters={hasActiveFilters}
+        visibleColumns={visibleColumns}
+        lookedBackTo={lookedBackTo}
+        onLoadOlder={onLoadOlder}
+        onLoadNewer={onLoadNewer}
+        onConversationSelect={onConversationSelect}
+      />
+    </>
   );
 };

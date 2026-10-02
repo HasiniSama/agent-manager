@@ -52,10 +52,15 @@ vi.mock("@agent-management-platform/shared-component", () => ({
 import { useTraceList } from "@agent-management-platform/api-client";
 import { TracesComponent } from "./Traces.Component";
 import { parseTraceFilters, traceFilterChips } from "./traceFilters";
+import { parseTraceColumns } from "./traceColumns";
 
 const mockUseTraceList = vi.mocked(useTraceList);
 
-const makeTrace = (traceId: string, errorCount = 0): TraceOverview => ({
+const makeTrace = (
+  traceId: string,
+  errorCount = 0,
+  extra: Partial<TraceOverview> = {},
+): TraceOverview => ({
   traceId,
   rootSpanId: `${traceId}-root`,
   rootSpanName: `root ${traceId}`,
@@ -65,10 +70,14 @@ const makeTrace = (traceId: string, errorCount = 0): TraceOverview => ({
   durationInNanos: 5_000_000_000,
   spanCount: 12,
   status: { errorCount },
+  ...extra,
 } as TraceOverview);
 
 // The filtered list keeps only t-err; the unfiltered list holds both.
-const ALL = [makeTrace("t-err", 1), makeTrace("t-ok")];
+const ALL = [
+  makeTrace("t-err", 1, { conversationId: "conv-1", models: ["gpt-4o", "gpt-4o-mini", "o3"] }),
+  makeTrace("t-ok", 0, { models: ["claude-sonnet-5"] }),
+];
 const listCache = new Map<string, unknown>();
 const listFor = (filters: TraceFilters = {}) => {
   const key = JSON.stringify(filters);
@@ -84,6 +93,10 @@ const listFor = (filters: TraceFilters = {}) => {
 };
 
 const lastFilters = () => mockUseTraceList.mock.lastCall?.[9]?.filters;
+const lastIncludeModels = () => mockUseTraceList.mock.lastCall?.[9]?.includeModels;
+
+// Hook fields a test can override, such as truncated or hasOlder.
+let hookOverrides: Record<string, unknown> = {};
 
 function SearchProbe() {
   return <div data-testid="search">{useLocation().search}</div>;
@@ -142,6 +155,7 @@ describe("TracesComponent filters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listCache.clear();
+    hookOverrides = {};
     mockUseTraceList.mockImplementation((...args) => ({
       data: listFor(args[9]?.filters),
       isLoading: false,
@@ -152,6 +166,9 @@ describe("TracesComponent filters", () => {
       isLoadingOlder: false,
       isLoadingNewer: false,
       hasOlder: false,
+      truncated: false,
+      lookedBackTo: undefined,
+      ...hookOverrides,
     }) as unknown as ReturnType<typeof useTraceList>);
   });
 
@@ -228,5 +245,123 @@ describe("TracesComponent filters", () => {
     pickOption("Status", "Error");
     expect(currentParams().get("status")).toBe("error");
     expect(currentParams().get("selectedTrace")).toBeNull();
+  });
+});
+
+describe("trace column URL parsing", () => {
+  it("defaults to Conversation, keeps known columns in order, and reads empty as none", () => {
+    expect(parseTraceColumns(new URLSearchParams(""))).toEqual(["conversation"]);
+    expect(parseTraceColumns(new URLSearchParams("columns=model,bogus,conversation"))).toEqual([
+      "conversation",
+      "model",
+    ]);
+    expect(parseTraceColumns(new URLSearchParams("columns="))).toEqual([]);
+  });
+});
+
+describe("TracesComponent columns and cap notice", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listCache.clear();
+    hookOverrides = {};
+  });
+
+  const columnHeader = (name: string) =>
+    screen.queryByRole("columnheader", { name, hidden: true });
+  const openColumnsMenu = () => fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+
+  it("hides the Model column by default and doesn't ask for models", () => {
+    renderPage("?timeRange=1h");
+
+    expect(columnHeader("Conversation")).toBeInTheDocument();
+    expect(columnHeader("Model")).not.toBeInTheDocument();
+    expect(lastIncludeModels()).toBe(false);
+    expect(currentParams().get("columns")).toBeNull();
+  });
+
+  it("asks for models and writes the columns param when Model is turned on", () => {
+    renderPage("?timeRange=1h");
+
+    openColumnsMenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Model" }));
+
+    expect(currentParams().get("columns")).toBe("conversation,model");
+    expect(currentParams().get("timeRange")).toBe("1h");
+    expect(lastIncludeModels()).toBe(true);
+    expect(columnHeader("Model")).toBeInTheDocument();
+    // Two or more models: the first plus a +N badge.
+    expect(screen.getByText("gpt-4o")).toBeInTheDocument();
+    expect(screen.getByText("+2")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet-5")).toBeInTheDocument();
+  });
+
+  it("reproduces the columns from a pasted URL", () => {
+    renderPage("?columns=model");
+
+    expect(columnHeader("Model")).toBeInTheDocument();
+    expect(columnHeader("Conversation")).not.toBeInTheDocument();
+    expect(lastIncludeModels()).toBe(true);
+  });
+
+  it("forces the Model column on while a model filter is active", () => {
+    renderPage("?columns=conversation&model=gpt-4o");
+
+    expect(columnHeader("Model")).toBeInTheDocument();
+    expect(lastIncludeModels()).toBe(true);
+    openColumnsMenu();
+    const model = screen.getByRole("menuitemcheckbox", { name: /Model/ });
+    expect(model).toHaveAttribute("aria-disabled", "true");
+    expect(model).toHaveAttribute("aria-checked", "true");
+
+    // Toggling another column doesn't save the forced one.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Conversation" }));
+    expect(currentParams().get("columns")).toBe("");
+  });
+
+  it("sets the conversation filter from the column without opening the trace", () => {
+    renderPage("?timeRange=1h");
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter by conversation conv-1" }));
+
+    expect(currentParams().get("conversationId")).toBe("conv-1");
+    expect(currentParams().get("timeRange")).toBe("1h");
+    expect(currentParams().get("selectedTrace")).toBeNull();
+    expect(lastFilters()).toEqual({ conversationId: "conv-1" });
+  });
+
+  it("shows the examine-cap banner only when the page was truncated", () => {
+    const { unmount } = renderPage();
+    expect(screen.queryByText(/first 500 traces examined/)).not.toBeInTheDocument();
+    unmount();
+
+    hookOverrides = { truncated: true, hasOlder: true };
+    renderPage("?status=error");
+    expect(
+      screen.getByText(
+        "Showing matches from the first 500 traces examined. Narrow the time range to see more.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says the list stops here when truncated without an older page", () => {
+    hookOverrides = { truncated: true, hasOlder: false };
+    renderPage("?status=error");
+
+    expect(screen.queryByText(/first 500 traces examined/)).not.toBeInTheDocument();
+    expect(screen.getByText(/The list stops here/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load Older Traces" })).not.toBeInTheDocument();
+  });
+
+  it("shows how far a filtered list looked back, next to Load older", () => {
+    hookOverrides = { hasOlder: true, lookedBackTo: "2026-10-01T08:14:00Z" };
+    const { unmount } = renderPage();
+    expect(screen.getByRole("button", { name: "Load Older Traces" })).toBeInTheDocument();
+    expect(screen.queryByText(/Looked back to/)).not.toBeInTheDocument();
+    unmount();
+
+    renderPage("?status=error");
+    expect(
+      screen.getByText(/^Looked back to \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+    ).toBeInTheDocument();
   });
 });

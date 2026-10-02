@@ -84,7 +84,9 @@ func TestMatchesFilters(t *testing.T) {
 		{name: "minSpanCount above count rejects", overview: filterOverview(), filters: TraceFilters{MinSpanCount: ptr(13)}, want: false},
 
 		{name: "model matches any entry", overview: filterOverview(), filters: TraceFilters{Model: "gpt-4o-mini"}, want: true},
-		{name: "model is exact, not prefix", overview: filterOverview(), filters: TraceFilters{Model: "gpt-4"}, want: false},
+		{name: "model matches a substring", overview: filterOverview(), filters: TraceFilters{Model: "4o-mi"}, want: true},
+		{name: "model ignores case", overview: filterOverview(), filters: TraceFilters{Model: "GPT-4O"}, want: true},
+		{name: "model rejects a non-substring", overview: filterOverview(), filters: TraceFilters{Model: "claude"}, want: false},
 		{name: "model rejects nil models", overview: noModels, filters: TraceFilters{Model: "gpt-4o"}, want: false},
 
 		{name: "conversationId exact match", overview: filterOverview(), filters: TraceFilters{ConversationID: "conv-1"}, want: true},

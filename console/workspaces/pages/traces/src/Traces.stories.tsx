@@ -22,6 +22,7 @@ import type { TraceFilters, TraceOverview } from '@agent-management-platform/typ
 // Direct file imports: the subComponents index pulls in api-client via TraceDetails.
 import { TraceFilterBar } from './subComponents/TraceFilterBar';
 import { TracesView } from './subComponents/TracesView';
+import type { TraceColumn } from './traceColumns';
 
 const sampleTraces = [
   {
@@ -34,6 +35,8 @@ const sampleTraces = [
     spanCount: 24,
     status: { errorCount: 2 },
     tokenUsage: { inputTokens: 3100, outputTokens: 1020, totalTokens: 4120 },
+    conversationId: 'conv-7f3a9c2e-41d8-4b6f-9a0e-5c2d1e8b7f60',
+    models: ['gpt-4o', 'gpt-4o-mini'],
   },
   {
     traceId: 'trace-2',
@@ -45,6 +48,8 @@ const sampleTraces = [
     spanCount: 21,
     status: { errorCount: 1 },
     tokenUsage: { inputTokens: 2100, outputTokens: 800, totalTokens: 2900 },
+    conversationId: 'conv-7f3a9c2e-41d8-4b6f-9a0e-5c2d1e8b7f60',
+    models: ['gpt-4o'],
   },
 ] as TraceOverview[];
 
@@ -52,10 +57,20 @@ interface FilteredTracesProps {
   initialFilters: TraceFilters;
   traces: TraceOverview[];
   hasOlder?: boolean;
+  truncated?: boolean;
+  lookedBackTo?: string;
+  visibleColumns?: TraceColumn[];
 }
 
 // The filter bar over the list, with filters held in local state instead of the URL.
-function FilteredTraces({ initialFilters, traces, hasOlder }: FilteredTracesProps) {
+function FilteredTraces({
+  initialFilters,
+  traces,
+  hasOlder,
+  truncated,
+  lookedBackTo,
+  visibleColumns,
+}: FilteredTracesProps) {
   const [filters, setFilters] = useState(initialFilters);
   return (
     <>
@@ -65,9 +80,13 @@ function FilteredTraces({ initialFilters, traces, hasOlder }: FilteredTracesProp
         selectedTrace={null}
         hasOlder={hasOlder}
         hasActiveFilters={Object.keys(filters).length > 0}
+        truncated={truncated}
+        lookedBackTo={lookedBackTo}
+        visibleColumns={visibleColumns}
         onTraceSelect={() => undefined}
         onLoadOlder={() => undefined}
         onLoadNewer={() => undefined}
+        onConversationSelect={(conversationId) => setFilters({ ...filters, conversationId })}
       />
     </>
   );
@@ -109,5 +128,16 @@ export const EmptyFilteredPageWithOlder: Story = {
     initialFilters: { status: 'error', minSpanCount: 50 },
     traces: [],
     hasOlder: true,
+  },
+};
+
+export const ModelColumnAndCapNotice: Story = {
+  args: {
+    initialFilters: { status: 'error' },
+    traces: sampleTraces,
+    visibleColumns: ['conversation', 'model'],
+    hasOlder: true,
+    truncated: true,
+    lookedBackTo: '2026-10-01T08:14:00Z',
   },
 };

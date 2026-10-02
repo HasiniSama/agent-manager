@@ -19,6 +19,7 @@ package controllers
 import (
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/observer"
@@ -92,13 +93,19 @@ func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
 	if f.MinTokens != nil && (overview.TokenUsage == nil || int64(overview.TokenUsage.TotalTokens) < *f.MinTokens) {
 		return false
 	}
-	if f.Model != "" && !slices.Contains(overview.Models, f.Model) {
+	if f.Model != "" && !slices.ContainsFunc(overview.Models, containsFold(f.Model)) {
 		return false
 	}
 	if f.ConversationID != "" && overview.ConversationID != f.ConversationID {
 		return false
 	}
 	return true
+}
+
+// containsFold reports whether a model name contains sub, ignoring case.
+func containsFold(sub string) func(string) bool {
+	sub = strings.ToLower(sub)
+	return func(model string) bool { return strings.Contains(strings.ToLower(model), sub) }
 }
 
 // matchesSummary checks the filters the trace list alone can answer.
