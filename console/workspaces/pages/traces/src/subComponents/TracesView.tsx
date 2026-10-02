@@ -28,6 +28,8 @@ export interface TracesViewProps {
   selectedTrace: string | null;
   isLoadingOlder?: boolean;
   isLoadingNewer?: boolean;
+  hasOlder?: boolean;
+  hasActiveFilters?: boolean;
 
   // Handlers
   onTraceSelect: (traceId: string) => void;
@@ -42,6 +44,8 @@ export const TracesView: React.FC<TracesViewProps> = ({
   selectedTrace,
   isLoadingOlder = false,
   isLoadingNewer = false,
+  hasOlder = false,
+  hasActiveFilters = false,
   onTraceSelect,
   onLoadOlder,
   onLoadNewer,
@@ -55,6 +59,8 @@ export const TracesView: React.FC<TracesViewProps> = ({
       selectedTrace={selectedTrace}
       isLoadingOlder={isLoadingOlder}
       isLoadingNewer={isLoadingNewer}
+      hasOlder={hasOlder}
+      hasActiveFilters={hasActiveFilters}
       onLoadOlder={onLoadOlder}
       onLoadNewer={onLoadNewer}
     />

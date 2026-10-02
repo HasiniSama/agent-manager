@@ -23,6 +23,7 @@ import {
   DataGrid,
   Button,
   CircularProgress,
+  Stack,
 } from "@wso2/oxygen-ui";
 import { FadeIn, scoreColor } from "@agent-management-platform/views";
 
@@ -47,6 +48,8 @@ interface TracesTableProps {
   isLoading?: boolean;
   isLoadingOlder?: boolean;
   isLoadingNewer?: boolean;
+  hasOlder?: boolean;
+  hasActiveFilters?: boolean;
   onLoadOlder?: () => void;
   onLoadNewer?: () => void;
 }
@@ -62,6 +65,8 @@ export function TracesTable({
   isLoading = false,
   isLoadingOlder = false,
   isLoadingNewer = false,
+  hasOlder = false,
+  hasActiveFilters = false,
   onLoadOlder,
   onLoadNewer,
 }: TracesTableProps) {
@@ -357,8 +362,32 @@ export function TracesTable({
           <ListingTable.EmptyState
             illustration={<Workflow size={64} />}
             title="No traces found!"
-            description="Try changing the time range"
+            description={
+              hasActiveFilters
+                ? "Try changing the filters or the time range"
+                : "Try changing the time range"
+            }
           />
+          {/* A filtered page can be empty while older pages still hold matches. */}
+          {hasOlder && onLoadOlder && (
+            <Stack alignItems="center" sx={{ pb: 2 }}>
+              <Button
+                size="small"
+                variant="text"
+                disabled={isLoadingOlder}
+                onClick={onLoadOlder}
+                startIcon={
+                  isLoadingOlder ? (
+                    <CircularProgress size={16} />
+                  ) : (
+                    <ArrowDown size={16} />
+                  )
+                }
+              >
+                {isLoadingOlder ? "Loading..." : "Load Older Traces"}
+              </Button>
+            </Stack>
+          )}
         </ListingTable.Container>
       )}
     </FadeIn>

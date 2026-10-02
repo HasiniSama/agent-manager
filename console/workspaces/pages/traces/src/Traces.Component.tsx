@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EnvironmentSelector } from "@agent-management-platform/shared-component";
 import {
   DrawerContent,
@@ -29,6 +29,7 @@ import {
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   GetTraceListPathParams,
+  TraceFilters,
   TraceListTimeRange,
   getTimeRange,
 } from "@agent-management-platform/types";
@@ -50,7 +51,8 @@ import {
   ConsoleAction,
   useTrack,
 } from "@agent-management-platform/api-client";
-import { TraceDetails, TracesView } from "./subComponents";
+import { TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
+import { parseTraceFilters, withTraceFilters } from "./traceFilters";
 import {
   Alert,
   Button,
@@ -141,6 +143,10 @@ export const TracesComponent: React.FC = () => {
     const raw = searchParams.get("sortOrder");
     return (raw === "asc" || raw === "desc") ? raw : "desc" as GetTraceListPathParams["sortOrder"];
   }, [searchParams]);
+
+  const filters = useMemo(() => parseTraceFilters(searchParams), [searchParams]);
+  const hasActiveFilters = Object.keys(filters).length > 0;
+
   const {
     data: traceData,
     isLoading,
@@ -150,6 +156,7 @@ export const TracesComponent: React.FC = () => {
     loadNewer,
     isLoadingOlder,
     isLoadingNewer,
+    hasOlder,
   } = useTraceList(
     organization,
     projectId,
@@ -160,6 +167,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     customStartTime,
     customEndTime,
+    { filters },
   );
 
   // Resolved time range used by the TraceDetails drawer.
@@ -200,6 +208,29 @@ export const TracesComponent: React.FC = () => {
     setSearchParams(next);
     setDrawerFullscreen(false);
   }, [searchParams, setSearchParams]);
+
+  // Set on a filter change; holds the list shown before it so the check waits for the new one.
+  const selectionCheckRef = useRef<{ staleData: typeof traceData } | null>(null);
+
+  const handleFiltersChange = useCallback(
+    (nextFilters: TraceFilters) => {
+      const next = withTraceFilters(searchParams, nextFilters);
+      if (JSON.stringify(parseTraceFilters(next)) === JSON.stringify(filters)) return;
+      selectionCheckRef.current = selectedTrace ? { staleData: traceData } : null;
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams, filters, selectedTrace, traceData],
+  );
+
+  // After a filter change, close the drawer only if its trace left the list.
+  useEffect(() => {
+    const pending = selectionCheckRef.current;
+    if (!pending || isLoading || !traceData || traceData === pending.staleData) return;
+    selectionCheckRef.current = null;
+    if (selectedTrace && !traceData.traces.some((t) => t.traceId === selectedTrace)) {
+      handleCloseDrawer();
+    }
+  }, [traceData, isLoading, selectedTrace, handleCloseDrawer]);
 
   const handleExportTraces = useCallback(async () => {
     if (!organization || !projectId || !agentId || !environmentName) {
@@ -412,6 +443,7 @@ export const TracesComponent: React.FC = () => {
           </Stack>
         }
       >
+        <TraceFilterBar filters={filters} onChange={handleFiltersChange} />
         <TracesView
           traces={traceData?.traces ?? []}
           isLoading={prereqsPending || isLoading}
@@ -419,6 +451,8 @@ export const TracesComponent: React.FC = () => {
           sortOrder={sortOrder}
           isLoadingOlder={isLoadingOlder}
           isLoadingNewer={isLoadingNewer}
+          hasOlder={hasOlder}
+          hasActiveFilters={hasActiveFilters}
           onTraceSelect={handleTraceSelect}
           onLoadOlder={loadOlder}
           onLoadNewer={loadNewer}

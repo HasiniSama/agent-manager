@@ -16,116 +16,98 @@
  * under the License.
  */
 
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
-import { 
-  TracesComponent,
-  TracesProject,
-  TracesOrganization,
-} from './index';
+import type { TraceFilters, TraceOverview } from '@agent-management-platform/types';
+// Direct file imports: the subComponents index pulls in api-client via TraceDetails.
+import { TraceFilterBar } from './subComponents/TraceFilterBar';
+import { TracesView } from './subComponents/TracesView';
 
-// Component Level Stories
-const metaComponent: Meta<typeof TracesComponent> = {
-  title: 'Pages/Traces/Component',
-  component: TracesComponent,
+const sampleTraces = [
+  {
+    traceId: 'trace-1',
+    rootSpanName: 'invoke_agent',
+    input: 'What is the weather in Colombo?',
+    output: 'Error: upstream timeout',
+    startTime: '2026-10-01T10:42:00Z',
+    durationInNanos: 7_200_000_000,
+    spanCount: 24,
+    status: { errorCount: 2 },
+    tokenUsage: { inputTokens: 3100, outputTokens: 1020, totalTokens: 4120 },
+  },
+  {
+    traceId: 'trace-2',
+    rootSpanName: 'invoke_agent',
+    input: 'Search the web for agent tracing',
+    output: 'Error: tool call failed',
+    startTime: '2026-10-01T10:31:00Z',
+    durationInNanos: 5_800_000_000,
+    spanCount: 21,
+    status: { errorCount: 1 },
+    tokenUsage: { inputTokens: 2100, outputTokens: 800, totalTokens: 2900 },
+  },
+] as TraceOverview[];
+
+interface FilteredTracesProps {
+  initialFilters: TraceFilters;
+  traces: TraceOverview[];
+  hasOlder?: boolean;
+}
+
+// The filter bar over the list, with filters held in local state instead of the URL.
+function FilteredTraces({ initialFilters, traces, hasOlder }: FilteredTracesProps) {
+  const [filters, setFilters] = useState(initialFilters);
+  return (
+    <>
+      <TraceFilterBar filters={filters} onChange={setFilters} />
+      <TracesView
+        traces={traces}
+        selectedTrace={null}
+        hasOlder={hasOlder}
+        hasActiveFilters={Object.keys(filters).length > 0}
+        onTraceSelect={() => undefined}
+        onLoadOlder={() => undefined}
+        onLoadNewer={() => undefined}
+      />
+    </>
+  );
+}
+
+const meta: Meta<typeof FilteredTraces> = {
+  title: 'Pages/Traces/Filters',
+  component: FilteredTraces,
   parameters: {
-    layout: 'fullscreen',
-  },
-  tags: ['autodocs'],
-  argTypes: {
-    title: {
-      control: 'text',
-      description: 'The title of the page',
-    },
-    description: {
-      control: 'text',
-      description: 'The description of the page',
-    },
+    layout: 'padded',
   },
 };
 
-export default metaComponent;
-type StoryComponent = StoryObj<typeof metaComponent>;
+export default meta;
+type Story = StoryObj<typeof meta>;
 
-export const ComponentDefault: StoryComponent = {
+export const NoFilters: Story = {
   args: {
-    title: 'Traces - Component Level',
-    description: 'A page component for Traces',
+    initialFilters: {},
+    traces: sampleTraces,
   },
 };
 
-export const ComponentCustom: StoryComponent = {
+export const SeveralActiveFilters: Story = {
   args: {
-    title: 'Custom Component Title',
-    description: 'This is a custom description for the component level page.',
-  },
-};
-
-// Project Level Stories
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const metaProject: Meta<typeof TracesProject> = {
-  title: 'Pages/Traces/Project',
-  component: TracesProject,
-  parameters: {
-    layout: 'fullscreen',
-  },
-  tags: ['autodocs'],
-  argTypes: {
-    title: {
-      control: 'text',
-      description: 'The title of the page',
+    initialFilters: {
+      status: 'error',
+      minDurationMs: 5000,
+      minTokens: 1000,
+      model: 'gpt-4o',
+      conversationId: 'conv-7f3a',
     },
-    description: {
-      control: 'text',
-      description: 'The description of the page',
-    },
+    traces: sampleTraces,
   },
 };
 
-export const ProjectDefault: StoryObj<typeof metaProject> = {
+export const EmptyFilteredPageWithOlder: Story = {
   args: {
-    title: 'Traces - Project Level',
-    description: 'A page component for Traces',
-  },
-};
-
-export const ProjectCustom: StoryObj<typeof metaProject> = {
-  args: {
-    title: 'Custom Project Title',
-    description: 'This is a custom description for the project level page.',
-  },
-};
-
-// Organization Level Stories
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const metaOrganization: Meta<typeof TracesOrganization> = {
-  title: 'Pages/Traces/Organization',
-  component: TracesOrganization,
-  parameters: {
-    layout: 'fullscreen',
-  },
-  tags: ['autodocs'],
-  argTypes: {
-    title: {
-      control: 'text',
-      description: 'The title of the page',
-    },
-    description: {
-      control: 'text',
-      description: 'The description of the page',
-    },
-  },
-};
-
-export const OrganizationDefault: StoryObj<typeof metaOrganization> = {
-  args: {
-    title: 'Traces - Organization Level',
-    description: 'A page component for Traces',
-  },
-};
-
-export const OrganizationCustom: StoryObj<typeof metaOrganization> = {
-  args: {
-    title: 'Custom Organization Title',
-    description: 'This is a custom description for the organization level page.',
+    initialFilters: { status: 'error', minSpanCount: 50 },
+    traces: [],
+    hasOlder: true,
   },
 };
