@@ -66,6 +66,8 @@ type TracingController struct {
 	observerClient observer.Client
 	// enrichAll turns off early filter rejection; tests compare against it.
 	enrichAll bool
+	// perSpanDetails turns off reusing the span list's inline attributes; tests compare against it.
+	perSpanDetails bool
 }
 
 // NewTracingController creates a new tracing controller.
@@ -369,7 +371,8 @@ func formatCursor(t time.Time) string {
 // enrichTraces fetches root spans and enriches traces in parallel, returning
 // overviews in input order. Traces whose root fetch fails are skipped, and so
 // are traces whose root fails matchesRootFilters or whose models fail the model
-// filter, before the rest of the cascade.
+// filter, before the rest of the cascade. When listSpansFirst holds, the root
+// comes from the trace's attribute span list instead of its own fetch.
 func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) []opensearch.TraceOverview {
 	log := logger.GetLogger(ctx)
 
@@ -406,28 +409,36 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 			outerSem <- struct{}{}
 			defer func() { <-outerSem }()
 
-			innerSem <- struct{}{}
-			details, err := c.observerClient.GetSpanDetails(ctx, t.TraceID, t.RootSpanID)
-			<-innerSem
-			if err != nil {
-				results[idx] = result{err: err}
-				return
+			var spans []observer.SpanInfo
+			var root *opensearch.Span
+			if c.listSpansFirst(params, t) {
+				spans, root = c.rootFromSpanList(ctx, params, t, innerSem)
 			}
-			enriched := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(t.TraceID, details))
+			if root == nil {
+				innerSem <- struct{}{}
+				details, err := c.observerClient.GetSpanDetails(ctx, t.TraceID, t.RootSpanID)
+				<-innerSem
+				if err != nil {
+					results[idx] = result{err: err}
+					return
+				}
+				enriched := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(t.TraceID, details))
+				root = &enriched
+			}
 			// Status is root-only by design.
-			status := opensearch.ExtractTraceStatus([]opensearch.Span{enriched})
-			conversationID := opensearch.ExtractConversationID(&enriched)
+			status := opensearch.ExtractTraceStatus([]opensearch.Span{*root})
+			conversationID := opensearch.ExtractConversationID(root)
 			if !c.enrichAll && !matchesRootFilters(status, conversationID, params.Filters) {
 				results[idx] = result{rejected: true}
 				return
 			}
-			input, output, tokens, models, rejected := c.enrichTraceOverview(ctx, params, t, &enriched, innerSem)
+			input, output, tokens, models, rejected := c.enrichTraceOverview(ctx, params, t, root, spans, innerSem)
 			if rejected {
 				results[idx] = result{rejected: true}
 				return
 			}
 			results[idx] = result{
-				span:           &enriched,
+				span:           root,
 				input:          input,
 				output:         output,
 				tokenUsage:     tokens,
@@ -472,6 +483,39 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 	return overviews
 }
 
+// listSpansFirst reports whether t's span list is fetched with attributes
+// whatever the root holds, so it can supply the root. Root filters keep the
+// root fetch first, so a trace they reject never downloads its list.
+func (c *TracingController) listSpansFirst(params TraceQueryParams, t observer.TraceInfo) bool {
+	return !c.perSpanDetails && params.Include.Models &&
+		t.SpanCount <= skipLeafAggregationSpanCountThreshold &&
+		params.Filters.Status == TraceStatusAny && params.Filters.ConversationID == ""
+}
+
+// rootFromSpanList fetches t's attribute span list and builds the root from it.
+// root is nil when the root isn't in the list; spans is nil when the fetch fails.
+func (c *TracingController) rootFromSpanList(
+	ctx context.Context,
+	params TraceQueryParams,
+	t observer.TraceInfo,
+	fetchSem chan struct{},
+) (spans []observer.SpanInfo, root *opensearch.Span) {
+	spans, ok := c.fetchTraceSpanSummaries(ctx, params, t, fetchSem, true)
+	if !ok {
+		return nil, nil
+	}
+	if spans == nil {
+		spans = []observer.SpanInfo{}
+	}
+	for _, s := range spans {
+		if s.SpanID == t.RootSpanID {
+			span := opensearch.ProcessSpan(observer.ConvertSpanInfoToSpan(t.TraceID, s))
+			return spans, &span
+		}
+	}
+	return spans, nil
+}
+
 // enrichTraceOverview computes Input/Output/Tokens/Models for one trace-list
 // row, cascading through three sources in order of cost. enrichTraces calls it
 // only for traces whose root passes matchesRootFilters (status and
@@ -486,8 +530,9 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 //     SDK / pure-OTel agents where neither the root nor any chain span
 //     carries the conversation. Bounded: skipped entirely when the trace's
 //     total span count exceeds skipLeafAggregationSpanCountThreshold; up to
-//     maxLLMLeavesPerTrace leaves are fetched in parallel; TokenUsage.Partial
-//     is set true when the cap truncates the aggregation or a leaf fetch fails.
+//     maxLLMLeavesPerTrace leaves are aggregated, fetched in parallel;
+//     TokenUsage.Partial is set true when the cap truncates the aggregation
+//     or a leaf fetch fails.
 //
 // Each step only fills fields the earlier step left nil.
 //
@@ -495,6 +540,10 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 // when params.Include.Models is set (see modelsFromSpanList). With a model
 // filter, rejected is true once the models rule the trace out, before steps 2
 // and 3; traces over the span threshold have no models and are rejected first.
+//
+// When the span list carries attributes, steps 2 and 3 read their spans from
+// it instead of fetching them. spans is the list when the caller already
+// fetched it with attributes, or nil.
 //
 // Token usage from traceloop.entity.output is used only when no step finds a
 // gen_ai.usage.* report.
@@ -507,6 +556,7 @@ func (c *TracingController) enrichTraceOverview(
 	params TraceQueryParams,
 	traceInfo observer.TraceInfo,
 	rootSpan *opensearch.Span,
+	spans []observer.SpanInfo,
 	fetchSem chan struct{},
 ) (input interface{}, output interface{}, tokenUsage *opensearch.TokenUsage, models []string, rejected bool) {
 	// Step 1: root span attributes.
@@ -537,10 +587,15 @@ func (c *TracingController) enrichTraceOverview(
 	}
 
 	// Steps 2 and 3 and inline models all need the span list. Fetch it once.
-	spans, ok := c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, modelsFromList)
-	if !ok {
-		return input, output, cmp.Or(tokenUsage, entityTokens), nil, false
+	if spans == nil {
+		var ok bool
+		spans, ok = c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, modelsFromList)
+		if !ok {
+			return input, output, cmp.Or(tokenUsage, entityTokens), nil, false
+		}
 	}
+	// The list carries attributes exactly when it was fetched for models.
+	inline := modelsFromList && !c.perSpanDetails
 	if modelsFromList {
 		models = modelsFromSpanList(traceInfo.TraceID, spans)
 		if rejectOnModel && !matchesModel(models, params.Filters) {
@@ -550,7 +605,7 @@ func (c *TracingController) enrichTraceOverview(
 
 	// Step 2: immediate child of the root (Traceloop chain span path).
 	if !rootComplete {
-		if childInput, childOutput, childTokens, childEntityTokens, ok := c.tryChildChainSpan(ctx, traceInfo.TraceID, rootSpan.SpanID, spans, fetchSem); ok {
+		if childInput, childOutput, childTokens, childEntityTokens, ok := c.tryChildChainSpan(ctx, traceInfo.TraceID, rootSpan.SpanID, spans, inline, fetchSem); ok {
 			if input == nil {
 				input = childInput
 			}
@@ -575,7 +630,7 @@ func (c *TracingController) enrichTraceOverview(
 				"spanCount", traceInfo.SpanCount,
 				"threshold", skipLeafAggregationSpanCountThreshold)
 		} else {
-			leafInput, leafOutput, leafTokens, leafModels := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, fetchSem)
+			leafInput, leafOutput, leafTokens, leafModels := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, inline, fetchSem)
 			if models == nil {
 				models = leafModels
 			}
@@ -658,7 +713,8 @@ func modelsFromSpanList(traceID string, spans []observer.SpanInfo) []string {
 // an attribute-empty `invoke_agent` root.
 //
 // tokens comes from the span's gen_ai.usage.* attributes; entityTokens from
-// its traceloop.entity.output.
+// its traceloop.entity.output. With inline set, the child comes from spans
+// instead of a fetch.
 //
 // Returns ok=false when no immediate child is found or the fetch fails.
 func (c *TracingController) tryChildChainSpan(
@@ -666,6 +722,7 @@ func (c *TracingController) tryChildChainSpan(
 	traceID string,
 	rootSpanID string,
 	spans []observer.SpanInfo,
+	inline bool,
 	fetchSem chan struct{},
 ) (input interface{}, output interface{}, tokens, entityTokens *opensearch.TokenUsage, ok bool) {
 	log := logger.GetLogger(ctx)
@@ -674,33 +731,37 @@ func (c *TracingController) tryChildChainSpan(
 	// spans. We're looking for a chain/agent wrapper (e.g. LangGraph.workflow)
 	// that summarizes the whole conversation, not a single LLM call — those
 	// belong to step 3's full-trace aggregation, not a per-span lookup.
-	var childID string
-	var childStart time.Time
-	for _, s := range spans {
+	child := -1
+	for i, s := range spans {
 		if s.ParentSpanID != rootSpanID {
 			continue
 		}
 		if opensearch.IsLLMLeafSpan(s.SpanName) {
 			continue
 		}
-		if childID == "" || s.StartTime.Before(childStart) {
-			childID = s.SpanID
-			childStart = s.StartTime
+		if child < 0 || s.StartTime.Before(spans[child].StartTime) {
+			child = i
 		}
 	}
-	if childID == "" {
+	if child < 0 {
 		return nil, nil, nil, nil, false
 	}
 
-	fetchSem <- struct{}{}
-	details, err := c.observerClient.GetSpanDetails(ctx, traceID, childID)
-	<-fetchSem
-	if err != nil {
-		log.Warn("tryChildChainSpan: GetSpanDetails failed",
-			"traceId", traceID, "childSpanId", childID, "err", err)
-		return nil, nil, nil, nil, false
+	var childSpan opensearch.Span
+	if inline {
+		childSpan = opensearch.ProcessSpan(observer.ConvertSpanInfoToSpan(traceID, spans[child]))
+	} else {
+		childID := spans[child].SpanID
+		fetchSem <- struct{}{}
+		details, err := c.observerClient.GetSpanDetails(ctx, traceID, childID)
+		<-fetchSem
+		if err != nil {
+			log.Warn("tryChildChainSpan: GetSpanDetails failed",
+				"traceId", traceID, "childSpanId", childID, "err", err)
+			return nil, nil, nil, nil, false
+		}
+		childSpan = opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(traceID, details))
 	}
-	childSpan := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(traceID, details))
 
 	input, output = opensearch.ExtractRootSpanInputOutput(&childSpan)
 	tokens = opensearch.ExtractTokenUsage([]opensearch.Span{childSpan})
@@ -715,7 +776,9 @@ func (c *TracingController) tryChildChainSpan(
 // pure-OTel agents).
 //
 // Fetches share fetchSem with every other enrichment in flight, so leaf fan-
-// out across many concurrent traces doesn't flood the upstream observer.
+// out across many concurrent traces doesn't flood the upstream observer. With
+// inline set, the leaves come from spans instead and nothing is fetched; the
+// cap still applies, so a row is the same with or without include=models.
 //
 // If the trace has more LLM leaves than the cap, or any leaf fetch fails, the
 // returned TokenUsage has Partial=true so the UI can render an "approximate"
@@ -724,6 +787,7 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 	ctx context.Context,
 	traceID string,
 	spans []observer.SpanInfo,
+	inline bool,
 	fetchSem chan struct{},
 ) (input interface{}, output interface{}, tokens *opensearch.TokenUsage, models []string) {
 	log := logger.GetLogger(ctx)
@@ -745,13 +809,17 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 	if totalLeaves > maxLLMLeavesPerTrace {
 		leaves = leaves[:maxLLMLeavesPerTrace]
 		partial = true
-		log.Debug("aggregateFromLeafLLMSpans: capping leaf fetches",
+		log.Debug("aggregateFromLeafLLMSpans: capping leaves",
 			"traceId", traceID, "totalLeaves", totalLeaves, "cap", maxLLMLeavesPerTrace)
 	}
 
 	fetched := make([]opensearch.Span, len(leaves))
 	var wg sync.WaitGroup
 	for i, leaf := range leaves {
+		if inline {
+			fetched[i] = opensearch.ProcessSpan(observer.ConvertSpanInfoToSpan(traceID, leaf))
+			continue
+		}
 		wg.Add(1)
 		go func(idx int, spanID string) {
 			defer wg.Done()

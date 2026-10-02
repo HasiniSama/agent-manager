@@ -154,8 +154,9 @@ func TestGetTraceOverviews_ModelFilterFetchesModels(t *testing.T) {
 			if !fake.lastSpansReq.IncludeAttributes {
 				t.Error("expected QueryTraceSpans to request IncludeAttributes=true")
 			}
-			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
-				t.Errorf("expected exactly 1 GetSpanDetails call (root only), got %d", got)
+			// The root comes from the attribute list.
+			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+				t.Errorf("expected 0 GetSpanDetails calls, got %d", got)
 			}
 			wantCount := 0
 			if tt.wantMatch {

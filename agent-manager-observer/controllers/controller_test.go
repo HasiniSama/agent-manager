@@ -228,7 +228,7 @@ func TestEnrichTraceOverview_RootHasEntityAndUsageShortCircuits(t *testing.T) {
 	fake := &fakeObserverClient{rootSpan: &observer.SpanDetailsResponse{SpanID: "root"}}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, nil, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from root, got input=%v output=%v", input, output)
@@ -254,7 +254,7 @@ func TestEnrichTraceOverview_RootEntityTokensUsedWhenNoLeaves(t *testing.T) {
 	fake := &fakeObserverClient{rootSpan: &observer.SpanDetailsResponse{SpanID: "root"}}
 	c := NewTracingController(fake)
 
-	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, nil, testFetchSem())
 
 	if tokens == nil || tokens.TotalTokens != 13 {
 		t.Errorf("expected entity.output fallback tokens, got %+v", tokens)
@@ -289,7 +289,7 @@ func TestEnrichTraceOverview_FallsBackToChildChainSpan(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, nil, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from chain child, got input=%v output=%v", input, output)
@@ -336,7 +336,7 @@ func TestEnrichTraceOverview_AggregatesFromLeafLLMSpans(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, nil, testFetchSem())
 
 	if input != "first user msg" {
 		t.Errorf("input = %v, want first user msg", input)
@@ -396,7 +396,7 @@ func TestEnrichTraceOverview_LangGraphSumsLeavesOverEntityOutput(t *testing.T) {
 	fake := &fakeObserverClient{spans: spans, spanDetails: details}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(24), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(24), root, nil, testFetchSem())
 
 	if input == nil || output == nil {
 		t.Errorf("expected input/output from workflow span, got input=%v output=%v", input, output)
@@ -413,7 +413,7 @@ func TestEnrichTraceOverview_AllEmptyReturnsNil(t *testing.T) {
 	fake := &fakeObserverClient{spans: []observer.SpanInfo{}}
 	c := NewTracingController(fake)
 
-	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(1), root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(1), root, nil, testFetchSem())
 
 	if input != nil || output != nil || tokens != nil {
 		t.Errorf("expected all nil, got input=%v output=%v tokens=%+v", input, output, tokens)
@@ -452,7 +452,7 @@ func TestEnrichTraceOverview_LeafCapHonoredAndPartialFlagged(t *testing.T) {
 	// cap (maxLLMLeavesPerTrace) is what should trigger Partial. Using
 	// threshold-1 expresses "below the skip threshold" independently of
 	// whether the guard ever tightens from > to >=.
-	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(skipLeafAggregationSpanCountThreshold-1), root, testFetchSem())
+	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(skipLeafAggregationSpanCountThreshold-1), root, nil, testFetchSem())
 
 	if tokens == nil {
 		t.Fatalf("expected tokens, got nil")
@@ -490,7 +490,7 @@ func TestEnrichTraceOverview_FailedLeafFetchFlagsPartial(t *testing.T) {
 	}
 	c := NewTracingController(fake)
 
-	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, testFetchSem())
+	_, _, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), baseTraceInfo(5), root, nil, testFetchSem())
 
 	if tokens == nil {
 		t.Fatalf("expected tokens, got nil")
@@ -521,7 +521,7 @@ func TestEnrichTraceOverview_SkipsLeafAggregationForHugeTraces(t *testing.T) {
 	c := NewTracingController(fake)
 
 	hugeTrace := baseTraceInfo(skipLeafAggregationSpanCountThreshold + 1)
-	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), hugeTrace, root, testFetchSem())
+	input, output, tokens, _, _ := c.enrichTraceOverview(context.Background(), baseParams(), hugeTrace, root, nil, testFetchSem())
 
 	if input != nil || output != nil || tokens != nil {
 		t.Errorf("expected nil for huge trace, got input=%v output=%v tokens=%+v", input, output, tokens)
@@ -589,11 +589,12 @@ func TestExportTraces_UsesBulkAttributes(t *testing.T) {
 	}
 }
 
-// overviewFake scripts one trace for GetTraceOverviews tests.
+// overviewFake scripts one trace for GetTraceOverviews tests. Its span list
+// ends with the root, as upstream's does.
 func overviewFake(rootAttrs map[string]interface{}, spans []observer.SpanInfo, details map[string]*observer.SpanDetailsResponse) *fakeObserverClient {
-	info := baseTraceInfo(len(spans) + 1)
+	spans = append(spans, observer.SpanInfo{SpanID: "root", SpanName: "invoke_agent LangGraph", Attributes: rootAttrs})
 	return &fakeObserverClient{
-		traces:      []observer.TraceInfo{info},
+		traces:      []observer.TraceInfo{baseTraceInfo(len(spans))},
 		rootSpan:    &observer.SpanDetailsResponse{SpanID: "root", SpanName: "invoke_agent LangGraph", Attributes: rootAttrs},
 		spans:       spans,
 		spanDetails: details,
@@ -688,7 +689,8 @@ func TestGetTraceOverviews_ModelsFromLeafLLMSpans(t *testing.T) {
 	}
 }
 
-// Chain span fills step 2; Include.Models adds Models from the span list without extra fetches.
+// Chain span fills step 2; Include.Models adds Models from the span list and
+// takes the root and chain span from it too.
 func TestGetTraceOverviews_ChainSpanShortCircuit_IncludeModels(t *testing.T) {
 	for _, includeModels := range []bool{true, false} {
 		t.Run(fmt.Sprintf("include.models=%t", includeModels), func(t *testing.T) {
@@ -713,10 +715,14 @@ func TestGetTraceOverviews_ChainSpanShortCircuit_IncludeModels(t *testing.T) {
 			if ov.Output != "chain out" {
 				t.Errorf("output = %v, want the chain span's output", ov.Output)
 			}
-			// root + chain, with or without the flag: models never cost a
-			// leaf fetch.
-			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 2 {
-				t.Errorf("expected 2 GetSpanDetails calls (root + chain), got %d", got)
+			// root + chain without the flag; with it, 0: both come from the
+			// attribute list.
+			wantDetails := int32(2)
+			if includeModels {
+				wantDetails = 0
+			}
+			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != wantDetails {
+				t.Errorf("expected %d GetSpanDetails calls, got %d", wantDetails, got)
 			}
 			if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
 				t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)
@@ -775,7 +781,8 @@ func completeRootAttrs() map[string]interface{} {
 	}
 }
 
-// Root-complete trace: Include.Models adds exactly one span-list call and nothing else.
+// Root-complete trace: one call either way. Without Include.Models it is the
+// root fetch; with it, the span list, which also supplies the root.
 func TestGetTraceOverviews_RootComplete_IncludeModels(t *testing.T) {
 	for _, includeModels := range []bool{true, false} {
 		t.Run(fmt.Sprintf("include.models=%t", includeModels), func(t *testing.T) {
@@ -810,12 +817,12 @@ func TestGetTraceOverviews_RootComplete_IncludeModels(t *testing.T) {
 			if ov.Input == nil || ov.Output == nil {
 				t.Errorf("input/output = %v/%v, want the root's values", ov.Input, ov.Output)
 			}
-			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
-				t.Errorf("expected exactly 1 GetSpanDetails call (root only), got %d", got)
-			}
-			wantLists := int32(0)
+			wantDetails, wantLists := int32(1), int32(0)
 			if includeModels {
-				wantLists = 1
+				wantDetails, wantLists = 0, 1
+			}
+			if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != wantDetails {
+				t.Errorf("expected %d GetSpanDetails calls, got %d", wantDetails, got)
 			}
 			if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != wantLists {
 				t.Errorf("expected %d QueryTraceSpans calls, got %d", wantLists, got)
@@ -841,7 +848,7 @@ func TestEnrichTraceOverview_IncludeModelsFetchesNoSpanDetails(t *testing.T) {
 	params := baseParams()
 	params.Include.Models = true
 
-	_, _, _, models, _ := c.enrichTraceOverview(context.Background(), params, baseTraceInfo(2), root, testFetchSem())
+	_, _, _, models, _ := c.enrichTraceOverview(context.Background(), params, baseTraceInfo(2), root, nil, testFetchSem())
 
 	assertModels(t, models, []string{"gpt-4o"})
 	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
@@ -853,7 +860,7 @@ func TestEnrichTraceOverview_IncludeModelsFetchesNoSpanDetails(t *testing.T) {
 }
 
 // Models read from the span list are not subject to maxLLMLeavesPerTrace:
-// every leaf's model is reported, still with only the root fetched.
+// every leaf's model is reported from the one span-list call.
 func TestGetTraceOverviews_IncludeModelsNotCappedAtLeafLimit(t *testing.T) {
 	const totalLeaves = maxLLMLeavesPerTrace + 5
 	start := time.Now().Add(-1 * time.Hour)
@@ -876,8 +883,8 @@ func TestGetTraceOverviews_IncludeModelsNotCappedAtLeafLimit(t *testing.T) {
 	ov := singleOverview(t, c, params)
 
 	assertModels(t, ov.Models, want)
-	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
-		t.Errorf("expected exactly 1 GetSpanDetails call (root only), got %d", got)
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("expected 0 GetSpanDetails calls, got %d", got)
 	}
 	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
 		t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)
@@ -914,7 +921,7 @@ func TestGetTraceOverviews_IncludeModelsSkipsHugeTraces(t *testing.T) {
 }
 
 // No LLM spans with Include.Models: Models is nil, ConversationID still comes
-// from the root, and only the span list is fetched beyond the root.
+// from the root, and the span list, which supplies the root, is the only call.
 func TestGetTraceOverviews_NoLLMSpansLeavesModelsEmpty(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
 	fake := overviewFake(
@@ -948,8 +955,8 @@ func TestGetTraceOverviews_NoLLMSpansLeavesModelsEmpty(t *testing.T) {
 	if ov.TokenUsage == nil || ov.TokenUsage.TotalTokens != 13 {
 		t.Errorf("tokenUsage = %+v, want root's 13", ov.TokenUsage)
 	}
-	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 1 {
-		t.Errorf("expected only the root GetSpanDetails call, got %d", got)
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("expected 0 GetSpanDetails calls, got %d", got)
 	}
 	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 1 {
 		t.Errorf("expected exactly 1 QueryTraceSpans call, got %d", got)

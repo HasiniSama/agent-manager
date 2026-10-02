@@ -34,7 +34,8 @@ import (
 // first, like lookBackFake. Each has an empty root, a chain span with input
 // and output, and two LLM leaves carrying tokens (12 + i%40) and the model
 // (gpt-4o-mini for even i, claude-sonnet-4-5 for odd). The full cascade is 5
-// calls: root, span list, chain, two leaves. rootAttrs adds root attributes.
+// calls: root, span list, chain, two leaves. The span list ends with the root,
+// as upstream's does. rootAttrs adds root attributes.
 func langGraphFake(n int, rootAttrs func(i int) map[string]interface{}) *fakeObserverClient {
 	fake := &fakeObserverClient{
 		windowed:     true,
@@ -75,10 +76,8 @@ func langGraphFake(n int, rootAttrs func(i int) map[string]interface{}) *fakeObs
 					"gen_ai.usage.output_tokens": float64(1),
 				}},
 		}
+		spans = append(spans, observer.SpanInfo{SpanID: info.RootSpanID, SpanName: "invoke_agent LangGraph", Attributes: root})
 		fake.spansByTrace[info.TraceID] = spans
-		fake.spanDetails[info.RootSpanID] = &observer.SpanDetailsResponse{
-			SpanID: info.RootSpanID, SpanName: "invoke_agent LangGraph", Attributes: root,
-		}
 		for _, s := range spans {
 			fake.spanDetails[s.SpanID] = &observer.SpanDetailsResponse{
 				SpanID: s.SpanID, SpanName: s.SpanName, ParentSpanID: s.ParentSpanID, Attributes: s.Attributes,

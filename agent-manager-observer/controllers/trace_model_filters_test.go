@@ -23,6 +23,8 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+
+	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
 )
 
 // withModel sets the model on both leaves of every nth trace (from 0).
@@ -32,8 +34,10 @@ func withModel(fake *fakeObserverClient, n int, model string) *fakeObserverClien
 			continue
 		}
 		// Span list and span details share each attribute map.
-		for _, s := range fake.spansByTrace[info.TraceID][1:] {
-			s.Attributes["gen_ai.response.model"] = model
+		for _, s := range fake.spansByTrace[info.TraceID] {
+			if opensearch.IsLLMLeafSpan(s.SpanName) {
+				s.Attributes["gen_ai.response.model"] = model
+			}
 		}
 	}
 	return fake
@@ -49,7 +53,8 @@ func overThreshold(fake *fakeObserverClient, n int) *fakeObserverClient {
 	return fake
 }
 
-// A model no trace has: one root and one attribute list per examined trace.
+// A model no trace has: one attribute list per examined trace, which also
+// supplies the root.
 func TestGetTraceOverviews_ModelRejectsAfterSpanList(t *testing.T) {
 	fake := langGraphFake(120, noRootAttrs)
 	params := lookBackParams(10)
@@ -60,8 +65,8 @@ func TestGetTraceOverviews_ModelRejectsAfterSpanList(t *testing.T) {
 	if len(ids) != 0 || truncated {
 		t.Fatalf("got %d traces, truncated %v; want 0, false", len(ids), truncated)
 	}
-	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 120 {
-		t.Errorf("GetSpanDetails calls = %d, want 120 (one root per examined trace)", got)
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("GetSpanDetails calls = %d, want 0", got)
 	}
 	if got := atomic.LoadInt32(&fake.queryTraceSpansCalls); got != 120 {
 		t.Errorf("QueryTraceSpans calls = %d, want 120", got)
@@ -91,7 +96,8 @@ func TestGetTraceOverviews_ModelRejectsOverThresholdAtRoot(t *testing.T) {
 	}
 }
 
-// A matching trace still gets input, output and tokens from the full cascade.
+// A matching trace still gets input, output and tokens from the full cascade,
+// read from its attribute list.
 func TestGetTraceOverviews_ModelMatchRunsFullCascade(t *testing.T) {
 	fake := langGraphFake(100, noRootAttrs)
 	params := lookBackParams(5)
@@ -120,10 +126,10 @@ func TestGetTraceOverviews_ModelMatchRunsFullCascade(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("traces = %v, want %v", got, want)
 	}
-	// The first chunk of 50 fills the page: 50 roots and lists, plus chain
-	// and two leaves for its 25 odd traces.
-	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 50+25*3 {
-		t.Errorf("GetSpanDetails calls = %d, want %d", got, 50+25*3)
+	// The first chunk of 50 fills the page: 50 lists and no span details,
+	// down from 50 roots and lists plus chain and two leaves for 25 matches.
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("GetSpanDetails calls = %d, want 0", got)
 	}
 	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != 50 {
 		t.Errorf("QueryTraceSpans calls with attributes = %d, want 50", got)
@@ -131,7 +137,9 @@ func TestGetTraceOverviews_ModelMatchRunsFullCascade(t *testing.T) {
 }
 
 // Rejecting on models returns the same pages as matchesFilters over fully
-// enriched overviews, and makes fewer upstream calls.
+// enriched overviews, and makes fewer upstream calls. Over-threshold traces
+// and root filters account for the savings: a list-first trace costs one call
+// either way.
 func TestGetTraceOverviews_ModelRejectionKeepsResults(t *testing.T) {
 	// rare-model on every 9th trace, an error on every 7th root, and every
 	// 5th trace over the span threshold.
@@ -176,7 +184,8 @@ func TestGetTraceOverviews_ModelRejectionKeepsResults(t *testing.T) {
 	}
 }
 
-// include=models without a model filter runs the full cascade, as before.
+// include=models without a model filter runs the full cascade. A page of 10
+// costs 11 calls: one trace list and an attribute list per row, down from 51.
 func TestGetTraceOverviews_IncludeModelsWithoutFilterKeepsCalls(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{}
@@ -189,12 +198,11 @@ func TestGetTraceOverviews_IncludeModelsWithoutFilterKeepsCalls(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("pages differ:\n got %+v\nwant %+v", got, want)
 	}
-	// One trace list, then root, chain and two leaves per row, plus its attribute list.
 	if got := atomic.LoadInt32(&fake.queryTracesCalls); got != 1 {
 		t.Errorf("QueryTraces calls = %d, want 1", got)
 	}
-	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 10*4 {
-		t.Errorf("GetSpanDetails calls = %d, want %d", got, 10*4)
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("GetSpanDetails calls = %d, want 0", got)
 	}
 	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != 10 {
 		t.Errorf("QueryTraceSpans calls with attributes = %d, want 10", got)
@@ -204,8 +212,8 @@ func TestGetTraceOverviews_IncludeModelsWithoutFilterKeepsCalls(t *testing.T) {
 	}
 }
 
-// A model on 2% of traces, at the examine cap: only the 10 matches get the
-// child and leaf fetches.
+// A model on 2% of traces, at the examine cap: one attribute list per examined
+// trace and no span details, down from 530 span details with per-span fetches.
 func TestGetTraceOverviews_ModelTwoPercentCallCounts(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{Model: "rare"}
@@ -214,23 +222,23 @@ func TestGetTraceOverviews_ModelTwoPercentCallCounts(t *testing.T) {
 		want = append(want, fmt.Sprintf("trace-%04d", i))
 	}
 
-	fullFake := withModel(langGraphFake(600, noRootAttrs), 50, "rare-model")
-	fullIDs, _, _ := traceIDs(&TracingController{observerClient: fullFake, enrichAll: true}, t, params)
+	perSpanFake := withModel(langGraphFake(600, noRootAttrs), 50, "rare-model")
+	perSpanIDs, _, _ := traceIDs(&TracingController{observerClient: perSpanFake, perSpanDetails: true}, t, params)
 	fake := withModel(langGraphFake(600, noRootAttrs), 50, "rare-model")
 	ids, _, _ := traceIDs(NewTracingController(fake), t, params)
 
-	if !slices.Equal(ids, want) || !slices.Equal(fullIDs, want) {
-		t.Fatalf("traces = %v (full cascade %v); want %v", ids, fullIDs, want)
+	if !slices.Equal(ids, want) || !slices.Equal(perSpanIDs, want) {
+		t.Fatalf("traces = %v (per-span fetches %v); want %v", ids, perSpanIDs, want)
 	}
-	// The 10th match is in the 10th chunk of 50, so all 500 roots and lists are fetched.
-	if got := atomic.LoadInt32(&fullFake.getSpanDetailsCalls); got != 500*4 {
-		t.Errorf("full cascade GetSpanDetails calls = %d, want %d", got, 500*4)
+	// The 10th match is in the 10th chunk of 50, so all 500 lists are fetched.
+	if got := atomic.LoadInt32(&perSpanFake.getSpanDetailsCalls); got != 500+10*3 {
+		t.Errorf("per-span GetSpanDetails calls = %d, want %d (500 roots, chain and two leaves per match)", got, 500+10*3)
 	}
-	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 500+10*3 {
-		t.Errorf("GetSpanDetails calls = %d, want %d (500 roots, chain and two leaves per match)", got, 500+10*3)
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
+		t.Errorf("GetSpanDetails calls = %d, want 0", got)
 	}
 	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != 500 {
 		t.Errorf("QueryTraceSpans calls with attributes = %d, want 500", got)
 	}
-	t.Logf("upstream calls: %d with the full cascade, %d with model rejection", upstreamCalls(fullFake), upstreamCalls(fake))
+	t.Logf("upstream calls: %d with per-span fetches, %d from the attribute list", upstreamCalls(perSpanFake), upstreamCalls(fake))
 }
