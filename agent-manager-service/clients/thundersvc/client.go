@@ -527,18 +527,19 @@ func (c *thunderClient) findResourceByName(ctx context.Context, token, resource,
 		if len(items) == 0 {
 			return "", "", nil
 		}
+		for _, item := range items {
+			if item.Name == name {
+				return item.ID, item.ClientID, nil
+			}
+		}
 		// Thunder ignores offset/limit and returns the full list on every call.
-		// A page starting with the same item as page 0 means the list has wrapped.
+		// This page has been scanned; if it starts where page 0 did, the list
+		// has wrapped and nothing remains to look at.
 		if page > 0 && items[0].ID == firstID {
 			return "", "", nil
 		}
 		if page == 0 {
 			firstID = items[0].ID
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item.ID, item.ClientID, nil
-			}
 		}
 		if len(items) < pageSize {
 			return "", "", nil
