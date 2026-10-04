@@ -249,10 +249,20 @@ done
 # --- 3. Register the RuntimeClass (with scheduling) ---
 echo "🧩 Registering the '${KATA_RUNTIME_CLASS}' RuntimeClass..."
 kubectl apply -f "$RUNTIMECLASS_MANIFEST"
+# The manifest schedules onto kata=true. Point it at the label pair this run used, or Kata
+# pods could not reach the nodes labeled above.
+if [ "$KATA_NODE_LABEL_KEY" != "kata" ] || [ "$KATA_NODE_LABEL_VALUE" != "true" ]; then
+    kubectl patch runtimeclass "$KATA_RUNTIME_CLASS" --type=json -p="[
+      {\"op\":\"replace\",\"path\":\"/scheduling/nodeSelector\",\"value\":{\"${KATA_NODE_LABEL_KEY}\":\"${KATA_NODE_LABEL_VALUE}\"}},
+      {\"op\":\"replace\",\"path\":\"/scheduling/tolerations\",\"value\":[{\"key\":\"${KATA_NODE_LABEL_KEY}\",\"operator\":\"Equal\",\"value\":\"${KATA_NODE_LABEL_VALUE}\",\"effect\":\"NoSchedule\"}]}
+    ]"
+fi
 
 # --- 4. Prove it: boot a Kata pod on every target node ---
 # A pod that runs under the RuntimeClass and reports a kernel other than the node's own is
-# the only evidence that containerd has the handler and the VM boots.
+# the only evidence that containerd has the handler and the VM boots. The pod goes through
+# the scheduler with only the RuntimeClass's nodeSelector and tolerations, as an agent does,
+# so a node agents cannot reach fails here too.
 echo "🧪 Booting a test pod under '${KATA_RUNTIME_CLASS}' on each target node..."
 for node in $NODES; do
     POD="kata-smoke-test-${node//[^a-z0-9-]/-}"
@@ -264,11 +274,14 @@ kind: Pod
 metadata:
   name: ${POD}
 spec:
-  nodeName: ${node}
   runtimeClassName: ${KATA_RUNTIME_CLASS}
   restartPolicy: Never
-  tolerations:
-    - operator: Exists
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchFields:
+              - { key: metadata.name, operator: In, values: ["${node}"] }
   containers:
     - name: test
       image: ${KATA_SMOKE_TEST_IMAGE}
