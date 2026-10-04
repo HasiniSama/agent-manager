@@ -202,20 +202,22 @@ fi
 # so Helm would refuse to adopt them. Deleting the DaemonSet runs its cleanup hook, which
 # removes the old Kata stack from the node before the chart installs the new one. The hook
 # needs the old RBAC, so the pods must be gone before the RBAC is deleted or Helm runs.
-if kubectl -n "$KATA_NAMESPACE" get daemonset kata-deploy &>/dev/null \
-    && [ -z "$(kubectl -n "$KATA_NAMESPACE" get daemonset kata-deploy -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}')" ]; then
+# The old manifests always deployed to kube-system, whatever KATA_NAMESPACE is now.
+LEGACY_NAMESPACE="kube-system"
+if kubectl -n "$LEGACY_NAMESPACE" get daemonset kata-deploy &>/dev/null \
+    && [ -z "$(kubectl -n "$LEGACY_NAMESPACE" get daemonset kata-deploy -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}')" ]; then
     echo "🔁 Removing the manifest-based kata-deploy installed by an earlier version of this script..."
-    kubectl -n "$KATA_NAMESPACE" delete daemonset kata-deploy --cascade=foreground --wait=true --timeout=10m
+    kubectl -n "$LEGACY_NAMESPACE" delete daemonset kata-deploy --cascade=foreground --wait=true --timeout=10m
     for _ in $(seq 1 200); do
-        [ -z "$(kubectl -n "$KATA_NAMESPACE" get pods -l name=kata-deploy -o name 2>/dev/null)" ] && break
+        [ -z "$(kubectl -n "$LEGACY_NAMESPACE" get pods -l name=kata-deploy -o name 2>/dev/null)" ] && break
         sleep 3
     done
-    if [ -n "$(kubectl -n "$KATA_NAMESPACE" get pods -l name=kata-deploy -o name 2>/dev/null)" ]; then
+    if [ -n "$(kubectl -n "$LEGACY_NAMESPACE" get pods -l name=kata-deploy -o name 2>/dev/null)" ]; then
         echo "❌ The old kata-deploy pods did not finish their cleanup. Check them before re-running:"
-        echo "   kubectl -n ${KATA_NAMESPACE} get pods -l name=kata-deploy"
+        echo "   kubectl -n ${LEGACY_NAMESPACE} get pods -l name=kata-deploy"
         exit 1
     fi
-    kubectl -n "$KATA_NAMESPACE" delete serviceaccount kata-deploy-sa --ignore-not-found
+    kubectl -n "$LEGACY_NAMESPACE" delete serviceaccount kata-deploy-sa --ignore-not-found
     kubectl delete clusterrolebinding kata-deploy-rb --ignore-not-found
     kubectl delete clusterrole kata-deploy-role --ignore-not-found
 fi
