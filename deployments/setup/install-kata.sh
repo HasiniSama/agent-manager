@@ -70,6 +70,13 @@ if ! [[ "$KATA_MAJOR" =~ ^[0-9]+$ ]] || [ "$KATA_MAJOR" -lt 4 ]; then
     echo "   kata-deploy is installed from its Helm chart, whose values changed shape in 4.0.0."
     exit 1
 fi
+# Fetch the chart now: the migration below removes an older Kata before Helm runs, so a
+# version Helm cannot resolve must stop the script before anything changes.
+if ! helm show chart "$KATA_CHART" --version "$KATA_VERSION" >/dev/null; then
+    echo "❌ Cannot fetch the kata-deploy chart ${KATA_VERSION} from ${KATA_CHART}."
+    echo "   Check KATA_VERSION against https://github.com/kata-containers/kata-containers/releases"
+    exit 1
+fi
 
 # Helm 4 applies charts server-side, which makes re-runs fail with field-ownership conflicts.
 HELM_ARGS=()
