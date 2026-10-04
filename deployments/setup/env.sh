@@ -50,4 +50,4 @@ GVISOR_NETWORK_HOST="${GVISOR_NETWORK_HOST:-false}"
 KATA_RUNTIME_CLASS="kata-qemu"    # RuntimeClass name == handler kata-deploy registers
 KATA_NODE_LABEL_KEY="kata"        # node label + RuntimeClass scheduling key + taint key
 KATA_NODE_LABEL_VALUE="true"
-KATA_VERSION="3.2.0"              # kata-containers release used by kata-deploy (RBAC + DaemonSet)
+KATA_VERSION="${KATA_VERSION:-4.2.0}"  # kata-containers release of the kata-deploy Helm chart (4.0.0+)
