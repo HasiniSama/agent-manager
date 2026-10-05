@@ -98,6 +98,26 @@ const lastIncludeModels = () => mockUseTraceList.mock.lastCall?.[9]?.includeMode
 // Hook fields a test can override, such as truncated or hasOlder.
 let hookOverrides: Record<string, unknown> = {};
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  listCache.clear();
+  hookOverrides = {};
+  mockUseTraceList.mockImplementation((...args) => ({
+    data: listFor(args[9]?.filters),
+    isLoading: false,
+    refetch: vi.fn(),
+    isRefetching: false,
+    loadOlder: vi.fn(),
+    loadNewer: vi.fn(),
+    isLoadingOlder: false,
+    isLoadingNewer: false,
+    hasOlder: false,
+    truncated: false,
+    lookedBackTo: undefined,
+    ...hookOverrides,
+  }) as unknown as ReturnType<typeof useTraceList>);
+});
+
 function SearchProbe() {
   return <div data-testid="search">{useLocation().search}</div>;
 }
@@ -152,26 +172,6 @@ describe("trace filter URL parsing", () => {
 });
 
 describe("TracesComponent filters", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    listCache.clear();
-    hookOverrides = {};
-    mockUseTraceList.mockImplementation((...args) => ({
-      data: listFor(args[9]?.filters),
-      isLoading: false,
-      refetch: vi.fn(),
-      isRefetching: false,
-      loadOlder: vi.fn(),
-      loadNewer: vi.fn(),
-      isLoadingOlder: false,
-      isLoadingNewer: false,
-      hasOlder: false,
-      truncated: false,
-      lookedBackTo: undefined,
-      ...hookOverrides,
-    }) as unknown as ReturnType<typeof useTraceList>);
-  });
-
   it("reproduces a pasted URL's filters in the request and the chips", () => {
     renderPage("?timeRange=1h&status=error&minDurationMs=5000&model=gpt-4o&minTokens=abc");
 
@@ -259,12 +259,6 @@ describe("trace column URL parsing", () => {
 });
 
 describe("TracesComponent columns and cap notice", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    listCache.clear();
-    hookOverrides = {};
-  });
-
   const columnHeader = (name: string) =>
     screen.queryByRole("columnheader", { name, hidden: true });
   const openColumnsMenu = () => fireEvent.click(screen.getByRole("button", { name: "Columns" }));
