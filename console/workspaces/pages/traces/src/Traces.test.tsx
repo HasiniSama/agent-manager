@@ -75,8 +75,8 @@ const makeTrace = (
 
 // The filtered list keeps only t-err; the unfiltered list holds both.
 const ALL = [
-  makeTrace("t-err", 1, { conversationId: "conv-1", models: ["gpt-4o", "gpt-4o-mini", "o3"] }),
-  makeTrace("t-ok", 0, { models: ["claude-sonnet-5"] }),
+  makeTrace("t-err", 1, { conversationId: "conv-1", models: ["gpt-4o"] }),
+  makeTrace("t-ok", 0),
 ];
 const listCache = new Map<string, unknown>();
 const listFor = (filters: TraceFilters = {}) => {
@@ -249,11 +249,10 @@ describe("TracesComponent filters", () => {
 });
 
 describe("trace column URL parsing", () => {
-  it("defaults to Conversation, keeps known columns in order, and reads empty as none", () => {
+  it("defaults to Conversation, drops unknown columns, and reads empty as none", () => {
     expect(parseTraceColumns(new URLSearchParams(""))).toEqual(["conversation"]);
     expect(parseTraceColumns(new URLSearchParams("columns=model,bogus,conversation"))).toEqual([
       "conversation",
-      "model",
     ]);
     expect(parseTraceColumns(new URLSearchParams("columns="))).toEqual([]);
   });
@@ -270,52 +269,40 @@ describe("TracesComponent columns and cap notice", () => {
     screen.queryByRole("columnheader", { name, hidden: true });
   const openColumnsMenu = () => fireEvent.click(screen.getByRole("button", { name: "Columns" }));
 
-  it("hides the Model column by default and doesn't ask for models", () => {
+  it("has no Model column and leaves models to the server's model filter", () => {
+    const { unmount } = renderPage("?timeRange=1h");
+    expect(columnHeader("Conversation")).toBeInTheDocument();
+    expect(columnHeader("Model")).not.toBeInTheDocument();
+    expect(lastIncludeModels()).toBeUndefined();
+    unmount();
+
+    renderPage("?timeRange=1h&model=gpt-4o");
+    expect(columnHeader("Model")).not.toBeInTheDocument();
+    expect(lastFilters()).toEqual({ model: "gpt-4o" });
+    expect(lastIncludeModels()).toBeUndefined();
+    expect(screen.queryByText("gpt-4o")).not.toBeInTheDocument();
+  });
+
+  it("hides Conversation from the menu, which lists no Model item", () => {
     renderPage("?timeRange=1h");
+
+    openColumnsMenu();
+    expect(screen.getAllByRole("menuitemcheckbox").map((el) => el.textContent)).toEqual([
+      "Conversation",
+    ]);
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Conversation" }));
+
+    expect(currentParams().get("columns")).toBe("");
+    expect(currentParams().get("timeRange")).toBe("1h");
+    expect(columnHeader("Conversation")).not.toBeInTheDocument();
+  });
+
+  it("reads an older columns link that still lists model", () => {
+    renderPage("?columns=conversation,model");
 
     expect(columnHeader("Conversation")).toBeInTheDocument();
     expect(columnHeader("Model")).not.toBeInTheDocument();
-    expect(lastIncludeModels()).toBe(false);
-    expect(currentParams().get("columns")).toBeNull();
-  });
-
-  it("asks for models and writes the columns param when Model is turned on", () => {
-    renderPage("?timeRange=1h");
-
-    openColumnsMenu();
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Model" }));
-
-    expect(currentParams().get("columns")).toBe("conversation,model");
-    expect(currentParams().get("timeRange")).toBe("1h");
-    expect(lastIncludeModels()).toBe(true);
-    expect(columnHeader("Model")).toBeInTheDocument();
-    // Two or more models: the first plus a +N badge.
-    expect(screen.getByText("gpt-4o")).toBeInTheDocument();
-    expect(screen.getByText("+2")).toBeInTheDocument();
-    expect(screen.getByText("claude-sonnet-5")).toBeInTheDocument();
-  });
-
-  it("reproduces the columns from a pasted URL", () => {
-    renderPage("?columns=model");
-
-    expect(columnHeader("Model")).toBeInTheDocument();
-    expect(columnHeader("Conversation")).not.toBeInTheDocument();
-    expect(lastIncludeModels()).toBe(true);
-  });
-
-  it("forces the Model column on while a model filter is active", () => {
-    renderPage("?columns=conversation&model=gpt-4o");
-
-    expect(columnHeader("Model")).toBeInTheDocument();
-    expect(lastIncludeModels()).toBe(true);
-    openColumnsMenu();
-    const model = screen.getByRole("menuitemcheckbox", { name: /Model/ });
-    expect(model).toHaveAttribute("aria-disabled", "true");
-    expect(model).toHaveAttribute("aria-checked", "true");
-
-    // Toggling another column doesn't save the forced one.
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Conversation" }));
-    expect(currentParams().get("columns")).toBe("");
+    expect(lastIncludeModels()).toBeUndefined();
   });
 
   it("sets the conversation filter from the column without opening the trace", () => {

@@ -148,16 +148,7 @@ export const TracesComponent: React.FC = () => {
   const filters = useMemo(() => parseTraceFilters(searchParams), [searchParams]);
   const hasActiveFilters = Object.keys(filters).length > 0;
 
-  const chosenColumns = useMemo(() => parseTraceColumns(searchParams), [searchParams]);
-  // A model filter keeps the Model column on so the matched value shows.
-  const visibleColumns = useMemo<TraceColumn[]>(
-    () => (filters.model && !chosenColumns.includes("model")
-      ? [...chosenColumns, "model"]
-      : chosenColumns),
-    [chosenColumns, filters.model],
-  );
-  // Models cost the server one upstream call per trace, so ask only while the column shows.
-  const includeModels = visibleColumns.includes("model");
+  const visibleColumns = useMemo(() => parseTraceColumns(searchParams), [searchParams]);
 
   const {
     data: traceData,
@@ -181,7 +172,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     customStartTime,
     customEndTime,
-    { filters, includeModels },
+    { filters },
   );
 
   // Resolved time range used by the TraceDetails drawer.
@@ -429,12 +420,8 @@ export const TracesComponent: React.FC = () => {
               )}
             </IconButton>
 
-            {/* Toggles the URL choice; a locked column shows checked without being saved. */}
             <TraceColumnsMenu
-              visibleColumns={chosenColumns}
-              lockedColumns={
-                filters.model ? { model: "Shown while filtering by model" } : undefined
-              }
+              visibleColumns={visibleColumns}
               onChange={handleColumnsChange}
             />
 

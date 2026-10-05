@@ -31,15 +31,12 @@ import { OPTIONAL_TRACE_COLUMNS, type TraceColumn } from "../traceColumns";
 
 export interface TraceColumnsMenuProps {
   visibleColumns: TraceColumn[];
-  // Shown and not hideable, with the reason as the item's hint.
-  lockedColumns?: Partial<Record<TraceColumn, string>>;
   onChange: (columns: TraceColumn[]) => void;
 }
 
 // Column visibility control for the optional trace list columns.
 export const TraceColumnsMenu: React.FC<TraceColumnsMenuProps> = ({
   visibleColumns,
-  lockedColumns = {},
   onChange,
 }) => {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -64,20 +61,18 @@ export const TraceColumnsMenu: React.FC<TraceColumnsMenuProps> = ({
       </Tooltip>
       <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
         {OPTIONAL_TRACE_COLUMNS.map(({ key, label }) => {
-          const lockedReason = lockedColumns[key];
-          const checked = !!lockedReason || visibleColumns.includes(key);
+          const checked = visibleColumns.includes(key);
           return (
             <MenuItem
               key={key}
               role="menuitemcheckbox"
               aria-checked={checked}
-              disabled={!!lockedReason}
               onClick={() => toggle(key)}
             >
               <ListItemIcon>
                 <Checkbox size="small" edge="start" checked={checked} tabIndex={-1} disableRipple />
               </ListItemIcon>
-              <ListItemText primary={label} secondary={lockedReason} />
+              <ListItemText primary={label} />
             </MenuItem>
           );
         })}

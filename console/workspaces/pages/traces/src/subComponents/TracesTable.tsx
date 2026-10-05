@@ -23,7 +23,6 @@ import {
   ListingTable,
   DataGrid,
   Button,
-  Chip,
   CircularProgress,
   Link,
   Stack,
@@ -86,34 +85,15 @@ const COLUMNS: {
 }[] = [
   { field: "status", headerName: "Status", width: 4, align: "center" },
   { field: "name", headerName: "Name", width: 10, align: "left" },
-  { field: "input", headerName: "Input", width: 17, align: "left" },
-  { field: "output", headerName: "Output", width: 17, align: "left" },
+  { field: "input", headerName: "Input", width: 21, align: "left" },
+  { field: "output", headerName: "Output", width: 22, align: "left" },
   { field: "conversation", headerName: "Conversation", width: 10, align: "left", optional: "conversation" },
-  { field: "model", headerName: "Model", width: 9, align: "left", optional: "model" },
   { field: "startTime", headerName: "Start Time", width: 11, align: "center" },
   { field: "duration", headerName: "Duration", width: 6, align: "right" },
   { field: "tokens", headerName: "Tokens", width: 6, align: "right" },
   { field: "spans", headerName: "Spans", width: 5, align: "right" },
   { field: "score", headerName: "Score", width: 5, align: "right" },
 ];
-
-// One model plainly; two or more as the first plus a "+N" chip listing all.
-function ModelsCell({ models }: { models?: string[] }) {
-  if (!models?.length) return null;
-  const [first, ...rest] = models;
-  return (
-    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
-      <Typography variant="caption" component="span" title={first} sx={{ ...ellipsisSx, minWidth: 0 }}>
-        {first}
-      </Typography>
-      {rest.length > 0 && (
-        <Tooltip title={models.join(", ")}>
-          <Chip label={`+${rest.length}`} size="small" variant="outlined" sx={{ flexShrink: 0 }} />
-        </Tooltip>
-      )}
-    </Stack>
-  );
-}
 
 // Conversation ID, truncated, that sets the conversation filter on click.
 function ConversationCell({
@@ -167,7 +147,6 @@ export function TracesTable({
 }: TracesTableProps) {
   const columns = COLUMNS.filter((c) => !c.optional || visibleColumns.includes(c.optional));
   const showConversation = visibleColumns.includes("conversation");
-  const showModel = visibleColumns.includes("model");
   const isDesc = sortOrder === "desc";
 
   // Load older, shown only while the server has an older page, plus how far a filtered list looked.
@@ -354,11 +333,6 @@ export function TracesTable({
                         conversationId={trace.conversationId}
                         onSelect={onConversationSelect}
                       />
-                    </ListingTable.Cell>
-                  )}
-                  {showModel && (
-                    <ListingTable.Cell align="left" sx={{ maxWidth: 160 }}>
-                      <ModelsCell models={trace.models} />
                     </ListingTable.Cell>
                   )}
                   <ListingTable.Cell align="center">
