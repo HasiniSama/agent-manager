@@ -18,12 +18,12 @@ package controllers
 
 import (
 	"fmt"
-	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/observer"
+	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
 )
 
 // leafPathFake scripts an OpenAI Agents-shaped trace: an empty root and n LLM
@@ -54,46 +54,48 @@ func leafPathFake(n int) *fakeObserverClient {
 }
 
 // With include=models, the chain and leaf paths read every span from the
-// attribute list and return the row the per-span fetches did.
-func TestGetTraceOverviews_InlineSpansMatchPerSpanFetches(t *testing.T) {
+// attribute list. The row is the same without include=models, bar the models.
+func TestGetTraceOverviews_InlineSpans(t *testing.T) {
+	// Leaf i of leafPathFake has 10+i input and 2 output tokens.
 	tests := []struct {
-		name        string
-		fake        func() *fakeObserverClient
-		wantPartial bool
+		name          string
+		fake          func() *fakeObserverClient
+		input, output string
+		tokens        opensearch.TokenUsage
+		models        []string
 	}{
-		{name: "chain span", fake: chainSpanFake},
-		{name: "leaf path", fake: func() *fakeObserverClient { return leafPathFake(3) }},
-		// The leaf cap still applies to aggregation.
-		{name: "leaf path over cap", fake: func() *fakeObserverClient { return leafPathFake(maxLLMLeavesPerTrace + 5) }, wantPartial: true},
+		{name: "chain span", fake: chainSpanFake, input: `"chain in"`, output: "chain out",
+			tokens: opensearch.TokenUsage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25},
+			models: []string{"gpt-4o", "claude-sonnet-4-5"}},
+		{name: "leaf path", fake: func() *fakeObserverClient { return leafPathFake(3) }, input: "user 0", output: "assistant 2",
+			tokens: opensearch.TokenUsage{InputTokens: 33, OutputTokens: 6, TotalTokens: 39},
+			models: []string{"gpt-4o-0", "gpt-4o-1"}},
+		// The leaf cap still applies to aggregation: only leaves 0-49 count.
+		{name: "leaf path over cap", fake: func() *fakeObserverClient { return leafPathFake(maxLLMLeavesPerTrace + 5) },
+			input: "user 0", output: "assistant 49",
+			tokens: opensearch.TokenUsage{InputTokens: 1725, OutputTokens: 100, TotalTokens: 1825, Partial: true},
+			models: []string{"gpt-4o-0", "gpt-4o-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			params := baseParams()
 			params.Include.Models = true
-			fake, perSpanFake, noModelsFake := tt.fake(), tt.fake(), tt.fake()
-			// Same trace times across the three.
-			perSpanFake.traces, noModelsFake.traces = fake.traces, fake.traces
-
-			got := singleOverview(t, NewTracingController(fake), params)
-			want := singleOverview(t, &TracingController{observerClient: perSpanFake, perSpanDetails: true}, params)
+			fake, noModelsFake := tt.fake(), tt.fake()
 			noModelsParams := params
 			noModelsParams.Include.Models = false
+
+			got := singleOverview(t, NewTracingController(fake), params)
 			noModels := singleOverview(t, NewTracingController(noModelsFake), noModelsParams)
 
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("overview differs from per-span fetches:\n got %+v\nwant %+v", got, want)
+			for _, ov := range []opensearch.TraceOverview{got, noModels} {
+				if ov.Input != tt.input || ov.Output != tt.output {
+					t.Errorf("input/output = %v/%v, want %s/%s", ov.Input, ov.Output, tt.input, tt.output)
+				}
+				if ov.TokenUsage == nil || *ov.TokenUsage != tt.tokens {
+					t.Errorf("tokenUsage = %+v, want %+v", ov.TokenUsage, tt.tokens)
+				}
 			}
-			if got.Input == nil || got.Output == nil || got.TokenUsage == nil || len(got.Models) == 0 {
-				t.Fatalf("overview = %+v, want input, output, tokens and models", got)
-			}
-			if got.TokenUsage.Partial != tt.wantPartial {
-				t.Errorf("Partial = %t, want %t", got.TokenUsage.Partial, tt.wantPartial)
-			}
-			// The row is the same without include=models, bar the models.
-			got.Models, noModels.Models = nil, nil
-			if !reflect.DeepEqual(got, noModels) {
-				t.Errorf("overview differs from include=models off:\n got %+v\nwant %+v", got, noModels)
-			}
+			assertModels(t, got.Models, tt.models)
 			if n := atomic.LoadInt32(&fake.getSpanDetailsCalls); n != 0 {
 				t.Errorf("GetSpanDetails calls = %d, want 0", n)
 			}
@@ -145,9 +147,9 @@ func TestGetTraceOverviews_RootFilterSkipsListFirst(t *testing.T) {
 	}
 }
 
-// Reading spans from the attribute list returns the same pages as per-span
-// fetches, with fewer upstream calls.
-func TestGetTraceOverviews_InlineSpansKeepResults(t *testing.T) {
+// include=models pages through the matches, reading the spans of every trace
+// under the span threshold from its attribute list.
+func TestGetTraceOverviews_InlineSpansPages(t *testing.T) {
 	// conv-match on every 3rd root, an error on every 7th, rare-model on
 	// every 9th trace, and every 5th trace over the span threshold.
 	rootAttrs := func(i int) map[string]interface{} {
@@ -160,21 +162,17 @@ func TestGetTraceOverviews_InlineSpansKeepResults(t *testing.T) {
 		}
 		return attrs
 	}
-	newFake := func() *fakeObserverClient {
-		return overThreshold(withModel(langGraphFake(600, rootAttrs), 9, "rare-model"), 5)
-	}
+	over := func(i int) bool { return i%5 == 0 }
 	tests := []struct {
 		name    string
 		filters TraceFilters
+		match   func(i int) bool
 	}{
-		{name: "none", filters: TraceFilters{}},
-		{name: "model", filters: TraceFilters{Model: "claude"}},
-		{name: "rare model", filters: TraceFilters{Model: "rare"}},
-		{name: "model and status", filters: TraceFilters{Model: "gpt", Status: TraceStatusError}},
-		{name: "model and minTokens", filters: TraceFilters{Model: "claude", MinTokens: ptr(47)}},
-		{name: "status", filters: TraceFilters{Status: TraceStatusOK}},
-		{name: "conversationId", filters: TraceFilters{ConversationID: "conv-match"}},
-		{name: "minTokens", filters: TraceFilters{MinTokens: ptr(47)}},
+		{name: "none", filters: TraceFilters{}, match: func(int) bool { return true }},
+		{name: "status", filters: TraceFilters{Status: TraceStatusOK}, match: func(i int) bool { return i%7 != 0 }},
+		{name: "conversationId", filters: TraceFilters{ConversationID: "conv-match"}, match: func(i int) bool { return i%3 == 0 }},
+		// Over-threshold traces have no tokens.
+		{name: "minTokens", filters: TraceFilters{MinTokens: ptr(47)}, match: func(i int) bool { return !over(i) && 12+i%40 >= 47 }},
 	}
 	for _, tt := range tests {
 		for _, order := range []string{"desc", "asc"} {
@@ -183,21 +181,24 @@ func TestGetTraceOverviews_InlineSpansKeepResults(t *testing.T) {
 				params.Filters = tt.filters
 				params.SortOrder = order
 				params.Include.Models = true
-				fake, perSpanFake := newFake(), newFake()
+				fake := overThreshold(withModel(langGraphFake(600, rootAttrs), 9, "rare-model"), 5)
 
-				got := pagesOf(t, NewTracingController(fake), params, 3)
-				want := pagesOf(t, &TracingController{observerClient: perSpanFake, perSpanDetails: true}, params, 3)
+				pages := pagesOf(t, NewTracingController(fake), params, 3)
 
-				if len(got) != len(want) {
-					t.Fatalf("got %d pages, want %d", len(got), len(want))
-				}
-				for i := range want {
-					if !reflect.DeepEqual(got[i], want[i]) {
-						t.Errorf("page %d differs:\n got %+v\nwant %+v", i, got[i], want[i])
+				assertPages(t, pages, wantPages(fake, params, 3, tt.match))
+				assertLangGraphRows(t, fake, pages)
+				// Root filters keep the root fetch first.
+				rootFilters := tt.filters.Status != TraceStatusAny || tt.filters.ConversationID != ""
+				_, roots, others := fetchedTraces(t, fake)
+				for _, i := range roots {
+					if !over(i) && !rootFilters {
+						t.Fatalf("trace-%04d fetched its root, want it from the span list", i)
 					}
 				}
-				if calls, perSpanCalls := upstreamCalls(fake), upstreamCalls(perSpanFake); calls >= perSpanCalls {
-					t.Errorf("upstream calls = %d, want fewer than %d", calls, perSpanCalls)
+				for _, i := range others {
+					if !over(i) {
+						t.Fatalf("trace-%04d fetched a chain or leaf span, want it from the span list", i)
+					}
 				}
 			})
 		}

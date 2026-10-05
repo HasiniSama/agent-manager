@@ -16,7 +16,7 @@
 
 // Package main contains the gen-contract codegen tool. It walks an in-Go
 // description of what the observer's per-kind extractors read and emits the
-// JSON Schema bundle consumed by the instrumentation-matrix test suite. See
+// JSON Schema bundle the instrumentation matrix consumes. See
 // attribute-map.md for the rationale behind each Required marker.
 package main
 

@@ -20,8 +20,10 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
+	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,6 +127,168 @@ func upstreamCalls(f *fakeObserverClient) int32 {
 	return atomic.LoadInt32(&f.queryTracesCalls) + atomic.LoadInt32(&f.getSpanDetailsCalls) + atomic.LoadInt32(&f.queryTraceSpansCalls)
 }
 
+// wantPage is one expected trace-list page.
+type wantPage struct {
+	ids          []string
+	lookedBackTo time.Time
+	more         bool
+	truncated    bool
+}
+
+// wantPages is up to n pages of fake's traces, where match(i) picks trace i.
+// A page walks the traces in sort order from the cursor time, returns matches
+// at that time again without counting them, and stops at params.Limit counted
+// matches or maxExaminedTraces examined traces.
+func wantPages(fake *fakeObserverClient, params TraceQueryParams, n int, match func(i int) bool) []wantPage {
+	asc := params.SortOrder == "asc"
+	order := make([]int, len(fake.traces))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		ta, tb := fake.traces[order[a]].StartTime, fake.traces[order[b]].StartTime
+		if !ta.Equal(tb) {
+			return ta.Before(tb) == asc
+		}
+		return order[a] < order[b]
+	})
+	edge := params.StartTime
+	if asc {
+		edge = params.EndTime
+	}
+	var pages []wantPage
+	var cur time.Time
+	start := 0
+	for len(pages) < n {
+		p := wantPage{lookedBackTo: edge}
+		counted, k := 0, start
+		for ; k < len(order) && k-start < maxExaminedTraces; k++ {
+			tr := fake.traces[order[k]]
+			if !match(order[k]) {
+				continue
+			}
+			p.ids = append(p.ids, tr.TraceID)
+			if !tr.StartTime.Equal(cur) {
+				counted++
+			}
+			if counted == params.Limit {
+				break
+			}
+		}
+		switch {
+		case counted == params.Limit && k < len(order)-1:
+			p.lookedBackTo, p.more = fake.traces[order[k]].StartTime, true
+		case counted < params.Limit && k < len(order):
+			k--
+			p.lookedBackTo, p.more, p.truncated = fake.traces[order[k]].StartTime, true, true
+		}
+		pages = append(pages, p)
+		if !p.more {
+			return pages
+		}
+		// The next page starts at the first trace at the cursor time.
+		cur, start = p.lookedBackTo, k
+		for start > 0 && fake.traces[order[start-1]].StartTime.Equal(cur) {
+			start--
+		}
+	}
+	return pages
+}
+
+// assertPages checks each page's trace IDs, cursor, truncation and lookedBackTo.
+func assertPages(t *testing.T, got []*opensearch.TraceOverviewResponse, want []wantPage) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d pages, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		ids := make([]string, len(got[i].Traces))
+		for j, ov := range got[i].Traces {
+			ids[j] = ov.TraceID
+		}
+		if !slices.Equal(ids, w.ids) {
+			t.Errorf("page %d traces = %v, want %v", i, ids, w.ids)
+		}
+		if more := got[i].NextCursor != ""; more != w.more {
+			t.Errorf("page %d has nextCursor %v, want %v", i, more, w.more)
+		}
+		if got[i].Truncated != w.truncated {
+			t.Errorf("page %d truncated = %v, want %v", i, got[i].Truncated, w.truncated)
+		}
+		if lookedBackTo := formatCursor(w.lookedBackTo); got[i].LookedBackTo != lookedBackTo {
+			t.Errorf("page %d lookedBackTo = %s, want %s", i, got[i].LookedBackTo, lookedBackTo)
+		}
+	}
+}
+
+// traceIndex is the fixture index in a langGraphFake trace or span ID.
+func traceIndex(t *testing.T, id string) int {
+	t.Helper()
+	i, err := strconv.Atoi(id[len(id)-4:])
+	if err != nil {
+		t.Fatalf("no trace index in %q", id)
+	}
+	return i
+}
+
+// assertLangGraphRows checks each row's enriched fields against its langGraphFake trace.
+func assertLangGraphRows(t *testing.T, fake *fakeObserverClient, pages []*opensearch.TraceOverviewResponse) {
+	t.Helper()
+	for _, page := range pages {
+		for _, ov := range page.Traces {
+			i := traceIndex(t, ov.TraceID)
+			spans := fake.spansByTrace[ov.TraceID]
+			root := spans[len(spans)-1].Attributes
+			if ov.Input != fmt.Sprintf(`"in %d"`, i) || ov.Output != fmt.Sprintf("out %d", i) {
+				t.Errorf("%s input/output = %v/%v, want the chain span's", ov.TraceID, ov.Input, ov.Output)
+			}
+			wantErrors := 0
+			if _, ok := root["error.type"]; ok {
+				wantErrors = 1
+			}
+			if ov.Status == nil || ov.Status.ErrorCount != wantErrors {
+				t.Errorf("%s status = %+v, want errorCount %d", ov.TraceID, ov.Status, wantErrors)
+			}
+			if conv, _ := root["gen_ai.conversation.id"].(string); ov.ConversationID != conv {
+				t.Errorf("%s conversationId = %q, want %q", ov.TraceID, ov.ConversationID, conv)
+			}
+			// Over the span threshold the leaves are never read.
+			if fake.traces[i].SpanCount > skipLeafAggregationSpanCountThreshold {
+				if ov.TokenUsage != nil || ov.Models != nil {
+					t.Errorf("%s tokens/models = %+v/%v, want none", ov.TraceID, ov.TokenUsage, ov.Models)
+				}
+				continue
+			}
+			if ov.TokenUsage == nil || ov.TokenUsage.TotalTokens != 12+i%40 || ov.TokenUsage.Partial {
+				t.Errorf("%s tokenUsage = %+v, want total %d from the leaves", ov.TraceID, ov.TokenUsage, 12+i%40)
+			}
+			model, _ := spans[1].Attributes["gen_ai.response.model"].(string)
+			if !slices.Equal(ov.Models, []string{model}) {
+				t.Errorf("%s models = %v, want [%s]", ov.TraceID, ov.Models, model)
+			}
+		}
+	}
+}
+
+// fetchedTraces splits fake's per-trace calls into span lists, root fetches
+// and other span fetches, as trace indexes.
+func fetchedTraces(t *testing.T, fake *fakeObserverClient) (lists, roots, others []int) {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, id := range fake.spansTraceIDs {
+		lists = append(lists, traceIndex(t, id))
+	}
+	for _, id := range fake.detailSpanIDs {
+		if strings.HasPrefix(id, "root-") {
+			roots = append(roots, traceIndex(t, id))
+		} else {
+			others = append(others, traceIndex(t, id))
+		}
+	}
+	return lists, roots, others
+}
+
 // status=error over ok roots: one root fetch per examined trace, no span lists.
 func TestGetTraceOverviews_StatusRejectsAtRoot(t *testing.T) {
 	fake := langGraphFake(120, noRootAttrs)
@@ -186,9 +350,8 @@ func TestGetTraceOverviews_ConversationIDRejectsAtRoot(t *testing.T) {
 	}
 }
 
-// Rejecting at the root returns the same pages as matchesFilters over fully
-// enriched overviews, and makes fewer upstream calls.
-func TestGetTraceOverviews_RootRejectionKeepsResults(t *testing.T) {
+// Root filters page through the matches, and a trace they reject costs only its root fetch.
+func TestGetTraceOverviews_RootFilterPages(t *testing.T) {
 	// conv-match on every 3rd root, an error on every 7th.
 	rootAttrs := func(i int) map[string]interface{} {
 		attrs := map[string]interface{}{"gen_ai.conversation.id": "conv-other"}
@@ -200,18 +363,27 @@ func TestGetTraceOverviews_RootRejectionKeepsResults(t *testing.T) {
 		}
 		return attrs
 	}
+	all := func(int) bool { return true }
+	failed := func(i int) bool { return i%7 == 0 }
+	ok := func(i int) bool { return i%7 != 0 }
+	convMatch := func(i int) bool { return i%3 == 0 }
 	tests := []struct {
 		name    string
 		filters TraceFilters
+		// match picks the traces returned; root picks those the root filters pass.
+		match, root func(i int) bool
 	}{
-		{name: "none", filters: TraceFilters{}},
-		{name: "status error", filters: TraceFilters{Status: TraceStatusError}},
-		{name: "status ok", filters: TraceFilters{Status: TraceStatusOK}},
-		{name: "conversationId", filters: TraceFilters{ConversationID: "conv-match"}},
+		{name: "none", filters: TraceFilters{}, match: all, root: all},
+		{name: "status error", filters: TraceFilters{Status: TraceStatusError}, match: failed, root: failed},
+		{name: "status ok", filters: TraceFilters{Status: TraceStatusOK}, match: ok, root: ok},
+		{name: "conversationId", filters: TraceFilters{ConversationID: "conv-match"}, match: convMatch, root: convMatch},
 		// Matches nothing, so the walk stops at the examine cap.
-		{name: "conversationId at cap", filters: TraceFilters{ConversationID: "conv-none"}},
-		{name: "status and minTokens", filters: TraceFilters{Status: TraceStatusError, MinTokens: ptr(47)}},
-		{name: "status and model", filters: TraceFilters{Status: TraceStatusOK, Model: "claude"}},
+		{name: "conversationId at cap", filters: TraceFilters{ConversationID: "conv-none"},
+			match: func(int) bool { return false }, root: func(int) bool { return false }},
+		{name: "status and minTokens", filters: TraceFilters{Status: TraceStatusError, MinTokens: ptr(47)},
+			match: func(i int) bool { return failed(i) && 12+i%40 >= 47 }, root: failed},
+		{name: "status and model", filters: TraceFilters{Status: TraceStatusOK, Model: "claude"},
+			match: func(i int) bool { return ok(i) && i%2 == 1 }, root: ok},
 	}
 	for _, tt := range tests {
 		for _, order := range []string{"desc", "asc"} {
@@ -219,33 +391,25 @@ func TestGetTraceOverviews_RootRejectionKeepsResults(t *testing.T) {
 				params := lookBackParams(10)
 				params.Filters = tt.filters
 				params.SortOrder = order
-				earlyFake, fullFake := langGraphFake(600, rootAttrs), langGraphFake(600, rootAttrs)
+				fake := langGraphFake(600, rootAttrs)
 
-				early := pagesOf(t, NewTracingController(earlyFake), params, 3)
-				full := pagesOf(t, &TracingController{observerClient: fullFake, enrichAll: true}, params, 3)
+				pages := pagesOf(t, NewTracingController(fake), params, 3)
 
-				if len(early) != len(full) {
-					t.Fatalf("got %d pages, want %d", len(early), len(full))
-				}
-				for i := range full {
-					if !reflect.DeepEqual(early[i], full[i]) {
-						t.Errorf("page %d differs:\n got %+v\nwant %+v", i, early[i], full[i])
+				assertPages(t, pages, wantPages(fake, params, 3, tt.match))
+				assertLangGraphRows(t, fake, pages)
+				lists, _, others := fetchedTraces(t, fake)
+				for _, i := range append(lists, others...) {
+					if !tt.root(i) {
+						t.Fatalf("trace-%04d failed the root filters but was fetched past its root", i)
 					}
-				}
-				earlyCalls, fullCalls := upstreamCalls(earlyFake), upstreamCalls(fullFake)
-				if tt.filters.IsZero() && earlyCalls != fullCalls {
-					t.Errorf("unfiltered calls = %d, want %d", earlyCalls, fullCalls)
-				}
-				if !tt.filters.IsZero() && earlyCalls >= fullCalls {
-					t.Errorf("upstream calls = %d, want fewer than %d", earlyCalls, fullCalls)
 				}
 			})
 		}
 	}
 }
 
-// status=error matching 5% of traces: only the 10 matches get a span list.
-// Enrichment calls drop from 1,000 (5 per examined trace) to 240.
+// status=error matching 5% of traces: every examined trace costs its root
+// fetch, and only the 10 matches get a span list.
 func TestGetTraceOverviews_StatusErrorFivePercentCallCounts(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{Status: TraceStatusError}
@@ -254,26 +418,17 @@ func TestGetTraceOverviews_StatusErrorFivePercentCallCounts(t *testing.T) {
 		want = append(want, fmt.Sprintf("trace-%04d", i))
 	}
 
-	fullFake := langGraphFake(200, errorEvery(20))
-	fullIDs, _, _ := traceIDs(&TracingController{observerClient: fullFake, enrichAll: true}, t, params)
 	fake := langGraphFake(200, errorEvery(20))
 	ids, _, truncated := traceIDs(NewTracingController(fake), t, params)
 
-	if !slices.Equal(ids, want) || !slices.Equal(fullIDs, want) || truncated {
-		t.Fatalf("traces = %v (full cascade %v), truncated %v; want %v, false", ids, fullIDs, truncated, want)
+	if !slices.Equal(ids, want) || truncated {
+		t.Fatalf("traces = %v, truncated %v; want %v, false", ids, truncated, want)
 	}
 	// The 10th match is in the 4th chunk of 50, so all 200 roots are fetched.
-	if got := atomic.LoadInt32(&fullFake.getSpanDetailsCalls); got != 200*4 {
-		t.Errorf("full cascade GetSpanDetails calls = %d, want %d", got, 200*4)
-	}
-	if got := atomic.LoadInt32(&fullFake.queryTraceSpansCalls); got != 200 {
-		t.Errorf("full cascade QueryTraceSpans calls = %d, want 200", got)
-	}
 	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 200+10*3 {
 		t.Errorf("GetSpanDetails calls = %d, want %d (200 roots, chain and two leaves per match)", got, 200+10*3)
 	}
 	if listed := slices.Sorted(slices.Values(fake.spansTraceIDs)); !slices.Equal(listed, want) {
 		t.Errorf("QueryTraceSpans traces = %v, want the matches %v", listed, want)
 	}
-	t.Logf("upstream calls: %d with the full cascade, %d with root rejection", upstreamCalls(fullFake), upstreamCalls(fake))
 }

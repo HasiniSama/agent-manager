@@ -64,12 +64,6 @@ const (
 // TracingController provides tracing functionality via the observer service.
 type TracingController struct {
 	observerClient observer.Client
-	// enrichAll turns off early filter rejection; tests compare against it.
-	enrichAll bool
-	// perSpanDetails turns off reusing the span list's inline attributes; tests compare against it.
-	perSpanDetails bool
-	// fullChunks turns off sizing summary-only chunks to the page; tests compare against it.
-	fullChunks bool
 }
 
 // NewTracingController creates a new tracing controller.
@@ -230,7 +224,7 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 	}
 	cur := params.Cursor
 	asc := params.SortOrder == "asc"
-	summaryOnly := params.Filters.SummaryOnly() && !c.fullChunks
+	summaryOnly := params.Filters.SummaryOnly()
 	matched := make([]opensearch.TraceOverview, 0, params.Limit)
 	seen := make(map[string]struct{})
 	// counted is the matches past the cursor time; rootless is the latest
@@ -434,7 +428,7 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 			// Status is root-only by design.
 			status := opensearch.ExtractTraceStatus([]opensearch.Span{*root})
 			conversationID := opensearch.ExtractConversationID(root)
-			if !c.enrichAll && !matchesRootFilters(status, conversationID, params.Filters) {
+			if !matchesRootFilters(status, conversationID, params.Filters) {
 				results[idx] = result{rejected: true}
 				return
 			}
@@ -493,7 +487,7 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 // whatever the root holds, so it can supply the root. Root filters keep the
 // root fetch first, so a trace they reject never downloads its list.
 func (c *TracingController) listSpansFirst(params TraceQueryParams, t observer.TraceInfo) bool {
-	return !c.perSpanDetails && params.Include.Models &&
+	return params.Include.Models &&
 		t.SpanCount <= skipLeafAggregationSpanCountThreshold &&
 		params.Filters.Status == TraceStatusAny && params.Filters.ConversationID == ""
 }
@@ -580,7 +574,7 @@ func (c *TracingController) enrichTraceOverview(
 	rootComplete := input != nil && output != nil && tokenUsage != nil
 	aggregateLeaves := traceInfo.SpanCount <= skipLeafAggregationSpanCountThreshold
 	modelsFromList := params.Include.Models && aggregateLeaves
-	rejectOnModel := !c.enrichAll && params.Filters.Model != ""
+	rejectOnModel := params.Filters.Model != ""
 
 	// Without leaf aggregation the trace has no models.
 	if rejectOnModel && !aggregateLeaves {
@@ -600,8 +594,7 @@ func (c *TracingController) enrichTraceOverview(
 			return input, output, cmp.Or(tokenUsage, entityTokens), nil, false
 		}
 	}
-	// The list carries attributes exactly when it was fetched for models.
-	inline := modelsFromList && !c.perSpanDetails
+	// The list carries attributes exactly when modelsFromList holds.
 	if modelsFromList {
 		models = modelsFromSpanList(traceInfo.TraceID, spans)
 		if rejectOnModel && !matchesModel(models, params.Filters) {
@@ -611,7 +604,7 @@ func (c *TracingController) enrichTraceOverview(
 
 	// Step 2: immediate child of the root (Traceloop chain span path).
 	if !rootComplete {
-		if childInput, childOutput, childTokens, childEntityTokens, ok := c.tryChildChainSpan(ctx, traceInfo.TraceID, rootSpan.SpanID, spans, inline, fetchSem); ok {
+		if childInput, childOutput, childTokens, childEntityTokens, ok := c.tryChildChainSpan(ctx, traceInfo.TraceID, rootSpan.SpanID, spans, modelsFromList, fetchSem); ok {
 			if input == nil {
 				input = childInput
 			}
@@ -636,7 +629,7 @@ func (c *TracingController) enrichTraceOverview(
 				"spanCount", traceInfo.SpanCount,
 				"threshold", skipLeafAggregationSpanCountThreshold)
 		} else {
-			leafInput, leafOutput, leafTokens, leafModels := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, inline, fetchSem)
+			leafInput, leafOutput, leafTokens, leafModels := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, modelsFromList, fetchSem)
 			if models == nil {
 				models = leafModels
 			}

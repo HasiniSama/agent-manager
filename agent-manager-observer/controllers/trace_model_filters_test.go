@@ -19,8 +19,8 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -136,26 +136,41 @@ func TestGetTraceOverviews_ModelMatchRunsFullCascade(t *testing.T) {
 	}
 }
 
-// Rejecting on models returns the same pages as matchesFilters over fully
-// enriched overviews, and makes fewer upstream calls. Over-threshold traces
-// and root filters account for the savings: a list-first trace costs one call
-// either way.
-func TestGetTraceOverviews_ModelRejectionKeepsResults(t *testing.T) {
-	// rare-model on every 9th trace, an error on every 7th root, and every
-	// 5th trace over the span threshold.
-	newFake := func() *fakeObserverClient {
-		return overThreshold(withModel(langGraphFake(600, errorEvery(7)), 9, "rare-model"), 5)
+// Model filters page through the matches. A trace the model rules out costs
+// only the call that supplies its root: its span list, or its root fetch when
+// it is over the span threshold or a status filter is set.
+func TestGetTraceOverviews_ModelFilterPages(t *testing.T) {
+	over := func(i int) bool { return i%5 == 0 }
+	// model is trace i's model, or "" over the span threshold.
+	model := func(i int) string {
+		switch {
+		case over(i):
+			return ""
+		case i%9 == 0:
+			return "rare-model"
+		case i%2 == 1:
+			return "claude-sonnet-4-5"
+		}
+		return "gpt-4o-mini"
 	}
+	claude := func(i int) bool { return strings.HasPrefix(model(i), "claude") }
+	all := func(int) bool { return true }
 	tests := []struct {
 		name    string
 		filters TraceFilters
+		// match picks the traces returned; root picks those the status filter passes.
+		match, root func(i int) bool
 	}{
-		{name: "model", filters: TraceFilters{Model: "claude"}},
-		{name: "rare model", filters: TraceFilters{Model: "rare"}},
+		{name: "model", filters: TraceFilters{Model: "claude"}, match: claude, root: all},
+		{name: "rare model", filters: TraceFilters{Model: "rare"},
+			match: func(i int) bool { return model(i) == "rare-model" }, root: all},
 		// Matches nothing, so the walk stops at the examine cap.
-		{name: "model at cap", filters: TraceFilters{Model: "llama"}},
-		{name: "model and status", filters: TraceFilters{Model: "gpt", Status: TraceStatusError}},
-		{name: "model and minTokens", filters: TraceFilters{Model: "claude", MinTokens: ptr(47)}},
+		{name: "model at cap", filters: TraceFilters{Model: "llama"}, match: func(int) bool { return false }, root: all},
+		{name: "model and status", filters: TraceFilters{Model: "gpt", Status: TraceStatusError},
+			match: func(i int) bool { return strings.HasPrefix(model(i), "gpt") && i%7 == 0 },
+			root:  func(i int) bool { return i%7 == 0 }},
+		{name: "model and minTokens", filters: TraceFilters{Model: "claude", MinTokens: ptr(47)},
+			match: func(i int) bool { return claude(i) && 12+i%40 >= 47 }, root: all},
 	}
 	for _, tt := range tests {
 		for _, order := range []string{"desc", "asc"} {
@@ -163,41 +178,49 @@ func TestGetTraceOverviews_ModelRejectionKeepsResults(t *testing.T) {
 				params := lookBackParams(10)
 				params.Filters = tt.filters
 				params.SortOrder = order
-				earlyFake, fullFake := newFake(), newFake()
+				// rare-model on every 9th trace, an error on every 7th root, and
+				// every 5th trace over the span threshold.
+				fake := overThreshold(withModel(langGraphFake(600, errorEvery(7)), 9, "rare-model"), 5)
 
-				early := pagesOf(t, NewTracingController(earlyFake), params, 3)
-				full := pagesOf(t, &TracingController{observerClient: fullFake, enrichAll: true}, params, 3)
+				pages := pagesOf(t, NewTracingController(fake), params, 3)
 
-				if len(early) != len(full) {
-					t.Fatalf("got %d pages, want %d", len(early), len(full))
+				assertPages(t, pages, wantPages(fake, params, 3, tt.match))
+				assertLangGraphRows(t, fake, pages)
+				lists, roots, others := fetchedTraces(t, fake)
+				if len(others) != 0 {
+					t.Errorf("chain and leaf fetches for traces %v, want none", others)
 				}
-				for i := range full {
-					if !reflect.DeepEqual(early[i], full[i]) {
-						t.Errorf("page %d differs:\n got %+v\nwant %+v", i, early[i], full[i])
+				for _, i := range lists {
+					if over(i) || !tt.root(i) {
+						t.Fatalf("trace-%04d got a span list", i)
 					}
 				}
-				if earlyCalls, fullCalls := upstreamCalls(earlyFake), upstreamCalls(fullFake); earlyCalls >= fullCalls {
-					t.Errorf("upstream calls = %d, want fewer than %d", earlyCalls, fullCalls)
+				for _, i := range roots {
+					if !over(i) && tt.filters.Status == TraceStatusAny {
+						t.Fatalf("trace-%04d fetched its root, want it from the span list", i)
+					}
 				}
 			})
 		}
 	}
 }
 
-// include=models without a model filter runs the full cascade. A page of 10
-// costs 11 calls: one trace list and an attribute list per row, down from 51.
-func TestGetTraceOverviews_IncludeModelsWithoutFilterKeepsCalls(t *testing.T) {
+// include=models without a filter: a page of 10 costs the trace list and an
+// attribute list per row, which also supplies the root.
+func TestGetTraceOverviews_IncludeModelsWithoutFilterCallCounts(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{}
 	params.Include.Models = true
-	fake, fullFake := langGraphFake(30, noRootAttrs), langGraphFake(30, noRootAttrs)
+	fake := langGraphFake(30, noRootAttrs)
 
-	got := pagesOf(t, NewTracingController(fake), params, 1)
-	want := pagesOf(t, &TracingController{observerClient: fullFake, enrichAll: true}, params, 1)
+	pages := pagesOf(t, NewTracingController(fake), params, 1)
 
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("pages differ:\n got %+v\nwant %+v", got, want)
+	want := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		want = append(want, fmt.Sprintf("trace-%04d", i))
 	}
+	assertPages(t, pages, []wantPage{{ids: want, lookedBackTo: fake.traces[9].StartTime, more: true}})
+	assertLangGraphRows(t, fake, pages)
 	if got := atomic.LoadInt32(&fake.queryTracesCalls); got != 1 {
 		t.Errorf("QueryTraces calls = %d, want 1", got)
 	}
@@ -207,13 +230,10 @@ func TestGetTraceOverviews_IncludeModelsWithoutFilterKeepsCalls(t *testing.T) {
 	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != 10 {
 		t.Errorf("QueryTraceSpans calls with attributes = %d, want 10", got)
 	}
-	if upstreamCalls(fake) != upstreamCalls(fullFake) {
-		t.Errorf("upstream calls = %d, want %d", upstreamCalls(fake), upstreamCalls(fullFake))
-	}
 }
 
 // A model on 2% of traces, at the examine cap: one attribute list per examined
-// trace and no span details, down from 530 span details with per-span fetches.
+// trace and no span details.
 func TestGetTraceOverviews_ModelTwoPercentCallCounts(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{Model: "rare"}
@@ -222,23 +242,17 @@ func TestGetTraceOverviews_ModelTwoPercentCallCounts(t *testing.T) {
 		want = append(want, fmt.Sprintf("trace-%04d", i))
 	}
 
-	perSpanFake := withModel(langGraphFake(600, noRootAttrs), 50, "rare-model")
-	perSpanIDs, _, _ := traceIDs(&TracingController{observerClient: perSpanFake, perSpanDetails: true}, t, params)
 	fake := withModel(langGraphFake(600, noRootAttrs), 50, "rare-model")
 	ids, _, _ := traceIDs(NewTracingController(fake), t, params)
 
-	if !slices.Equal(ids, want) || !slices.Equal(perSpanIDs, want) {
-		t.Fatalf("traces = %v (per-span fetches %v); want %v", ids, perSpanIDs, want)
+	if !slices.Equal(ids, want) {
+		t.Fatalf("traces = %v, want %v", ids, want)
 	}
 	// The 10th match is in the 10th chunk of 50, so all 500 lists are fetched.
-	if got := atomic.LoadInt32(&perSpanFake.getSpanDetailsCalls); got != 500+10*3 {
-		t.Errorf("per-span GetSpanDetails calls = %d, want %d (500 roots, chain and two leaves per match)", got, 500+10*3)
-	}
 	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != 0 {
 		t.Errorf("GetSpanDetails calls = %d, want 0", got)
 	}
 	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != 500 {
 		t.Errorf("QueryTraceSpans calls with attributes = %d, want 500", got)
 	}
-	t.Logf("upstream calls: %d with per-span fetches, %d from the attribute list", upstreamCalls(perSpanFake), upstreamCalls(fake))
 }

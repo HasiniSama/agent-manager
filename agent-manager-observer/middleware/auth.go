@@ -90,7 +90,7 @@ func GetTokenClaims(ctx context.Context) *TokenClaims {
 }
 
 // ContextWithTokenClaims returns ctx carrying claims as if JWTAuth had
-// validated a token. Intended for tests and non-HTTP entry points.
+// validated a token, for callers outside the HTTP middleware chain.
 func ContextWithTokenClaims(ctx context.Context, claims *TokenClaims) context.Context {
 	return context.WithValue(ctx, tokenClaimsCtxKey{}, claims)
 }

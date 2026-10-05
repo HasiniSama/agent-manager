@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -88,20 +87,18 @@ func TestTraceFilters_SummaryOnly(t *testing.T) {
 	}
 }
 
-// minDurationMs passing 60%: only the 10 traces the page returns are enriched.
-// The full LangGraph cascade drops from 151 upstream calls to 51.
+// minDurationMs passing 60%: only the 10 traces the page returns are enriched,
+// in 51 upstream calls.
 func TestGetTraceOverviews_SummaryOnlyEnrichesPage(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{MinDurationMs: ptr(1000)}
 	want := longIDs(10, sixtyPercent)
 
-	fullFake := longEvery(langGraphFake(200, noRootAttrs), sixtyPercent)
-	fullIDs, _, _ := traceIDs(&TracingController{observerClient: fullFake, fullChunks: true}, t, params)
 	fake := longEvery(langGraphFake(200, noRootAttrs), sixtyPercent)
 	ids, _, truncated := traceIDs(NewTracingController(fake), t, params)
 
-	if !slices.Equal(ids, want) || !slices.Equal(fullIDs, want) || truncated {
-		t.Fatalf("traces = %v (full chunks %v), truncated %v; want %v, false", ids, fullIDs, truncated, want)
+	if !slices.Equal(ids, want) || truncated {
+		t.Fatalf("traces = %v, truncated %v; want %v, false", ids, truncated, want)
 	}
 	if got := rootFetches(fake); got != 10 {
 		t.Errorf("root GetSpanDetails calls = %d, want 10", got)
@@ -110,45 +107,29 @@ func TestGetTraceOverviews_SummaryOnlyEnrichesPage(t *testing.T) {
 	if got := upstreamCalls(fake); got != 1+10*5 {
 		t.Errorf("upstream calls = %d, want %d", got, 1+10*5)
 	}
-	// The first chunk of 50 holds 30 survivors, all enriched.
-	if got := upstreamCalls(fullFake); got != 1+30*5 {
-		t.Errorf("full chunks upstream calls = %d, want %d", got, 1+30*5)
-	}
 }
 
 // A failed root fetch costs one more enrichment, and the page still fills.
 func TestGetTraceOverviews_SummaryOnlyRootFetchFails(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{MinDurationMs: ptr(1000)}
-	newFake := func() *fakeObserverClient {
-		fake := longEvery(langGraphFake(200, noRootAttrs), sixtyPercent)
-		delete(fake.spanDetails, "root-0002")
-		return fake
-	}
+	fake := longEvery(langGraphFake(200, noRootAttrs), sixtyPercent)
+	delete(fake.spanDetails, "root-0002")
 	want := slices.DeleteFunc(longIDs(11, sixtyPercent), func(id string) bool { return id == "trace-0002" })
 
-	fullResp := pagesOf(t, &TracingController{observerClient: newFake(), fullChunks: true}, params, 1)[0]
-	fake := newFake()
-	resp := pagesOf(t, NewTracingController(fake), params, 1)[0]
+	pages := pagesOf(t, NewTracingController(fake), params, 1)
 
-	ids := make([]string, len(resp.Traces))
-	for i, ov := range resp.Traces {
-		ids[i] = ov.TraceID
-	}
-	if !slices.Equal(ids, want) {
-		t.Fatalf("traces = %v, want %v", ids, want)
-	}
-	if !reflect.DeepEqual(resp, fullResp) {
-		t.Errorf("response differs from full chunks:\n got %+v\nwant %+v", resp, fullResp)
-	}
+	last := fake.traces[traceIndex(t, want[len(want)-1])]
+	assertPages(t, pages, []wantPage{{ids: want, lookedBackTo: last.StartTime, more: true}})
+	assertLangGraphRows(t, fake, pages)
 	if got := rootFetches(fake); got != 11 {
 		t.Errorf("root GetSpanDetails calls = %d, want 11", got)
 	}
 }
 
-// Page-sized chunks return the same pages as full chunks, and make fewer
-// upstream calls whenever the page fills.
-func TestGetTraceOverviews_SummaryOnlyKeepsResults(t *testing.T) {
+// Summary-only filters page through the matches and enrich only the traces
+// the pages return.
+func TestGetTraceOverviews_SummaryOnlyPages(t *testing.T) {
 	// Spans per trace: 4, or 6 on every 4th.
 	moreSpans := func(fake *fakeObserverClient) {
 		for i := range fake.traces {
@@ -165,21 +146,22 @@ func TestGetTraceOverviews_SummaryOnlyKeepsResults(t *testing.T) {
 			fake.traces[i].EndTime = fake.traces[10].StartTime
 		}
 	}
+	sixSpans := func(i int) bool { return i%4 == 0 }
 	tests := []struct {
 		name    string
 		filters TraceFilters
 		models  bool
 		mutate  func(*fakeObserverClient)
-		// fills is false when no page fills, so the calls are equal.
-		fills bool
+		match   func(i int) bool
 	}{
-		{name: "minDurationMs", filters: TraceFilters{MinDurationMs: ptr(1000)}, mutate: moreSpans, fills: true},
-		{name: "minSpanCount", filters: TraceFilters{MinSpanCount: ptr(5)}, mutate: moreSpans, fills: true},
-		{name: "both", filters: TraceFilters{MinDurationMs: ptr(1000), MinSpanCount: ptr(5)}, mutate: moreSpans, fills: true},
-		{name: "includeModels", filters: TraceFilters{MinDurationMs: ptr(1000)}, models: true, mutate: moreSpans, fills: true},
-		{name: "ties at the cursor", filters: TraceFilters{MinSpanCount: ptr(4)}, mutate: ties, fills: true},
+		{name: "minDurationMs", filters: TraceFilters{MinDurationMs: ptr(1000)}, mutate: moreSpans, match: sixtyPercent},
+		{name: "minSpanCount", filters: TraceFilters{MinSpanCount: ptr(5)}, mutate: moreSpans, match: sixSpans},
+		{name: "both", filters: TraceFilters{MinDurationMs: ptr(1000), MinSpanCount: ptr(5)}, mutate: moreSpans,
+			match: func(i int) bool { return sixtyPercent(i) && sixSpans(i) }},
+		{name: "includeModels", filters: TraceFilters{MinDurationMs: ptr(1000)}, models: true, mutate: moreSpans, match: sixtyPercent},
+		{name: "ties at the cursor", filters: TraceFilters{MinSpanCount: ptr(4)}, mutate: ties, match: func(int) bool { return true }},
 		// Matches nothing, so the walk stops at the examine cap.
-		{name: "at cap", filters: TraceFilters{MinSpanCount: ptr(100)}, mutate: moreSpans},
+		{name: "at cap", filters: TraceFilters{MinSpanCount: ptr(100)}, mutate: moreSpans, match: func(int) bool { return false }},
 	}
 	for _, tt := range tests {
 		for _, order := range []string{"desc", "asc"} {
@@ -188,30 +170,24 @@ func TestGetTraceOverviews_SummaryOnlyKeepsResults(t *testing.T) {
 				params.Filters = tt.filters
 				params.Include.Models = tt.models
 				params.SortOrder = order
-				newFake := func() *fakeObserverClient {
-					fake := longEvery(langGraphFake(600, noRootAttrs), sixtyPercent)
-					tt.mutate(fake)
-					return fake
-				}
-				fake, fullFake := newFake(), newFake()
+				fake := longEvery(langGraphFake(600, noRootAttrs), sixtyPercent)
+				tt.mutate(fake)
 
-				got := pagesOf(t, NewTracingController(fake), params, 3)
-				want := pagesOf(t, &TracingController{observerClient: fullFake, fullChunks: true}, params, 3)
+				pages := pagesOf(t, NewTracingController(fake), params, 3)
 
-				if len(got) != len(want) {
-					t.Fatalf("got %d pages, want %d", len(got), len(want))
-				}
-				for i := range want {
-					if !reflect.DeepEqual(got[i], want[i]) {
-						t.Errorf("page %d differs:\n got %+v\nwant %+v", i, got[i], want[i])
+				assertPages(t, pages, wantPages(fake, params, 3, tt.match))
+				assertLangGraphRows(t, fake, pages)
+				returned := map[int]bool{}
+				for _, page := range pages {
+					for _, ov := range page.Traces {
+						returned[traceIndex(t, ov.TraceID)] = true
 					}
 				}
-				calls, fullCalls := upstreamCalls(fake), upstreamCalls(fullFake)
-				if tt.fills && calls >= fullCalls {
-					t.Errorf("upstream calls = %d, want fewer than %d", calls, fullCalls)
-				}
-				if !tt.fills && calls != fullCalls {
-					t.Errorf("upstream calls = %d, want %d", calls, fullCalls)
+				lists, roots, others := fetchedTraces(t, fake)
+				for _, i := range slices.Concat(lists, roots, others) {
+					if !returned[i] {
+						t.Fatalf("trace-%04d was enriched but not returned", i)
+					}
 				}
 			})
 		}
