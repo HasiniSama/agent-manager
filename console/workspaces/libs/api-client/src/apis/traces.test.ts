@@ -97,7 +97,7 @@ describe("getTraceList query string", () => {
   });
 
   it.each([
-    [true, { includeModels: "true" }],
+    [true, { include: "models" }],
     [false, {}],
     [undefined, {}],
   ])("includeModels=%s", async (includeModels, extra) => {

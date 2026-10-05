@@ -122,7 +122,7 @@ export async function getTraceList(
   if (limit !== undefined) searchParams.limit = limit.toString();
   if (sortOrder) searchParams.sortOrder = sortOrder;
   Object.assign(searchParams, traceFilterSearchParams(filters));
-  if (includeModels === true) searchParams.includeModels = "true";
+  if (includeModels === true) searchParams.include = "models";
   if (cursor) searchParams.cursor = cursor;
 
   const res = await httpGETObserver("/api/v1/traces", { searchParams, token });
