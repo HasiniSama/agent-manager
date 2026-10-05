@@ -160,6 +160,13 @@ paths:
 
         `organization`, `project`, `agent`, and `environment` are all required to scope the export
         to a specific agent.
+
+        The filter parameters are the list endpoint's and select the same traces: they combine with
+        AND, and with any filter set the server walks the window in sort order until it has `limit`
+        matches, the window runs out, or it has examined 500 traces (`truncated` is then true, and
+        `lookedBackTo` says how far it got). Spans are fetched only for the matches, so a filtered
+        export returns at most 500 traces. There is no cursor: to export further back, narrow the
+        window. With no filter set the export makes one upstream trace query, as before.
       operationId: exportTraces
       security:
         - bearerAuth: []
@@ -180,6 +187,12 @@ paths:
             maximum: 1000
             default: 100
         - $ref: "#/components/parameters/sortOrder"
+        - $ref: "#/components/parameters/traceStatusFilter"
+        - $ref: "#/components/parameters/minDurationMsFilter"
+        - $ref: "#/components/parameters/minTokensFilter"
+        - $ref: "#/components/parameters/minSpanCountFilter"
+        - $ref: "#/components/parameters/modelFilter"
+        - $ref: "#/components/parameters/conversationIdFilter"
       responses:
         "200":
           description: Export payload
@@ -765,9 +778,22 @@ components:
             $ref: "#/components/schemas/FullTrace"
         totalCount:
           type: integer
+          description: |
+            Upstream trace count for the window when no filter is set; the number of
+            exported traces when any filter is set.
+        lookedBackTo:
+          type: string
+          format: date-time
+          description: |
+            Set only when a filter is set. How far the server examined traces, in UTC with
+            sub-second precision: the start time of the last trace examined in sort order, or the
+            window edge (`startTime` for `desc`, `endTime` for `asc`) when the window ran out.
+          example: "2026-04-01T00:00:00.5Z"
         truncated:
           type: boolean
-          description: True if any trace hit the MaxSpansPerRequest cap (10 000 spans)
+          description: |
+            True when the export was cut short: a filtered export reached its cap of 500 examined
+            traces before the window ran out, or a trace hit the 10 000 span cap.
 
     # ── schemas ─────────────────────────────────────────────────────────────
 

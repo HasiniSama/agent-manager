@@ -276,6 +276,7 @@ export const TracesComponent: React.FC = () => {
         endTime,
         sortOrder,
         limit,
+        filters,
       });
 
       // Create a blob from the JSON data
@@ -310,6 +311,7 @@ export const TracesComponent: React.FC = () => {
     timeRange,
     sortOrder,
     limit,
+    filters,
     exportTracesAsync,
     hasCustomRange,
     customStartTime,

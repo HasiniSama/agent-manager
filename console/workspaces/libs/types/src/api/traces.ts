@@ -244,6 +244,10 @@ export interface FullTrace {
 export interface TraceExportResponse {
   traces: FullTrace[];
   totalCount: number;
+  /** How far a filtered export looked (RFC3339Nano); absent without filters. */
+  lookedBackTo?: string;
+  /** True when the examine cap stopped a filtered export or a trace hit the span cap. */
+  truncated?: boolean;
 }
 
 export type ExportTracesPathParams = {

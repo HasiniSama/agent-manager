@@ -249,7 +249,10 @@ type FullTrace struct {
 type TraceExportResponse struct {
 	Traces     []FullTrace `json:"traces"`
 	TotalCount int         `json:"totalCount"`
-	Truncated  bool        `json:"truncated"`
+	// LookedBackTo is how far a filtered export looked (RFC3339Nano); empty without filters.
+	LookedBackTo string `json:"lookedBackTo,omitempty"`
+	// Truncated is true when the examine cap stopped a filtered export or a trace hit the span cap.
+	Truncated bool `json:"truncated"`
 }
 
 // SearchResponse represents OpenSearch search response

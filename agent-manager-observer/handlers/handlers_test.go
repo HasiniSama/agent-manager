@@ -443,7 +443,8 @@ func TestParseInclude_ErrorNamesValue(t *testing.T) {
 	}
 }
 
-func TestGetTraceOverviews_InvalidFilters(t *testing.T) {
+// The list and export endpoints reject the same invalid filters.
+func TestTraceEndpoints_InvalidFilters(t *testing.T) {
 	tests := []struct {
 		name  string
 		query string
@@ -456,13 +457,19 @@ func TestGetTraceOverviews_InvalidFilters(t *testing.T) {
 		{name: "fractional minDurationMs", query: "&minDurationMs=1.5"},
 		{name: "negative minSpanCount", query: "&minSpanCount=-2"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "/api/v1/traces?"+baseParams()+tt.query, nil)
-			rec := httptest.NewRecorder()
-			newHandler().GetTraceOverviews(rec, r)
-			assertBadRequest(t, rec)
-		})
+	endpoints := map[string]func(*Handler) http.HandlerFunc{
+		"/api/v1/traces":        func(h *Handler) http.HandlerFunc { return h.GetTraceOverviews },
+		"/api/v1/traces/export": func(h *Handler) http.HandlerFunc { return h.ExportTraces },
+	}
+	for path, handler := range endpoints {
+		for _, tt := range tests {
+			t.Run(path+" "+tt.name, func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodGet, path+"?"+baseParams()+tt.query, nil)
+				rec := httptest.NewRecorder()
+				handler(newHandler())(rec, r)
+				assertBadRequest(t, rec)
+			})
+		}
 	}
 }
 
