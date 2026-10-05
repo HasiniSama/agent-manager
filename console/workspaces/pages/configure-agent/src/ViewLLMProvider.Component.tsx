@@ -96,9 +96,44 @@ const EXAMPLE_MODEL_BY_TEMPLATE: Record<string, string> = {
   "azure-openai": "gpt-4o-mini",
   "azureai-foundry": "gpt-4o-mini",
   anthropic: "claude-sonnet-4-5",
-  gemini: "gemini-2.0-flash",
+  gemini: "gemini-3.8-flash",
   mistralai: "mistral-small-latest",
 };
+
+// different providers have different completion endpoints
+function getExampleRequest(
+  templateId: string | undefined,
+  model: string,
+): { path: string; headers: string[]; body: string } {
+  switch (templateId) {
+    case "mistralai":
+      return {
+        path: "/v1/chat/completions",
+        headers: [],
+        body: `{"model": "${model}", "messages": [{"role": "user", "content": "Hi..."}]}`,
+      };
+    case "anthropic":
+      // The Messages API rejects requests without anthropic-version or max_tokens.
+      return {
+        path: "/v1/messages",
+        headers: [`anthropic-version: 2023-06-01`],
+        body: `{"model": "${model}", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hi..."}]}`,
+      };
+    case "gemini":
+      // Gemini takes the model from the path, not the body.
+      return {
+        path: `/v1beta/models/${model}:generateContent`,
+        headers: [],
+        body: `{"contents": [{"parts": [{"text": "Hi..."}]}]}`,
+      };
+    default:
+      return {
+        path: "/chat/completions",
+        headers: [],
+        body: `{"model": "${model}", "messages": [{"role": "user", "content": "Hi..."}]}`,
+      };
+  }
+}
 
 function getClientSetupSnippet(
   templateId: string | undefined,
@@ -973,23 +1008,23 @@ export const ViewLLMProviderComponent: React.FC = () => {
             const headerValue = authEntry?.value || (apiKeyEnvVar ? `$${apiKeyEnvVar.name}` : "<api-key>");
             const entryIsQueryAuth = (authEntry?.in || authIn) === "query";
             const endpointUrl = providerConfig.url || "<endpoint-url>";
-            // Single-quoted: an endpoint carrying a query string or any other shell
-            // metacharacter would otherwise be split by the shell before curl sees it.
-            const requestUrl = `'${endpointUrl}/chat/completions'`;
             const exampleModel =
               EXAMPLE_MODEL_BY_TEMPLATE[catalogProvider?.template ?? ""] ?? "<model-id>";
+            const exampleRequest = getExampleRequest(catalogProvider?.template, exampleModel);
+            const requestUrl = `'${endpointUrl}${exampleRequest.path}'`;
             const curlCode = [
               `curl -X POST ${requestUrl}`,
               // curl sends -d as application/x-www-form-urlencoded unless told
               // otherwise, which every OpenAI-compatible endpoint rejects.
               `  --header "Content-Type: application/json"`,
+              ...exampleRequest.headers.map((h) => `  --header "${h}"`),
               !noAuthRequired && !entryIsQueryAuth ? `  --header "${headerName}: ${headerValue}"` : null,
               // curl encodes the value but expects the name pre-encoded, hence the
               // asymmetry — the value is often a shell variable to expand.
               !noAuthRequired && entryIsQueryAuth
                 ? `  --url-query "${encodeURIComponent(headerName)}=${headerValue}"`
                 : null,
-              `  -d '{"model": "${exampleModel}", "messages": [{"role": "user", "content": "Hi..."}]}'`,
+              `  -d '${exampleRequest.body}'`,
             ]
               .filter(Boolean)
               .join(" \\\n");
