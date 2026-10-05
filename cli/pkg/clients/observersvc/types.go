@@ -111,9 +111,10 @@ type FullTrace struct {
 }
 
 type TraceExportResponse struct {
-	Traces     []FullTrace `json:"traces"`
-	TotalCount int         `json:"totalCount"`
-	Truncated  bool        `json:"truncated"`
+	Traces       []FullTrace `json:"traces"`
+	TotalCount   int         `json:"totalCount"`
+	LookedBackTo string      `json:"lookedBackTo,omitempty"`
+	Truncated    bool        `json:"truncated"`
 }
 
 type SpanSummary struct {

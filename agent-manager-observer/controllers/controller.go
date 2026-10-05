@@ -130,11 +130,6 @@ type SpanListResponse struct {
 // the window runs out, or maxExaminedTraces traces have been examined.
 // A cursor continues from an earlier page over the same whole window.
 func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
-	// A model filter needs Models filled.
-	if params.Filters.Model != "" {
-		params.Include.Models = true
-	}
-
 	var resp *opensearch.TraceOverviewResponse
 	var examined int
 	var err error
@@ -229,6 +224,10 @@ func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQ
 // end time, so a narrowed end would drop traces that overlap it. A cursor
 // skips traces before it by time; they are not enriched or examined.
 func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, int, error) {
+	// A model filter needs Models filled.
+	if params.Filters.Model != "" {
+		params.Include.Models = true
+	}
 	cur := params.Cursor
 	asc := params.SortOrder == "asc"
 	summaryOnly := params.Filters.SummaryOnly() && !c.fullChunks
@@ -942,36 +941,20 @@ func (c *TracingController) GetSpanDetail(ctx context.Context, traceID, spanID s
 }
 
 // ExportTraces fetches complete traces with all spans fully enriched for export.
-// Observer calls: 1 QueryTraces + N QueryTraceSpans (spans carry attributes
-// inline via includeAttributes). Concurrency is bounded by maxConcurrentTraces
-// outer goroutines. Any single failure aborts the entire export.
+// The traces come from selectExportTraces; each then costs one QueryTraceSpans
+// (spans carry attributes inline via includeAttributes). Concurrency is bounded
+// by maxConcurrentTraces outer goroutines. Any single failure aborts the entire export.
 func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryParams) (*opensearch.TraceExportResponse, error) {
 	log := logger.GetLogger(ctx)
 
-	sortOrder := params.SortOrder
-	req := observer.TracesQueryRequest{
-		StartTime: params.StartTime,
-		EndTime:   params.EndTime,
-		Limit:     &params.Limit,
-		SortOrder: &sortOrder,
-		SearchScope: observer.ComponentSearchScope{
-			Namespace:   c.observerClient.NamespaceFor(params.Organization),
-			Project:     params.Project,
-			Component:   params.Agent,
-			Environment: params.Environment,
-		},
-	}
-
-	tracesResp, err := c.observerClient.QueryTraces(ctx, req)
+	traces, resp, err := c.selectExportTraces(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(tracesResp.Traces) == 0 {
-		return &opensearch.TraceExportResponse{
-			Traces:     []opensearch.FullTrace{},
-			TotalCount: tracesResp.Total,
-		}, nil
+	if len(traces) == 0 {
+		resp.Traces = []opensearch.FullTrace{}
+		return resp, nil
 	}
 
 	type traceResult struct {
@@ -979,7 +962,7 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 		fullTrace *opensearch.FullTrace
 	}
 
-	results := make([]traceResult, len(tracesResp.Traces))
+	results := make([]traceResult, len(traces))
 	var truncated atomic.Bool
 
 	// Fail-fast: first error cancels all in-flight requests.
@@ -991,7 +974,7 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 	outerSem := make(chan struct{}, maxConcurrentTraces)
 	var wg sync.WaitGroup
 
-	for i, t := range tracesResp.Traces {
+	for i, t := range traces {
 		wg.Add(1)
 		go func(idx int, traceInfo observer.TraceInfo) {
 			defer wg.Done()
@@ -1128,14 +1111,74 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 		}
 	}
 
-	log.Info("Completed trace export",
-		"totalCount", tracesResp.Total,
-		"exported", len(fullTraces),
-		"truncated", truncated.Load())
+	resp.Traces = fullTraces
+	resp.Truncated = resp.Truncated || truncated.Load()
 
-	return &opensearch.TraceExportResponse{
-		Traces:     fullTraces,
-		TotalCount: tracesResp.Total,
-		Truncated:  truncated.Load(),
+	log.Info("Completed trace export",
+		"organization", params.Organization,
+		"filters", params.Filters,
+		"totalCount", resp.TotalCount,
+		"exported", len(fullTraces),
+		"truncated", resp.Truncated)
+
+	return resp, nil
+}
+
+// selectExportTraces picks the traces to export. Without a filter it calls
+// QueryTraces once. With one it selects matches the way a filtered list does,
+// from the start of the window, so the examine cap applies.
+func (c *TracingController) selectExportTraces(ctx context.Context, params TraceQueryParams) ([]observer.TraceInfo, *opensearch.TraceExportResponse, error) {
+	if params.Filters.IsZero() {
+		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, params.Limit))
+		if err != nil {
+			return nil, nil, err
+		}
+		return tracesResp.Traces, &opensearch.TraceExportResponse{TotalCount: tracesResp.Total}, nil
+	}
+
+	params.Cursor = nil
+	page, examined, err := c.lookBackForMatches(ctx, params)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controllers.ExportTraces: %w", err)
+	}
+	traces := make([]observer.TraceInfo, 0, len(page.Traces))
+	for _, ov := range page.Traces {
+		t, err := traceInfoOf(ov)
+		if err != nil {
+			return nil, nil, fmt.Errorf("controllers.ExportTraces: %w", err)
+		}
+		traces = append(traces, t)
+	}
+	logger.GetLogger(ctx).Info("Selected traces for export",
+		"organization", params.Organization,
+		"filters", params.Filters,
+		"examined", examined,
+		"matched", len(traces),
+		"truncated", page.Truncated)
+	return traces, &opensearch.TraceExportResponse{
+		TotalCount:   page.TotalCount,
+		LookedBackTo: page.LookedBackTo,
+		Truncated:    page.Truncated,
+	}, nil
+}
+
+// traceInfoOf rebuilds the trace-list fields export needs from an overview.
+func traceInfoOf(ov opensearch.TraceOverview) (observer.TraceInfo, error) {
+	start, err := time.Parse(time.RFC3339Nano, ov.StartTime)
+	if err != nil {
+		return observer.TraceInfo{}, fmt.Errorf("trace %s: start time: %w", ov.TraceID, err)
+	}
+	end, err := time.Parse(time.RFC3339Nano, ov.EndTime)
+	if err != nil {
+		return observer.TraceInfo{}, fmt.Errorf("trace %s: end time: %w", ov.TraceID, err)
+	}
+	return observer.TraceInfo{
+		TraceID:      ov.TraceID,
+		RootSpanID:   ov.RootSpanID,
+		RootSpanName: ov.RootSpanName,
+		StartTime:    start,
+		EndTime:      end,
+		DurationNs:   ov.DurationInNanos,
+		SpanCount:    ov.SpanCount,
 	}, nil
 }

@@ -42,6 +42,9 @@ export interface ObserverTraceListParams {
   cursor?: string;
 }
 
+/** Export takes the list's window and filters; it has no cursor or includeModels. */
+export type ExportTracesQueryParams = Omit<ObserverTraceListParams, "includeModels" | "cursor">;
+
 /** Returns only the set filter fields, in a fixed order. */
 export function normalizeTraceFilters(filters?: TraceFilters): TraceFilters {
   const out: TraceFilters = {};
@@ -130,7 +133,7 @@ export async function getTraceList(
 }
 
 export async function exportTraces(
-  params: ObserverTraceListParams,
+  params: ExportTracesQueryParams,
   getToken?: () => Promise<string>
 ): Promise<TraceExportResponse> {
   const {
@@ -142,6 +145,7 @@ export async function exportTraces(
     endTime,
     limit,
     sortOrder,
+    filters,
   } = params;
   assertRequired(organization, "organization");
   assertRequired(project, "project");
@@ -162,6 +166,7 @@ export async function exportTraces(
   };
   if (limit !== undefined) searchParams.limit = limit.toString();
   if (sortOrder) searchParams.sortOrder = sortOrder;
+  Object.assign(searchParams, traceFilterSearchParams(filters));
 
   const res = await httpGETObserver("/api/v1/traces/export", { searchParams, token });
   return res.json();

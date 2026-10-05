@@ -18,7 +18,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { httpGETObserver } from "../utils";
-import { getTraceList, type ObserverTraceListParams } from "./traces";
+import { exportTraces, getTraceList, type ObserverTraceListParams } from "./traces";
 
 vi.mock("../utils", () => ({ httpGETObserver: vi.fn() }));
 
@@ -108,5 +108,49 @@ describe("getTraceList query string", () => {
     expect(await sentQuery({ ...BASE, cursor: "abc" })).toEqual({ ...BASE_QUERY, cursor: "abc" });
     mockGET.mockClear();
     expect(await sentQuery({ ...BASE, cursor: "" })).toEqual(BASE_QUERY);
+  });
+});
+
+describe("exportTraces query string", () => {
+  async function sentExportQuery(params: ObserverTraceListParams): Promise<Record<string, string>> {
+    await exportTraces(params);
+    const [path, opts] = mockGET.mock.calls[0];
+    expect(path).toBe("/api/v1/traces/export");
+    return opts.searchParams ?? {};
+  }
+
+  it("sends today's params when no filters are set", async () => {
+    expect(await sentExportQuery(BASE)).toEqual(BASE_QUERY);
+  });
+
+  it("sends every set filter", async () => {
+    const query = await sentExportQuery({
+      ...BASE,
+      filters: {
+        status: "ok",
+        minDurationMs: 5000,
+        minTokens: 1000,
+        minSpanCount: 20,
+        model: "gpt-4o",
+        conversationId: "conv-1",
+      },
+    });
+    expect(query).toEqual({
+      ...BASE_QUERY,
+      status: "ok",
+      minDurationMs: "5000",
+      minTokens: "1000",
+      minSpanCount: "20",
+      model: "gpt-4o",
+      conversationId: "conv-1",
+    });
+  });
+
+  it("omits unset and empty filters but keeps a zero threshold", async () => {
+    const query = await sentExportQuery({
+      ...BASE,
+      filters: { status: undefined, minSpanCount: 0, model: "" },
+    });
+    expect(query).toEqual({ ...BASE_QUERY, minSpanCount: "0" });
   });
 });

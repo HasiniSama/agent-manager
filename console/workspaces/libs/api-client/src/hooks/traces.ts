@@ -502,7 +502,7 @@ export function useSpanDetail(
 
 export type ExportTracesParams = Pick<
   ObserverTraceListParams,
-  "startTime" | "endTime" | "limit" | "sortOrder"
+  "startTime" | "endTime" | "limit" | "sortOrder" | "filters"
 > & {
   organization: string;
   project: string;
@@ -527,6 +527,7 @@ export function useExportTraces() {
         endTime,
         limit,
         sortOrder,
+        filters,
       } = params;
 
       return exportTraces(
@@ -539,6 +540,7 @@ export function useExportTraces() {
           endTime,
           limit,
           sortOrder,
+          filters,
         },
         getToken,
       );

@@ -285,6 +285,13 @@ func (h *Handler) ExportTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	filters, err := parseTraceFilters(query)
+	if err != nil {
+		log.Info("Rejected trace filter", "organization", organization, "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	params := controllers.TraceQueryParams{
 		Organization: organization,
 		Project:      &project,
@@ -294,6 +301,7 @@ func (h *Handler) ExportTraces(w http.ResponseWriter, r *http.Request) {
 		EndTime:      endTime,
 		Limit:        limit,
 		SortOrder:    sortOrder,
+		Filters:      filters,
 	}
 
 	result, err := h.controller.ExportTraces(r.Context(), params)
