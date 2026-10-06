@@ -158,7 +158,7 @@ function ErrorPage({ message, title, subTitle, onLogout }: ErrorPageProps) {
                         startIcon={<RefreshCw size={18} />}
                         onClick={() => window.location.reload()}
                     >
-                        Try Again
+                        Try again
                     </Button>
                 </>
             }
