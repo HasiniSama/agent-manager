@@ -26,6 +26,7 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
 )
 
+// ptr returns a pointer to v.
 func ptr(v int64) *int64 { return &v }
 
 // filterOverview: errored, 5s, 12 spans, 1000 tokens, two models, conv-1.
@@ -41,6 +42,7 @@ func filterOverview() opensearch.TraceOverview {
 	}
 }
 
+// Each filter keeps matching traces and drops the rest.
 func TestMatchesFilters(t *testing.T) {
 	ok := filterOverview()
 	ok.Status = &opensearch.TraceStatus{ErrorCount: 0}
@@ -106,6 +108,7 @@ func TestMatchesFilters(t *testing.T) {
 	}
 }
 
+// IsZero is true only when no filter is set.
 func TestTraceFiltersIsZero(t *testing.T) {
 	if !(TraceFilters{}).IsZero() {
 		t.Error("zero TraceFilters should report IsZero")

@@ -91,6 +91,7 @@ interface CommitTextFieldProps {
 // Text filter that commits on Enter or blur; remount it (via key) to reset the draft.
 function CommitTextField({ label, value, onCommit }: CommitTextFieldProps) {
   const [draft, setDraft] = useState(value ?? "");
+  /** Commits the trimmed draft when it changed; empty clears the filter. */
   const commit = () => {
     const trimmed = draft.trim();
     if (trimmed !== (value ?? "")) onCommit(trimmed || undefined);
@@ -111,9 +112,11 @@ function CommitTextField({ label, value, onCommit }: CommitTextFieldProps) {
   );
 }
 
+/** Filter controls plus one removable chip per set filter. */
 export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({ filters, onChange }) => {
   const set = <K extends TraceFilterKey>(key: K, value: TraceFilters[K]) =>
     onChange({ ...filters, [key]: value });
+  /** Clears one filter. */
   const remove = (key: TraceFilterKey) => {
     const next = { ...filters };
     delete next[key];

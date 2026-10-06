@@ -46,6 +46,7 @@ const BASE_QUERY = {
   sortOrder: "desc",
 };
 
+/** Calls getTraceList and returns the query params it sent. */
 async function sentQuery(params: ObserverTraceListParams): Promise<Record<string, string>> {
   await getTraceList(params);
   const [path, opts] = mockGET.mock.calls[0];
@@ -112,6 +113,7 @@ describe("getTraceList query string", () => {
 });
 
 describe("exportTraces query string", () => {
+  /** Calls exportTraces and returns the query params it sent. */
   async function sentExportQuery(params: ObserverTraceListParams): Promise<Record<string, string>> {
     await exportTraces(params);
     const [path, opts] = mockGET.mock.calls[0];

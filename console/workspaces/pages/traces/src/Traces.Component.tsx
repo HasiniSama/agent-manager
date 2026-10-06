@@ -104,6 +104,7 @@ const exportWarningLines = (
   return null;
 };
 
+/** Traces page: filter bar, trace list and trace drawer, with state kept in the URL. */
 export const TracesComponent: React.FC = () => {
   const { agentId, orgId, projectId, envId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -249,6 +250,7 @@ export const TracesComponent: React.FC = () => {
   // Set on a filter change; holds the list shown before it so the check waits for the new one.
   const selectionCheckRef = useRef<{ staleData: typeof traceData } | null>(null);
 
+  /** Writes the filters to the URL and rechecks the open trace once the new list loads. */
   const handleFiltersChange = useCallback(
     (nextFilters: TraceFilters) => {
       const next = withTraceFilters(searchParams, nextFilters);
@@ -259,11 +261,13 @@ export const TracesComponent: React.FC = () => {
     [searchParams, setSearchParams, filters, selectedTrace, traceData],
   );
 
+  /** Filters the list to one conversation. */
   const handleConversationSelect = useCallback(
     (conversationId: string) => handleFiltersChange({ ...filters, conversationId }),
     [handleFiltersChange, filters],
   );
 
+  /** Writes the visible columns to the URL. */
   const handleColumnsChange = useCallback(
     (columns: TraceColumn[]) => setSearchParams(withTraceColumns(searchParams, columns)),
     [searchParams, setSearchParams],
@@ -279,6 +283,7 @@ export const TracesComponent: React.FC = () => {
     }
   }, [traceData, isLoading, selectedTrace, handleCloseDrawer]);
 
+  /** Downloads the filtered traces and warns when the file may be partial. */
   const handleExportTraces = useCallback(async () => {
     setExportWarning(null);
     if (!organization || !projectId || !agentId || !environmentName) {

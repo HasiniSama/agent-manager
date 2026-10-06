@@ -60,6 +60,7 @@ func lookBackFake(n, matchEvery int) *fakeObserverClient {
 	return fake
 }
 
+// lookBackParams builds a 24h window filtered on conv-match.
 func lookBackParams(limit int) TraceQueryParams {
 	params := baseParams()
 	params.StartTime = lookBackWindowEnd.Add(-24 * time.Hour)
@@ -69,6 +70,7 @@ func lookBackParams(limit int) TraceQueryParams {
 	return params
 }
 
+// assertNoDuplicates fails if a trace ID appears twice.
 func assertNoDuplicates(t *testing.T, ids []string) {
 	t.Helper()
 	seen := make(map[string]bool, len(ids))
@@ -80,6 +82,7 @@ func assertNoDuplicates(t *testing.T, ids []string) {
 	}
 }
 
+// traceIDs fetches one page and returns its IDs, lookedBackTo and truncated.
 func traceIDs(c *TracingController, t *testing.T, params TraceQueryParams) ([]string, string, bool) {
 	t.Helper()
 	resp, err := c.GetTraceOverviews(context.Background(), params)
@@ -326,12 +329,14 @@ type fakeClock struct {
 	t  time.Time
 }
 
+// now returns the fake time.
 func (c *fakeClock) now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.t
 }
 
+// advance moves the fake time forward by d.
 func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

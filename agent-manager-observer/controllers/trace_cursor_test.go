@@ -89,6 +89,7 @@ func wantIDs(lo, hi, matchEvery int) map[string]bool {
 	return ids
 }
 
+// assertIDs reports missing and extra trace IDs.
 func assertIDs(t *testing.T, got, want map[string]bool) {
 	t.Helper()
 	var missing, extra []string
@@ -109,6 +110,7 @@ func assertIDs(t *testing.T, got, want map[string]bool) {
 	}
 }
 
+// cursorParams builds look-back params with the given sort order, filtered or not.
 func cursorParams(limit int, sortOrder string, filtered bool) TraceQueryParams {
 	params := lookBackParams(limit)
 	params.SortOrder = sortOrder
@@ -343,6 +345,7 @@ func TestGetTraceOverviews_CursorRankClampedAtDepthCap(t *testing.T) {
 	}
 }
 
+// A cursor decodes to the rank and time it was encoded with.
 func TestTraceCursor_RoundTrip(t *testing.T) {
 	want := TraceCursor{Rank: 42, Time: time.Date(2026, 9, 1, 11, 59, 1, 123456789, time.UTC)}
 
@@ -356,6 +359,7 @@ func TestTraceCursor_RoundTrip(t *testing.T) {
 	}
 }
 
+// A rank equal to the depth cap is accepted.
 func TestDecodeTraceCursor_AcceptsDepthCap(t *testing.T) {
 	want := TraceCursor{Rank: maxCursorDepth, Time: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
 
@@ -369,6 +373,7 @@ func TestDecodeTraceCursor_AcceptsDepthCap(t *testing.T) {
 	}
 }
 
+// Malformed or out-of-range cursors are rejected.
 func TestDecodeTraceCursor_Rejects(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	tests := map[string]string{

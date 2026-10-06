@@ -62,6 +62,7 @@ func longIDs(n int, long func(i int) bool) []string {
 	return ids
 }
 
+// SummaryOnly is true only when duration or span count are the only filters.
 func TestTraceFilters_SummaryOnly(t *testing.T) {
 	tests := []struct {
 		name    string

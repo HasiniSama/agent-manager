@@ -127,6 +127,7 @@ function ConversationCell({
     </Tooltip>
   );
 }
+/** Trace list table with optional columns and older/newer paging. */
 export function TracesTable({
   traces,
   onTraceSelect,

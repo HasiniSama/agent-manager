@@ -362,10 +362,12 @@ type fakeObserverClient struct {
 	lastSpansReq observer.TracesQueryRequest
 }
 
+// QueryTraces returns the configured traces.
 func (f *fakeObserverClient) QueryTraces(_ context.Context, _ observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
 	return &observer.TracesQueryResponse{Traces: f.traces, Total: len(f.traces)}, nil
 }
 
+// QueryTraceSpans records the request and returns no spans.
 func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
 	f.lastSpansReq = req
 	return &observer.TraceSpansQueryResponse{}, nil
@@ -473,6 +475,7 @@ func TestTraceEndpoints_InvalidFilters(t *testing.T) {
 	}
 }
 
+// Malformed cursors return 400.
 func TestGetTraceOverviews_InvalidCursor(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	tests := map[string]string{
@@ -492,6 +495,7 @@ func TestGetTraceOverviews_InvalidCursor(t *testing.T) {
 	}
 }
 
+// A valid cursor returns 200.
 func TestGetTraceOverviews_ValidCursorAccepted(t *testing.T) {
 	fake := &fakeObserverClient{traces: []observer.TraceInfo{{TraceID: "trace-1", RootSpanID: "root", SpanCount: 2}}}
 	h := NewHandler(controllers.NewTracingController(fake), nil)
@@ -504,6 +508,7 @@ func TestGetTraceOverviews_ValidCursorAccepted(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK)
 }
 
+// parseTraceFilters parses every filter and rejects invalid values.
 func TestParseTraceFilters(t *testing.T) {
 	t.Run("absent leaves every filter unset", func(t *testing.T) {
 		f, err := parseTraceFilters(url.Values{})

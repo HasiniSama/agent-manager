@@ -146,6 +146,7 @@ export interface TraceListOptions {
   includeModels?: boolean;
 }
 
+/** Trace list for the window and filters, with cursor paging, newer-trace polling and scores. */
 export function useTraceList(
   organization?: string,
   project?: string,
@@ -333,6 +334,7 @@ export function useTraceList(
     return response.nextCursor;
   }, [scopeParams, getToken, mergeTraces]);
 
+  /** Loads the next older page from the cursor. */
   const loadOlder = useCallback(async () => {
     const cursor = nextCursorRef.current;
     if (!cursor || isLoadingOlder) return;
@@ -527,6 +529,7 @@ export type ExportTracesParams = Pick<
   environment: string;
 };
 
+/** Mutation that exports traces for the current window and filters. */
 export function useExportTraces() {
   const { getToken } = useAuthHooks();
 

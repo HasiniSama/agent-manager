@@ -29,12 +29,14 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
 )
 
+// exportParams builds look-back params with the given filters.
 func exportParams(limit int, f TraceFilters) TraceQueryParams {
 	params := lookBackParams(limit)
 	params.Filters = f
 	return params
 }
 
+// exportedIDs lists the exported trace IDs in order.
 func exportedIDs(resp *opensearch.TraceExportResponse) []string {
 	ids := make([]string, 0, len(resp.Traces))
 	for _, tr := range resp.Traces {
@@ -43,6 +45,7 @@ func exportedIDs(resp *opensearch.TraceExportResponse) []string {
 	return ids
 }
 
+// mustExport runs ExportTraces and fails the test on error.
 func mustExport(t *testing.T, c *TracingController, params TraceQueryParams) *opensearch.TraceExportResponse {
 	t.Helper()
 	resp, err := c.ExportTraces(context.Background(), params)

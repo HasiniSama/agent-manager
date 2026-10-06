@@ -26,6 +26,7 @@ export const OPTIONAL_TRACE_COLUMNS: { key: TraceColumn; label: string }[] = [
 
 export const DEFAULT_TRACE_COLUMNS: TraceColumn[] = ["conversation"];
 
+/** True for a known optional column key. */
 const isTraceColumn = (value: string): value is TraceColumn =>
   OPTIONAL_TRACE_COLUMNS.some((c) => c.key === value);
 

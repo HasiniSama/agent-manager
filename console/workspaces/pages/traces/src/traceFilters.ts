@@ -39,9 +39,11 @@ export const LATENCY_PRESETS_MS = [1000, 5000, 10000, 30000];
 export const TOKEN_PRESETS = [1000, 5000, 10000, 50000];
 export const STEP_PRESETS = [10, 20, 50];
 
+/** Formats ms as seconds when whole, e.g. 5s or 1500ms. */
 export const formatLatency = (ms: number) =>
   ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
 
+/** Formats whole thousands as k, e.g. 5k. */
 export const formatTokens = (n: number) =>
   n >= 1000 && n % 1000 === 0 ? `${n / 1000}k` : `${n}`;
 

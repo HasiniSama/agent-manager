@@ -643,6 +643,7 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 	return f, nil
 }
 
+// parseMinThreshold parses an optional non-negative integer filter.
 func parseMinThreshold(name, s string) (*int64, error) {
 	if s == "" {
 		return nil, nil

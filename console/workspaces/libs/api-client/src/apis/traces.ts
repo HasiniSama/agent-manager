@@ -88,6 +88,7 @@ function assertRequired(value: string, field: string): void {
   if (!value?.trim()) throw new Error(`Missing required parameters: ${field}`);
 }
 
+/** Fetches one page of the trace list, with any filters and cursor. */
 export async function getTraceList(
   params: ObserverTraceListParams,
   getToken?: () => Promise<string>
@@ -132,6 +133,7 @@ export async function getTraceList(
   return res.json();
 }
 
+/** Exports full traces for the window and filters. */
 export async function exportTraces(
   params: ExportTracesQueryParams,
   getToken?: () => Promise<string>

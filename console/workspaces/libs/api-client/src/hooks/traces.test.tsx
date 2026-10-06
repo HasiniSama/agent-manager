@@ -51,6 +51,7 @@ const mockScores = vi.mocked(getAgentTraceScores);
 const START = "2026-10-02T09:00:00Z";
 const END = "2026-10-02T10:00:00Z";
 
+/** A minimal trace overview. */
 function trace(id: string, startTime: string): TraceOverview {
   return {
     traceId: id,
@@ -63,6 +64,7 @@ function trace(id: string, startTime: string): TraceOverview {
   };
 }
 
+/** A trace-list response for the given traces. */
 function page(traces: TraceOverview[], extra: Partial<TraceListResponse> = {}): TraceListResponse {
   return { traces, totalCount: traces.length, ...extra };
 }
@@ -71,6 +73,7 @@ type HookResult = ReturnType<typeof useTraceList>;
 
 let root: Root | undefined;
 
+/** Renders useTraceList and returns a ref to its latest result. */
 function renderTraceList(options?: { filters?: TraceFilters; includeModels?: boolean }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = {} as { current: HookResult };
@@ -91,6 +94,7 @@ function renderTraceList(options?: { filters?: TraceFilters; includeModels?: boo
   return result;
 }
 
+/** Flushes pending work until check passes, then asserts it. */
 async function waitFor(check: () => boolean) {
   for (let i = 0; i < 50 && !check(); i += 1) {
     await act(async () => {

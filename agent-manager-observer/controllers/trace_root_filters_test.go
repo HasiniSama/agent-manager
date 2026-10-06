@@ -89,6 +89,7 @@ func langGraphFake(n int, rootAttrs func(i int) map[string]interface{}) *fakeObs
 	return fake
 }
 
+// noRootAttrs adds no root attributes.
 func noRootAttrs(int) map[string]interface{} { return nil }
 
 // errorEvery marks every nth root (from 0) as failed.
@@ -123,6 +124,7 @@ func pagesOf(t *testing.T, c *TracingController, params TraceQueryParams, n int)
 	return pages
 }
 
+// upstreamCalls counts every upstream call the fake received.
 func upstreamCalls(f *fakeObserverClient) int32 {
 	return atomic.LoadInt32(&f.queryTracesCalls) + atomic.LoadInt32(&f.getSpanDetailsCalls) + atomic.LoadInt32(&f.queryTraceSpansCalls)
 }

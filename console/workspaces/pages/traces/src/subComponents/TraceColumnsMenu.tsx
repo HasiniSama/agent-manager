@@ -40,6 +40,7 @@ export const TraceColumnsMenu: React.FC<TraceColumnsMenuProps> = ({
   onChange,
 }) => {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  /** Shows or hides one column. */
   const toggle = (key: TraceColumn) =>
     onChange(
       visibleColumns.includes(key)

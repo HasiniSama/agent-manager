@@ -77,6 +77,7 @@ type fakeObserverClient struct {
 	defaultNamespace string
 }
 
+// QueryTraces records the request and returns the configured traces, windowed like upstream when windowed is set.
 func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
 	atomic.AddInt32(&f.queryTracesCalls, 1)
 	f.tracesReqs = append(f.tracesReqs, req)
@@ -130,6 +131,7 @@ func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQ
 	return &observer.TracesQueryResponse{Traces: traces, Total: total}, nil
 }
 
+// QueryTraceSpans returns the configured spans for traceID and records the call.
 func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, traceID string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
 	atomic.AddInt32(&f.queryTraceSpansCalls, 1)
 	if req.IncludeAttributes {
@@ -167,6 +169,7 @@ func (f *fakeObserverClient) QueryMetrics(_ context.Context, _ observer.MetricsQ
 	return &observer.ResourceMetricsTimeSeries{}, nil
 }
 
+// GetSpanDetails returns the configured details for spanID and records the call.
 func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, spanID string) (*observer.SpanDetailsResponse, error) {
 	atomic.AddInt32(&f.getSpanDetailsCalls, 1)
 	if f.onGetSpanDetails != nil {
@@ -612,6 +615,7 @@ func overviewFake(rootAttrs map[string]interface{}, spans []observer.SpanInfo, d
 	}
 }
 
+// singleOverview fetches the trace list and expects exactly one trace.
 func singleOverview(t *testing.T, c *TracingController, params TraceQueryParams) opensearch.TraceOverview {
 	t.Helper()
 	resp, err := c.GetTraceOverviews(context.Background(), params)
@@ -624,6 +628,7 @@ func singleOverview(t *testing.T, c *TracingController, params TraceQueryParams)
 	return resp.Traces[0]
 }
 
+// assertModels checks the models list, in order.
 func assertModels(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

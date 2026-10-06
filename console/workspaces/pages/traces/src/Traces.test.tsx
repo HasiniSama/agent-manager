@@ -84,6 +84,7 @@ const ALL = [
   makeTrace("t-ok", 0),
 ];
 const listCache = new Map<string, unknown>();
+/** Cached list data for the filters; status=error keeps only errored traces. */
 const listFor = (filters: TraceFilters = {}) => {
   const key = JSON.stringify(filters);
   if (!listCache.has(key)) {
@@ -123,11 +124,13 @@ beforeEach(() => {
   }) as unknown as ReturnType<typeof useTraceList>);
 });
 
+/** Renders the current URL search so tests can read it. */
 function SearchProbe() {
   return <div data-testid="search">{useLocation().search}</div>;
 }
 const currentParams = () => new URLSearchParams(screen.getByTestId("search").textContent ?? "");
 
+/** Renders the traces page at the given search string. */
 const renderPage = (search = "") =>
   render(
     <ThemeProvider theme={createTheme()}>
