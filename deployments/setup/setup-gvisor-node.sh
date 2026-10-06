@@ -234,13 +234,49 @@ kubectl taint --context "$CLUSTER_CONTEXT" node "${NODE_NAME}" \
 # --- 6. Ensure the Fluent Bit log collector tolerates the gVisor taint ---
 # Fluent Bit is a DaemonSet (one pod per node) that tails each node's container
 # logs. The gVisor taint repels it, so without a toleration agents on the gVisor
-# node produce NO runtime logs. setup-openchoreo.sh installs it with
-# tolerations[operator=Exists]; patch the running DaemonSet here too so an
-# already-installed collector starts covering the new node immediately.
-if kubectl get daemonset fluent-bit -n openchoreo-observability-plane --context "$CLUSTER_CONTEXT" &>/dev/null; then
+# node produce NO runtime logs. setup-openchoreo.sh installs it with the chart value
+# fluent-bit.tolerations[operator=Exists]; a log module installed without it gets the
+# same value here through Helm rather than a patch on the Helm-owned DaemonSet, which
+# would be lost whenever the DaemonSet is recreated. The upgrade pins the release's
+# own installed chart version so --reuse-values never crosses a chart version change.
+FB_NAMESPACE="openchoreo-observability-plane"
+FB_RELEASE="observability-logs-opensearch"
+FB_CHART="oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch"
+if kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" --context "$CLUSTER_CONTEXT" &>/dev/null; then
     echo "🪵 Ensuring Fluent Bit tolerates the gVisor taint (so logs are collected here)..."
-    kubectl patch daemonset fluent-bit -n openchoreo-observability-plane --context "$CLUSTER_CONTEXT" --type=json \
-        -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"operator":"Exists"}]}]' >/dev/null 2>&1 || true
+    FB_TOLERATIONS="$(kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" --context "$CLUSTER_CONTEXT" \
+        -o jsonpath='{range .spec.template.spec.tolerations[*]}{.operator}/{.key}/{.effect}{"\n"}{end}')"
+    if printf '%s\n' "$FB_TOLERATIONS" | grep -qxE 'Exists//(NoSchedule)?'; then
+        echo "   ✅ Fluent Bit already tolerates all taints"
+    else
+        # `|| true`: under pipefail a missing or failing helm would otherwise abort the
+        # script here instead of reaching the patch fallback below.
+        FB_CHART_VERSION=""
+        if command -v helm &>/dev/null; then
+            FB_CHART_VERSION="$(helm list -n "$FB_NAMESPACE" --kube-context "$CLUSTER_CONTEXT" \
+                --filter "^${FB_RELEASE}\$" -o yaml 2>/dev/null | sed -n "s/^[- ]*chart: ${FB_RELEASE}-//p" || true)"
+        fi
+        if [ -n "$FB_CHART_VERSION" ] && helm upgrade "$FB_RELEASE" "$FB_CHART" \
+                --kube-context "$CLUSTER_CONTEXT" \
+                --namespace "$FB_NAMESPACE" \
+                --version "$FB_CHART_VERSION" \
+                --reuse-values \
+                --set "fluent-bit.tolerations[0].operator=Exists" >/dev/null; then
+            echo "   ✅ Set fluent-bit.tolerations on the ${FB_RELEASE} release (chart ${FB_CHART_VERSION})"
+        else
+            # Fallback for a log module that is not a Helm release we can upgrade from
+            # here. The patch works now but does not survive the DaemonSet being recreated.
+            kubectl patch daemonset fluent-bit -n "$FB_NAMESPACE" --context "$CLUSTER_CONTEXT" --type=json \
+                -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"operator":"Exists"}]}]' >/dev/null 2>&1 || true
+            echo "   ⚠️  Could not set the toleration through Helm; patched the DaemonSet instead."
+            echo "       The patch is lost if the DaemonSet is recreated. Make it durable with:"
+            echo "         helm upgrade ${FB_RELEASE} ${FB_CHART} \\"
+            echo "           --kube-context ${CLUSTER_CONTEXT} --namespace ${FB_NAMESPACE} \\"
+            echo "           --version <installed chart version, from: helm list -n ${FB_NAMESPACE}> \\"
+            echo "           --reuse-values \\"
+            echo "           --set \"fluent-bit.tolerations[0].operator=Exists\""
+        fi
+    fi
 fi
 
 # --- Status + networking sanity check ---
