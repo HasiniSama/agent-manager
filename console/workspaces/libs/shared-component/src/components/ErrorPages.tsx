@@ -149,7 +149,7 @@ function ErrorPage({ message, title, subTitle, onLogout }: ErrorPageProps) {
                             startIcon={<LogOut size={18} />}
                             onClick={onLogout}
                         >
-                            Sign Out
+                            Sign out
                         </Button>
                     )}
                     <Button

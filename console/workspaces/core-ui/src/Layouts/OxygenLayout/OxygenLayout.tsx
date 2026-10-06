@@ -156,7 +156,7 @@ export function OxygenLayout() {
                     onClick={() => setProfileOpen(true)}
                   />
                 )}
-                <UserMenu.Logout icon={<LogOut />} label="Sign Out" onClick={handleLogout} />
+                <UserMenu.Logout icon={<LogOut />} label="Sign out" onClick={handleLogout} />
               </UserMenu>
             </Header.Actions>
           </Header>
