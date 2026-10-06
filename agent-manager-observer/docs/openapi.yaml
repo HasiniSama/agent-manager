@@ -170,6 +170,10 @@ paths:
         for the matches, so a filtered export returns at most 500 traces. There is no cursor: to
         export further back, narrow the window. With no filter set the export makes one upstream
         trace query, as before.
+
+        A trace that can't be read, while selecting with a filter or while fetching its spans, is
+        retried once, then left out and listed in `failedTraceIds`. The export fails only when it
+        could read none of the traces it selected.
       operationId: exportTraces
       security:
         - bearerAuth: []
@@ -805,6 +809,13 @@ components:
           description: |
             True when an exported trace has more than 10 000 spans; the file holds the first
             10 000 spans of that trace.
+        failedTraceIds:
+          type: array
+          items:
+            type: string
+          description: |
+            Traces left out because they couldn't be read. A trace that failed while a filter was
+            selecting traces may or may not have matched. Absent when every trace was read.
 
     # ── schemas ─────────────────────────────────────────────────────────────
 

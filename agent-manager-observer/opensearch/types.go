@@ -255,6 +255,8 @@ type TraceExportResponse struct {
 	Truncated bool `json:"truncated"`
 	// SpansTruncated is true when an exported trace hit the span cap and its spans were cut.
 	SpansTruncated bool `json:"spansTruncated"`
+	// FailedTraceIDs lists traces left out because they couldn't be read, in selection or span fetch.
+	FailedTraceIDs []string `json:"failedTraceIds,omitempty"`
 }
 
 // SearchResponse represents OpenSearch search response

@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -503,5 +505,64 @@ func TestGetTraceOverviews_LookBackWithinBudget(t *testing.T) {
 	}
 	if got := logField(t, logs, "Retrieved trace overviews", "budgetExceeded"); got != false {
 		t.Errorf("budgetExceeded logged as %v, want false", got)
+	}
+}
+
+// A filtered list retries a root that fails once, and leaves out one that
+// keeps failing with no error and no new response field.
+func TestGetTraceOverviews_LookBackRootFetchFails(t *testing.T) {
+	// matchesSkipping is the first 10 matches of a 1-in-5 filter without skip.
+	matchesSkipping := func(skip int) []string {
+		var ids []string
+		for i := 0; len(ids) < 10; i += 5 {
+			if i != skip {
+				ids = append(ids, fmt.Sprintf("trace-%04d", i))
+			}
+		}
+		return ids
+	}
+	tests := []struct {
+		name       string
+		times      int
+		want       []string
+		wantFailed float64
+	}{
+		{name: "fails once", times: 1, want: matchesSkipping(-1)},
+		{name: "keeps failing", times: -1, want: matchesSkipping(5), wantFailed: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := lookBackFake(200, 5)
+			fake.failCall = failTimes(map[string]int{"root-0005": tt.times})
+			ctx, logs := logContext()
+
+			resp, err := NewTracingController(fake).GetTraceOverviews(ctx, lookBackParams(10))
+			if err != nil {
+				t.Fatalf("GetTraceOverviews returned error: %v", err)
+			}
+
+			ids := make([]string, 0, len(resp.Traces))
+			for _, tr := range resp.Traces {
+				ids = append(ids, tr.TraceID)
+			}
+			if !reflect.DeepEqual(ids, tt.want) || resp.Truncated || resp.NextCursor == "" {
+				t.Fatalf("got %v, truncated %v, cursor %q; want %v, false, a cursor", ids, resp.Truncated, resp.NextCursor, tt.want)
+			}
+			if got := logField(t, logs, "Retrieved trace overviews", "failed"); got != tt.wantFailed {
+				t.Errorf("failed logged as %v, want %v", got, tt.wantFailed)
+			}
+			b, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(b, &fields); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			want := []string{"lookedBackTo", "nextCursor", "totalCount", "traces", "truncated"}
+			if got := slices.Sorted(maps.Keys(fields)); !reflect.DeepEqual(got, want) {
+				t.Errorf("response fields = %v, want %v", got, want)
+			}
+		})
 	}
 }

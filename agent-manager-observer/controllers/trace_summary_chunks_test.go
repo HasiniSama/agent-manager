@@ -110,7 +110,8 @@ func TestGetTraceOverviews_SummaryOnlyEnrichesPage(t *testing.T) {
 	}
 }
 
-// A failed root fetch costs one more enrichment, and the page still fills.
+// A root fetch that keeps failing is retried once and costs one more
+// enrichment, and the page still fills.
 func TestGetTraceOverviews_SummaryOnlyRootFetchFails(t *testing.T) {
 	params := lookBackParams(10)
 	params.Filters = TraceFilters{MinDurationMs: ptr(1000)}
@@ -123,8 +124,8 @@ func TestGetTraceOverviews_SummaryOnlyRootFetchFails(t *testing.T) {
 	last := fake.traces[traceIndex(t, want[len(want)-1])]
 	assertPages(t, pages, []wantPage{{ids: want, lookedBackTo: last.StartTime, more: true}})
 	assertLangGraphRows(t, fake, pages)
-	if got := rootFetches(fake); got != 11 {
-		t.Errorf("root GetSpanDetails calls = %d, want 11", got)
+	if got := rootFetches(fake); got != 12 {
+		t.Errorf("root GetSpanDetails calls = %d, want 12", got)
 	}
 }
 

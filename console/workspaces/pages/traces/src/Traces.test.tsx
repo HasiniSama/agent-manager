@@ -359,6 +359,8 @@ describe("TracesComponent export warning", () => {
   const LOOKED_BACK_TO = "2026-10-01T08:14:00Z";
   const SPANS_TEXT =
     "Some traces have more than 10,000 spans. The file has the first 10,000 spans of each.";
+  const FAILED_3_TEXT =
+    "3 traces couldn't be read, so the file may be missing them. Export again to retry.";
   const exportTraces = vi.fn<(params: unknown) => Promise<TraceExportResponse>>();
   const createObjectURL = vi.fn(() => "blob:export");
   let clickSpy: ReturnType<typeof vi.spyOn>;
@@ -495,5 +497,72 @@ describe("TracesComponent export warning", () => {
     await act(async () => finishSecond(exportResponse()));
     expect(createObjectURL).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(SPANS_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("says how many traces couldn't be read, without filters", async () => {
+    exportTraces.mockResolvedValue(
+      exportResponse({ failedTraceIds: ["trace-1", "trace-2", "trace-3"] }),
+    );
+    renderPage();
+
+    clickExport();
+
+    expect(await screen.findByText(FAILED_3_TEXT)).toBeInTheDocument();
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it("says one trace couldn't be read in the singular", async () => {
+    exportTraces.mockResolvedValue(exportResponse({ failedTraceIds: ["trace-1"] }));
+    renderPage("?status=error");
+
+    clickExport();
+
+    expect(
+      await screen.findByText(
+        "1 trace couldn't be read, so the file may be missing it. Export again to retry.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("stacks the unread line under the cut-spans line", async () => {
+    exportTraces.mockResolvedValue(
+      exportResponse({
+        truncated: true,
+        spansTruncated: true,
+        failedTraceIds: ["trace-1", "trace-2", "trace-3"],
+      }),
+    );
+    renderPage();
+
+    clickExport();
+
+    expect(await screen.findByText(SPANS_TEXT)).toBeInTheDocument();
+    expect(screen.getByText(FAILED_3_TEXT)).toBeInTheDocument();
+  });
+
+  it("stacks the unread line under the stopped-search line", async () => {
+    exportTraces.mockResolvedValue(
+      exportResponse({
+        truncated: true,
+        lookedBackTo: LOOKED_BACK_TO,
+        failedTraceIds: ["trace-1", "trace-2", "trace-3"],
+      }),
+    );
+    renderPage("?status=error");
+
+    clickExport();
+
+    expect(await screen.findByText(/^The export stopped before the end/)).toBeInTheDocument();
+    expect(screen.getByText(FAILED_3_TEXT)).toBeInTheDocument();
+  });
+
+  it("shows no warning for an empty unread list", async () => {
+    exportTraces.mockResolvedValue(exportResponse({ failedTraceIds: [] }));
+    renderPage();
+
+    clickExport();
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

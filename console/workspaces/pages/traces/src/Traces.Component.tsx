@@ -81,17 +81,16 @@ const exportWarningLines = (
   filtered: boolean,
 ): string[] | null => {
   const searchedTo = resp.lookedBackTo ? formatStartTime(resp.lookedBackTo) : undefined;
+  const lines: string[] = [];
   if (resp.spansTruncated) {
-    const lines = [
+    lines.push(
       "Some traces have more than 10,000 spans. The file has the first 10,000 spans of each.",
-    ];
+    );
     if (filtered && searchedTo) {
       lines.push(`The search may also have stopped early: it searched as far as ${searchedTo}.`);
     }
-    return lines;
-  }
-  if (resp.truncated && filtered) {
-    return [
+  } else if (resp.truncated && filtered) {
+    lines.push(
       [
         "The export stopped before the end of the time range.",
         searchedTo && `It searched as far as ${searchedTo}.`,
@@ -99,9 +98,17 @@ const exportWarningLines = (
       ]
         .filter(Boolean)
         .join(" "),
-    ];
+    );
   }
-  return null;
+  const failed = resp.failedTraceIds?.length ?? 0;
+  if (failed === 1) {
+    lines.push("1 trace couldn't be read, so the file may be missing it. Export again to retry.");
+  } else if (failed > 1) {
+    lines.push(
+      `${failed} traces couldn't be read, so the file may be missing them. Export again to retry.`,
+    );
+  }
+  return lines.length > 0 ? lines : null;
 };
 
 /** Traces page: filter bar, trace list and trace drawer, with state kept in the URL. */

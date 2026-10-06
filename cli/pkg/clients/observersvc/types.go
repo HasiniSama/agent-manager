@@ -116,6 +116,7 @@ type TraceExportResponse struct {
 	LookedBackTo   string      `json:"lookedBackTo,omitempty"`
 	Truncated      bool        `json:"truncated"`
 	SpansTruncated bool        `json:"spansTruncated"`
+	FailedTraceIDs []string    `json:"failedTraceIds,omitempty"`
 }
 
 type SpanSummary struct {

@@ -68,6 +68,9 @@ type fakeObserverClient struct {
 	// onGetSpanDetails runs at the start of each GetSpanDetails call, which
 	// enrichment makes concurrently.
 	onGetSpanDetails func(spanID string)
+	// failCall runs after each GetSpanDetails call (with its span ID) and
+	// QueryTraceSpans call (with its trace ID) is recorded; an error fails it.
+	failCall func(id string) error
 	// tracesReqs records every QueryTraces request.
 	tracesReqs []observer.TracesQueryRequest
 
@@ -156,6 +159,11 @@ func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, traceID string, 
 	f.lastSpansReq = req
 	f.spansTraceIDs = append(f.spansTraceIDs, traceID)
 	f.mu.Unlock()
+	if f.failCall != nil {
+		if err := f.failCall(traceID); err != nil {
+			return nil, err
+		}
+	}
 	spans := f.spans
 	if f.spansByTrace != nil {
 		spans = f.spansByTrace[traceID]
@@ -193,6 +201,11 @@ func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, spanID string)
 	f.mu.Lock()
 	f.detailSpanIDs = append(f.detailSpanIDs, spanID)
 	f.mu.Unlock()
+	if f.failCall != nil {
+		if err := f.failCall(spanID); err != nil {
+			return nil, err
+		}
+	}
 	if f.rootSpan != nil && spanID == f.rootSpan.SpanID {
 		return f.rootSpan, nil
 	}

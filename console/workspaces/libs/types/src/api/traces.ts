@@ -250,6 +250,8 @@ export interface TraceExportResponse {
   truncated?: boolean;
   /** True when an exported trace hit the 10,000 span cap and its spans were cut. */
   spansTruncated?: boolean;
+  /** Traces left out of the file because they couldn't be read. */
+  failedTraceIds?: string[];
 }
 
 export type ExportTracesPathParams = {

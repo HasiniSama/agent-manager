@@ -19,9 +19,12 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -306,5 +309,221 @@ func TestTraceExportResponse_SpansTruncatedAlwaysPresent(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"spansTruncated":false`) {
 		t.Errorf("marshalled %s, want spansTruncated false", b)
+	}
+}
+
+// failTimes fails the calls for each ID that many times; -1 fails every call.
+func failTimes(counts map[string]int) func(string) error {
+	var mu sync.Mutex
+	return func(id string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		n := counts[id]
+		if n == 0 {
+			return nil
+		}
+		if n > 0 {
+			counts[id] = n - 1
+		}
+		return fmt.Errorf("fake: %s unavailable", id)
+	}
+}
+
+// spanFetches counts the QueryTraceSpans calls for traceID.
+func spanFetches(fake *fakeObserverClient, traceID string) int {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	n := 0
+	for _, id := range fake.spansTraceIDs {
+		if id == traceID {
+			n++
+		}
+	}
+	return n
+}
+
+// A root that can't be read is retried once, then listed whether or not it would have matched.
+func TestExportTraces_RootFetchFails(t *testing.T) {
+	errorIDs := []string{"trace-0000", "trace-0010", "trace-0020", "trace-0030", "trace-0040", "trace-0050"}
+	tests := []struct {
+		name       string
+		root       string
+		times      int
+		want       []string
+		wantFailed []string
+	}{
+		{name: "fails once", root: "root-0020", times: 1, want: errorIDs},
+		{name: "keeps failing", root: "root-0020", times: -1,
+			want:       []string{"trace-0000", "trace-0010", "trace-0030", "trace-0040", "trace-0050"},
+			wantFailed: []string{"trace-0020"}},
+		{name: "keeps failing on a non-match", root: "root-0021", times: -1,
+			want: errorIDs, wantFailed: []string{"trace-0021"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := langGraphFake(60, errorEvery(10))
+			fake.failCall = failTimes(map[string]int{tt.root: tt.times})
+			c := NewTracingController(fake)
+			ctx, logs := logContext()
+
+			resp, err := c.ExportTraces(ctx, exportParams(100, TraceFilters{Status: TraceStatusError}))
+			if err != nil {
+				t.Fatalf("ExportTraces returned error: %v", err)
+			}
+
+			if got := exportedIDs(resp); !slices.Equal(got, tt.want) {
+				t.Fatalf("exported %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(resp.FailedTraceIDs, tt.wantFailed) {
+				t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, tt.wantFailed)
+			}
+			if resp.Truncated {
+				t.Error("truncated = true, want false")
+			}
+			if got := atomic.LoadInt32(&fake.attrSpansCalls); got != int32(len(tt.want)) {
+				t.Errorf("full span fetches = %d, want %d (one per exported trace)", got, len(tt.want))
+			}
+			for _, msg := range []string{"Selected traces for export", "Completed trace export"} {
+				if got := logField(t, logs, msg, "failed"); got != float64(len(tt.wantFailed)) {
+					t.Errorf("%q logged failed = %v, want %d", msg, got, len(tt.wantFailed))
+				}
+			}
+		})
+	}
+}
+
+// A trace whose span list keeps failing can't be judged by a model or
+// minTokens filter, so it is listed and the selection moves past it.
+func TestExportTraces_SpanListFailsInSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters TraceFilters
+		trace   string
+		want    []string
+	}{
+		{name: "model", filters: TraceFilters{Model: "claude"}, trace: "trace-0003",
+			want: []string{"trace-0001", "trace-0005", "trace-0007"}},
+		{name: "minTokens", filters: TraceFilters{MinTokens: ptr(12)}, trace: "trace-0001",
+			want: []string{"trace-0000", "trace-0002", "trace-0003"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := langGraphFake(20, noRootAttrs)
+			fake.failCall = failTimes(map[string]int{tt.trace: -1})
+
+			resp := mustExport(t, NewTracingController(fake), exportParams(3, tt.filters))
+
+			if got := exportedIDs(resp); !slices.Equal(got, tt.want) {
+				t.Fatalf("exported %v, want %v", got, tt.want)
+			}
+			if want := []string{tt.trace}; !slices.Equal(resp.FailedTraceIDs, want) {
+				t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, want)
+			}
+		})
+	}
+}
+
+// Without a filter, a span fetch that fails once is retried, and one that
+// keeps failing leaves its trace out while the others export in order.
+func TestExportTraces_SpanFetchFails(t *testing.T) {
+	all := make([]string, 0, 20)
+	for i := range 20 {
+		all = append(all, fmt.Sprintf("trace-%04d", i))
+	}
+	tests := []struct {
+		name       string
+		times      int
+		want       []string
+		wantFailed []string
+	}{
+		{name: "fails once", times: 1, want: all},
+		{name: "keeps failing", times: -1,
+			want:       slices.DeleteFunc(slices.Clone(all), func(id string) bool { return id == "trace-0005" }),
+			wantFailed: []string{"trace-0005"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := langGraphFake(60, noRootAttrs)
+			fake.failCall = failTimes(map[string]int{"trace-0005": tt.times})
+
+			resp := mustExport(t, NewTracingController(fake), exportParams(20, TraceFilters{}))
+
+			if got := exportedIDs(resp); !slices.Equal(got, tt.want) {
+				t.Fatalf("exported %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(resp.FailedTraceIDs, tt.wantFailed) {
+				t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, tt.wantFailed)
+			}
+			if got := spanFetches(fake, "trace-0005"); got != 2 {
+				t.Errorf("span fetches for trace-0005 = %d, want 2", got)
+			}
+		})
+	}
+}
+
+// A trace with no root span among its spans is listed without a retry.
+func TestExportTraces_NoRootSpanListed(t *testing.T) {
+	fake := langGraphFake(60, noRootAttrs)
+	spans := fake.spansByTrace["trace-0007"]
+	fake.spansByTrace["trace-0007"] = spans[:len(spans)-1] // the root is last
+
+	resp := mustExport(t, NewTracingController(fake), exportParams(20, TraceFilters{}))
+
+	if got := exportedIDs(resp); len(got) != 19 || slices.Contains(got, "trace-0007") {
+		t.Fatalf("exported %v, want the other 19", got)
+	}
+	if want := []string{"trace-0007"}; !slices.Equal(resp.FailedTraceIDs, want) {
+		t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, want)
+	}
+	if got := spanFetches(fake, "trace-0007"); got != 1 {
+		t.Errorf("span fetches for trace-0007 = %d, want 1", got)
+	}
+}
+
+// An export that can read no trace fails, as before.
+func TestExportTraces_EveryTraceFails(t *testing.T) {
+	fake := langGraphFake(60, noRootAttrs)
+	fake.failCall = func(id string) error { return fmt.Errorf("fake: %s unavailable", id) }
+
+	resp, err := NewTracingController(fake).ExportTraces(context.Background(), exportParams(20, TraceFilters{}))
+
+	if err == nil || resp != nil {
+		t.Fatalf("err = %v, response %v; want an error and no response", err, resp != nil)
+	}
+	if !strings.Contains(err.Error(), "query spans") {
+		t.Errorf("err = %v, want the span fetch's error", err)
+	}
+}
+
+// A cancelled export fails instead of listing the traces it was reading.
+func TestExportTraces_Cancelled(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters TraceFilters
+		id      string
+	}{
+		// Nothing matches, so the selection would otherwise end with only the failure.
+		{name: "during selection", filters: TraceFilters{Status: TraceStatusError}, id: "root-0003"},
+		{name: "during the span phase", filters: TraceFilters{}, id: "trace-0003"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := langGraphFake(30, noRootAttrs)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			fake.failCall = func(id string) error {
+				if id == tt.id {
+					cancel()
+					return context.Canceled
+				}
+				return nil
+			}
+
+			resp, err := NewTracingController(fake).ExportTraces(ctx, exportParams(20, tt.filters))
+
+			if !errors.Is(err, context.Canceled) || resp != nil {
+				t.Fatalf("err = %v, response %v; want context.Canceled and no response", err, resp != nil)
+			}
+		})
 	}
 }
