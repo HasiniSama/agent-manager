@@ -47,13 +47,15 @@ type fakeObserverClient struct {
 	// (excluding root, which is rootSpan).
 	spanDetails map[string]*observer.SpanDetailsResponse
 
-	// mu guards lastSpansReq, spansTraceIDs and detailSpanIDs.
+	// mu guards lastSpansReq, spansTraceIDs, attrSpansTraceIDs and detailSpanIDs.
 	mu sync.Mutex
 	// lastSpansReq records the request passed to the most recent
 	// QueryTraceSpans call so export tests can assert IncludeAttributes.
 	lastSpansReq observer.TracesQueryRequest
 	// spansTraceIDs records the trace ID of every QueryTraceSpans call.
 	spansTraceIDs []string
+	// attrSpansTraceIDs records the trace ID of every QueryTraceSpans call with IncludeAttributes.
+	attrSpansTraceIDs []string
 	// detailSpanIDs records the span ID of every GetSpanDetails call.
 	detailSpanIDs []string
 
@@ -67,10 +69,15 @@ type fakeObserverClient struct {
 	onQueryTraces func()
 	// onGetSpanDetails runs at the start of each GetSpanDetails call, which
 	// enrichment makes concurrently.
-	onGetSpanDetails func(spanID string)
+	onGetSpanDetails func(ctx context.Context, spanID string)
+	// onCall runs with the ctx of every QueryTraces, QueryTraceSpans and GetSpanDetails call.
+	onCall func(ctx context.Context)
 	// failCall runs after each GetSpanDetails call (with its span ID) and
 	// QueryTraceSpans call (with its trace ID) is recorded; an error fails it.
 	failCall func(id string) error
+	// failOnDone fails each GetSpanDetails and QueryTraceSpans call whose ctx
+	// is done by the time it returns, as the HTTP client does.
+	failOnDone bool
 	// tracesReqs records every QueryTraces request.
 	tracesReqs []observer.TracesQueryRequest
 
@@ -85,7 +92,10 @@ type fakeObserverClient struct {
 }
 
 // QueryTraces records the request and returns the configured traces, windowed like upstream when windowed is set.
-func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
+func (f *fakeObserverClient) QueryTraces(ctx context.Context, req observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
+	if f.onCall != nil {
+		f.onCall(ctx)
+	}
 	calls := atomic.AddInt32(&f.queryTracesCalls, 1)
 	f.tracesReqs = append(f.tracesReqs, req)
 	if f.onQueryTraces != nil {
@@ -150,7 +160,10 @@ func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQ
 }
 
 // QueryTraceSpans returns the configured spans for traceID and records the call.
-func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, traceID string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
+func (f *fakeObserverClient) QueryTraceSpans(ctx context.Context, traceID string, req observer.TracesQueryRequest) (*observer.TraceSpansQueryResponse, error) {
+	if f.onCall != nil {
+		f.onCall(ctx)
+	}
 	atomic.AddInt32(&f.queryTraceSpansCalls, 1)
 	if req.IncludeAttributes {
 		atomic.AddInt32(&f.attrSpansCalls, 1)
@@ -158,7 +171,13 @@ func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, traceID string, 
 	f.mu.Lock()
 	f.lastSpansReq = req
 	f.spansTraceIDs = append(f.spansTraceIDs, traceID)
+	if req.IncludeAttributes {
+		f.attrSpansTraceIDs = append(f.attrSpansTraceIDs, traceID)
+	}
 	f.mu.Unlock()
+	if f.failOnDone && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if f.failCall != nil {
 		if err := f.failCall(traceID); err != nil {
 			return nil, err
@@ -193,14 +212,20 @@ func (f *fakeObserverClient) QueryMetrics(_ context.Context, _ observer.MetricsQ
 }
 
 // GetSpanDetails returns the configured details for spanID and records the call.
-func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, spanID string) (*observer.SpanDetailsResponse, error) {
+func (f *fakeObserverClient) GetSpanDetails(ctx context.Context, _, spanID string) (*observer.SpanDetailsResponse, error) {
+	if f.onCall != nil {
+		f.onCall(ctx)
+	}
 	atomic.AddInt32(&f.getSpanDetailsCalls, 1)
 	if f.onGetSpanDetails != nil {
-		f.onGetSpanDetails(spanID)
+		f.onGetSpanDetails(ctx, spanID)
 	}
 	f.mu.Lock()
 	f.detailSpanIDs = append(f.detailSpanIDs, spanID)
 	f.mu.Unlock()
+	if f.failOnDone && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if f.failCall != nil {
 		if err := f.failCall(spanID); err != nil {
 			return nil, err

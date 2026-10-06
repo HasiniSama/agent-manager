@@ -475,6 +475,45 @@ func TestTraceEndpoints_InvalidFilters(t *testing.T) {
 	}
 }
 
+// model and conversationId accept up to MaxFilterValueLen characters on both endpoints.
+func TestTraceEndpoints_FilterValueLength(t *testing.T) {
+	endpoints := map[string]func(*Handler) http.HandlerFunc{
+		"/api/v1/traces":        func(h *Handler) http.HandlerFunc { return h.GetTraceOverviews },
+		"/api/v1/traces/export": func(h *Handler) http.HandlerFunc { return h.ExportTraces },
+	}
+	values := map[string]struct {
+		value string
+		want  int
+	}{
+		"256 characters":            {strings.Repeat("a", 256), http.StatusOK},
+		"256 multi-byte characters": {strings.Repeat("é", 256), http.StatusOK},
+		"257 characters":            {strings.Repeat("a", 257), http.StatusBadRequest},
+	}
+	for path, handler := range endpoints {
+		for _, param := range []string{"model", "conversationId"} {
+			for name, v := range values {
+				t.Run(path+" "+param+" "+name, func(t *testing.T) {
+					h := NewHandler(controllers.NewTracingController(&fakeObserverClient{}), nil)
+					r := httptest.NewRequest(http.MethodGet, path+"?"+baseParams()+"&"+param+"="+url.QueryEscape(v.value), nil)
+					rec := httptest.NewRecorder()
+					handler(h)(rec, r)
+
+					assertStatus(t, rec, v.want)
+					if v.want != http.StatusBadRequest {
+						return
+					}
+					if want := param + " must be at most 256 characters"; !strings.Contains(rec.Body.String(), want) {
+						t.Errorf("body = %s, want it to contain %q", rec.Body.String(), want)
+					}
+					if strings.Contains(rec.Body.String(), v.value) {
+						t.Error("body echoes the rejected value")
+					}
+				})
+			}
+		}
+	}
+}
+
 // Malformed cursors return 400.
 func TestGetTraceOverviews_InvalidCursor(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }

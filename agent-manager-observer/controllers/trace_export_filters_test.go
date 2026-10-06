@@ -201,7 +201,7 @@ func TestExportTraces_SelectsSameTracesAsList(t *testing.T) {
 func TestExportTraces_StopsAtTimeBudget(t *testing.T) {
 	fake := langGraphFake(600, errorEvery(30))
 	c := NewTracingController(fake)
-	advanceOnRoot(fake, withClock(c), "root-0050", exportLookBackBudget)
+	advanceOnRoot(fake, withClock(c), "root-0100", exportLookBackBudget)
 	ctx, logs := logContext()
 
 	resp, err := c.ExportTraces(ctx, exportParams(100, TraceFilters{Status: TraceStatusError}))
@@ -222,9 +222,9 @@ func TestExportTraces_StopsAtTimeBudget(t *testing.T) {
 	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != int32(len(want)) {
 		t.Errorf("full span fetches = %d, want %d (one per match)", got, len(want))
 	}
-	for _, id := range fake.spansTraceIDs {
+	for _, id := range fake.attrSpansTraceIDs {
 		if !slices.Contains(want, id) {
-			t.Errorf("QueryTraceSpans called for %s, which was not selected", id)
+			t.Errorf("full spans fetched for %s, which was not selected", id)
 		}
 	}
 	if got := logField(t, logs, "Selected traces for export", "budgetExceeded"); got != true {

@@ -55,9 +55,11 @@ const (
 	// maxExaminedTraces caps the traces one filtered list request examines,
 	// bounding its enrichment calls when a filter rarely matches.
 	maxExaminedTraces = 500
-	// listLookBackBudget ends a filtered list's walk well inside the server's 30 s WriteTimeout.
+	// requestTimeout ends a trace list or export inside the server's 30 s WriteTimeout.
+	requestTimeout = 25 * time.Second
+	// listLookBackBudget ends a filtered list's walk well inside requestTimeout.
 	listLookBackBudget = 20 * time.Second
-	// exportLookBackBudget leaves part of the 30 s WriteTimeout for a filtered export's span fetches.
+	// exportLookBackBudget leaves part of requestTimeout for a filtered export's span fetches.
 	exportLookBackBudget = 10 * time.Second
 	// maxCursorDepth caps the upstream fetch limit of a list request, which
 	// a deep cursor or a large tie group grows. The upstream Observer rejects
@@ -68,13 +70,13 @@ const (
 // TracingController provides tracing functionality via the observer service.
 type TracingController struct {
 	observerClient observer.Client
-	// now is the clock the look-back's time budget reads.
-	now func() time.Time
+	// budget bounds a look-back walk's context.
+	budget func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 // NewTracingController creates a new tracing controller.
 func NewTracingController(observerClient observer.Client) *TracingController {
-	return &TracingController{observerClient: observerClient, now: time.Now}
+	return &TracingController{observerClient: observerClient, budget: context.WithTimeout}
 }
 
 // TraceQueryParams holds parameters for trace queries.
@@ -125,7 +127,9 @@ type SpanListResponse struct {
 
 // walkStats describes how a page's walk went, beside the page itself.
 type walkStats struct {
-	examined       int
+	examined int
+	// read counts the examined traces enrichment read, kept or ruled out.
+	read           int
 	budgetExceeded bool
 	// failed lists the examined traces that couldn't be read, in page order.
 	failed []string
@@ -139,17 +143,25 @@ type walkStats struct {
 // listLookBackBudget has passed.
 // A cursor continues from an earlier page over the same whole window.
 // A trace that can't be read is left out of the page.
+// The request fails if it runs past requestTimeout, or if it could read none
+// of the traces it examined.
 func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
 	var resp *opensearch.TraceOverviewResponse
 	var stats walkStats
 	var err error
 	if params.Filters.IsZero() {
 		resp, stats, err = c.traceOverviewPage(ctx, params)
 	} else {
-		resp, stats, err = c.lookBackForMatches(ctx, params, c.now().Add(listLookBackBudget))
+		resp, stats, err = c.lookBackForMatches(ctx, params, listLookBackBudget)
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Nothing could be read, which usually means the upstream is down.
+	if stats.read == 0 && len(stats.failed) > 0 {
+		return nil, fmt.Errorf("controllers.GetTraceOverviews: none of %d traces could be read", len(stats.failed))
 	}
 
 	logger.GetLogger(ctx).Info("Retrieved trace overviews",
@@ -222,13 +234,17 @@ func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQ
 		page := traces[start:end]
 		var failed []string
 		resp.Traces, failed = c.enrichTraces(ctx, params, page)
-		return resp, walkStats{examined: len(page), failed: failed}, nil
+		// A done ctx would leave out every trace it was reading.
+		if err := ctx.Err(); err != nil {
+			return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+		}
+		return resp, walkStats{examined: len(page), read: len(resp.Traces), failed: failed}, nil
 	}
 }
 
 // lookBackForMatches walks the window in page order, keeping traces that
-// match params.Filters. Beside the matches it reports the traces examined,
-// whether deadline stopped the walk, and the examined traces it couldn't read.
+// match params.Filters. Beside the matches it reports the traces examined and
+// read, whether budget stopped the walk, and the examined traces it couldn't read.
 //
 // Each fetch covers the whole window with a doubled limit and skips trace IDs
 // already seen. The window is never narrowed: the Observer bounds each span's
@@ -240,10 +256,14 @@ func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQ
 // A chunk's traces that can't be read are enriched once more before the walk
 // reaches them. Those that fail again are walked past like non-matches.
 //
-// Past deadline the walk stops as the examine cap stops it, checked between
-// chunks once one has been examined. The deadline is not put on ctx, since a
-// done ctx fails the walk instead of returning the page so far.
-func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams, deadline time.Time) (*opensearch.TraceOverviewResponse, walkStats, error) {
+// Past budget the walk stops as the examine cap stops it, once a chunk has
+// been examined. After the first chunk the walk's fetches run under budget,
+// which cancels those in flight without a warning; the walk then stops before
+// the chunk they belong to.
+func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams, budget time.Duration) (*opensearch.TraceOverviewResponse, walkStats, error) {
+	walkCtx, cancel := c.budget(ctx, budget)
+	defer cancel()
+
 	// A model filter needs Models filled.
 	if params.Filters.Model != "" {
 		params.Include.Models = true
@@ -254,7 +274,7 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 	matched := make([]opensearch.TraceOverview, 0, params.Limit)
 	seen := make(map[string]struct{})
 	// rootless is the latest fetch's slots spent on traces rooted outside the window.
-	examined, skipped, rootless := 0, 0, 0
+	examined, read, skipped, rootless := 0, 0, 0, 0
 	// last is the last trace examined, or where the walk began.
 	last := observer.TraceInfo{StartTime: walkStart(params)}
 	if cur != nil {
@@ -275,11 +295,23 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 			rank := min(skipped+examined+rootless, maxCursorDepth)
 			resp.NextCursor = TraceCursor{Rank: rank, Time: last.StartTime, ID: last.TraceID}.Encode()
 		}
-		return resp, walkStats{examined: examined, budgetExceeded: budgetExceeded, failed: failed}, nil
+		return resp, walkStats{examined: examined, read: read, budgetExceeded: budgetExceeded, failed: failed}, nil
 	}
-	// pastDeadline reports whether the budget is spent, never before the first chunk.
-	pastDeadline := func() bool {
-		return examined > 0 && !c.now().Before(deadline)
+	// pastBudget reports whether the budget is spent, never before the first chunk.
+	pastBudget := func() bool {
+		return examined > 0 && walkCtx.Err() != nil
+	}
+	// stopAtBudget ends the walk after the last examined trace.
+	stopAtBudget := func() (*opensearch.TraceOverviewResponse, walkStats, error) {
+		budgetExceeded = true
+		return done(last.StartTime, true, true)
+	}
+	// fetchCtx is ctx until the first chunk is examined, then walkCtx.
+	fetchCtx := func() context.Context {
+		if examined == 0 {
+			return ctx
+		}
+		return walkCtx
 	}
 
 	// size is the traces the next fetch needs; it asks for one more.
@@ -291,13 +323,15 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		if err := ctx.Err(); err != nil {
 			return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
 		}
-		if pastDeadline() {
-			budgetExceeded = true
-			return done(last.StartTime, true, true)
+		if pastBudget() {
+			return stopAtBudget()
 		}
 		fetchLimit := fetchSize(size)
-		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, fetchLimit))
+		tracesResp, err := c.observerClient.QueryTraces(fetchCtx(), c.traceListRequest(params, fetchLimit))
 		if err != nil {
+			if ctx.Err() == nil && pastBudget() {
+				return stopAtBudget()
+			}
 			return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
 		}
 		rootless = rootlessSlots(fetchLimit, len(tracesResp.Traces), tracesResp.Total)
@@ -324,9 +358,11 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		// Enrich in chunks and walk in page order, so a full page stops at
 		// its last match and the cursor never passes an unreturned match.
 		for len(fresh) > 0 && examined < maxExaminedTraces {
-			if pastDeadline() {
-				budgetExceeded = true
-				return done(last.StartTime, true, true)
+			if err := ctx.Err(); err != nil {
+				return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+			}
+			if pastBudget() {
+				return stopAtBudget()
 			}
 			chunk := fresh[:min(lookBackBatchSize, len(fresh), maxExaminedTraces-examined)]
 			// Summary-only survivors all match, so enrich no more than the page still needs.
@@ -335,15 +371,20 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 			}
 			fresh = fresh[len(chunk):]
 			survivors := filterTraceInfos(chunk, params.Filters)
-			overviews, chunkFailed := c.enrichTraces(ctx, params, survivors)
-			if len(chunkFailed) > 0 {
+			chunkCtx := fetchCtx()
+			overviews, chunkFailed := c.enrichTraces(chunkCtx, params, survivors)
+			if len(chunkFailed) > 0 && !pastBudget() {
 				var retried []opensearch.TraceOverview
-				retried, chunkFailed = c.enrichTraces(ctx, params, tracesWithIDs(survivors, chunkFailed))
+				retried, chunkFailed = c.enrichTraces(chunkCtx, params, tracesWithIDs(survivors, chunkFailed))
 				overviews = append(overviews, retried...)
 			}
 			// A cancelled request would report every trace it was reading as unread.
 			if err := ctx.Err(); err != nil {
 				return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+			}
+			// The budget may have cut the chunk's reads, so the walk stops before it.
+			if pastBudget() {
+				return stopAtBudget()
 			}
 			byID := make(map[string]opensearch.TraceOverview, len(overviews))
 			for _, ov := range overviews {
@@ -353,8 +394,14 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 				examined++
 				last = t
 				ov, ok := byID[t.TraceID]
-				if !ok && slices.Contains(chunkFailed, t.TraceID) {
+				switch {
+				case ok:
+					read++
+				case slices.Contains(chunkFailed, t.TraceID):
 					failed = append(failed, t.TraceID)
+				case matchesSummary(t.DurationNs, t.SpanCount, params.Filters):
+					// Enrichment read it and ruled it out.
+					read++
 				}
 				if !ok || !matchesFilters(ov, params.Filters) {
 					continue
@@ -476,8 +523,6 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 		status         *opensearch.TraceStatus
 		conversationID string
 		verdict        enrichVerdict
-		// err is the root fetch's error.
-		err error
 	}
 	results := make([]result, len(traces))
 	outerSem := make(chan struct{}, maxConcurrentTraces)
@@ -506,7 +551,12 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 				details, err := c.observerClient.GetSpanDetails(ctx, t.TraceID, t.RootSpanID)
 				<-innerSem
 				if err != nil {
-					results[idx] = result{verdict: enrichFailed, err: err}
+					// A fetch a done ctx cut short isn't warned about.
+					if ctx.Err() == nil {
+						log.Warn("failed to fetch root span details, skipping trace",
+							"traceId", t.TraceID, "err", err)
+					}
+					results[idx] = result{verdict: enrichFailed}
 					return
 				}
 				enriched := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(t.TraceID, details))
@@ -540,10 +590,6 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 	overviews = make([]opensearch.TraceOverview, 0, len(traces))
 	for i, t := range traces {
 		res := results[i]
-		if res.err != nil {
-			log.Warn("failed to fetch root span details, skipping trace",
-				"traceId", t.TraceID, "err", res.err)
-		}
 		if res.verdict == enrichFailed {
 			failed = append(failed, t.TraceID)
 		}
@@ -754,7 +800,8 @@ func (c *TracingController) enrichTraceOverview(
 // controller, with inline attributes when includeAttributes is set. Acquires a
 // slot on fetchSem for the duration of the call so the call counts against the
 // shared cross-trace fetch budget. Returns ok=false on error (logged as a
-// warning); callers fall back gracefully to whatever they already extracted.
+// warning unless ctx is done); callers fall back gracefully to whatever they
+// already extracted.
 func (c *TracingController) fetchTraceSpanSummaries(
 	ctx context.Context,
 	params TraceQueryParams,
@@ -783,8 +830,10 @@ func (c *TracingController) fetchTraceSpanSummaries(
 	})
 	<-fetchSem
 	if err != nil {
-		log.Warn("enrichTraceOverview: QueryTraceSpans failed, skipping enrichment",
-			"traceId", traceInfo.TraceID, "err", err)
+		if ctx.Err() == nil {
+			log.Warn("enrichTraceOverview: QueryTraceSpans failed, skipping enrichment",
+				"traceId", traceInfo.TraceID, "err", err)
+		}
 		return nil, false
 	}
 	return spansResp.Spans, true
@@ -856,8 +905,10 @@ func (c *TracingController) tryChildChainSpan(
 		details, err := c.observerClient.GetSpanDetails(ctx, traceID, childID)
 		<-fetchSem
 		if err != nil {
-			log.Warn("tryChildChainSpan: GetSpanDetails failed",
-				"traceId", traceID, "childSpanId", childID, "err", err)
+			if ctx.Err() == nil {
+				log.Warn("tryChildChainSpan: GetSpanDetails failed",
+					"traceId", traceID, "childSpanId", childID, "err", err)
+			}
 			return nil, nil, nil, nil, false
 		}
 		childSpan = opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(traceID, details))
@@ -928,8 +979,10 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 
 			details, err := c.observerClient.GetSpanDetails(ctx, traceID, spanID)
 			if err != nil {
-				log.Warn("aggregateFromLeafLLMSpans: GetSpanDetails failed for leaf",
-					"traceId", traceID, "spanId", spanID, "err", err)
+				if ctx.Err() == nil {
+					log.Warn("aggregateFromLeafLLMSpans: GetSpanDetails failed for leaf",
+						"traceId", traceID, "spanId", spanID, "err", err)
+				}
 				return
 			}
 			fetched[idx] = opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(traceID, details))
@@ -1040,8 +1093,11 @@ func (c *TracingController) GetSpanDetail(ctx context.Context, traceID, spanID s
 // (spans carry attributes inline via includeAttributes). Concurrency is bounded
 // by maxConcurrentTraces outer goroutines. A failed QueryTraceSpans is retried
 // once; a trace that still can't be read, or has no root span, is left out and
-// listed in FailedTraceIDs. The export fails when ctx is done or no selected trace could be read.
+// listed in FailedTraceIDs. The export fails when ctx is done, it runs past
+// requestTimeout, or no selected trace could be read.
 func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryParams) (*opensearch.TraceExportResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
 	log := logger.GetLogger(ctx)
 
 	traces, resp, err := c.selectExportTraces(ctx, params)
@@ -1250,7 +1306,7 @@ func (c *TracingController) selectExportTraces(ctx context.Context, params Trace
 	}
 
 	params.Cursor = nil
-	page, stats, err := c.lookBackForMatches(ctx, params, c.now().Add(exportLookBackBudget))
+	page, stats, err := c.lookBackForMatches(ctx, params, exportLookBackBudget)
 	if err != nil {
 		return nil, nil, fmt.Errorf("controllers.ExportTraces: %w", err)
 	}

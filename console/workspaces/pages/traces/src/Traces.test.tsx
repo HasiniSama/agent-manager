@@ -168,6 +168,10 @@ describe("trace filter URL parsing", () => {
     expect(parseTraceFilters(new URLSearchParams("status=failed&minTokens=0"))).toEqual({
       minTokens: 0,
     });
+    const atLimit = "a".repeat(256);
+    expect(
+      parseTraceFilters(new URLSearchParams({ model: atLimit, conversationId: `${atLimit}b` })),
+    ).toEqual({ model: atLimit });
   });
 
   it("labels chips for people", () => {
@@ -217,6 +221,16 @@ describe("TracesComponent filters", () => {
     fireEvent.change(conversation, { target: { value: " conv-1 " } });
     fireEvent.blur(conversation);
     expect(currentParams().get("conversationId")).toBe("conv-1");
+  });
+
+  it("caps the text filters at the API's 256 characters", () => {
+    renderPage();
+
+    expect(screen.getByRole("textbox", { name: "Model" })).toHaveAttribute("maxLength", "256");
+    expect(screen.getByRole("textbox", { name: "Conversation ID" })).toHaveAttribute(
+      "maxLength",
+      "256",
+    );
   });
 
   it("removes only the chip's filter, and Clear all removes the rest", () => {

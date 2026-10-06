@@ -121,14 +121,14 @@ Filters run as early as possible, so a rejected trace stays cheap:
 - **Root-only filters** (`status`, `conversationId`) — `matchesRootFilters`, right after the root fetch. A rejected trace costs one call.
 - **`model`** — `matchesModel`, as soon as the span list gives the models, before the child and leaf fetches. Traces over 100 spans have no models, so they're rejected after the root fetch.
 
-The walk stops at the 500-trace examine cap or after **20 s** (`listLookBackBudget`), returning `truncated` and a `nextCursor`. The budget is checked between enrichment chunks and is **not** put on `ctx` — a done `ctx` fails the request instead of returning the page so far.
+The walk stops at the 500-trace examine cap or after **20 s** (`listLookBackBudget`), returning `truncated` and a `nextCursor`. The budget doesn't cut the first chunk; only the **25 s** request deadline (`requestTimeout`) does, failing the request. After it, the walk's fetches run under the budget, which cancels those in flight without a warning; the walk then stops before the chunk they belong to.
 
-A trace that can't be read is retried once, then left out.
+A trace that can't be read is retried once, then left out. The list fails, filtered or not, when it could read none of the traces it examined. A trace a filter rejected after reading it counts as read.
 
 ### Export
 
 - **No filter** — one `QueryTraces` call.
-- **Filtered** — selects traces with `lookBackForMatches`, then fetches full spans only for the matches. Selection has no cursor, the same 500-trace examine cap, and a best-effort **10 s** budget that leaves time in the 30 s `WriteTimeout` for the span fetches (but doesn't guarantee they finish).
+- **Filtered** — selects traces with `lookBackForMatches`, then fetches full spans only for the matches. Selection has no cursor, the same 500-trace examine cap, and a **10 s** budget that leaves the rest of the 25 s `requestTimeout` for the span fetches. An export still running at `requestTimeout` fails.
 - Uses the same filter criteria as the list, but the shorter budget and no paging can cover a different part of history, so it may not select the same traces.
 
 Retried once:

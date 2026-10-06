@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/controllers"
 	"github.com/wso2/agent-manager/agent-manager-observer/middleware/logger"
@@ -638,9 +639,21 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 		return controllers.TraceFilters{}, err
 	}
 
-	f.Model = query.Get("model")
-	f.ConversationID = query.Get("conversationId")
+	if f.Model, err = parseFilterValue("model", query.Get("model")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.ConversationID, err = parseFilterValue("conversationId", query.Get("conversationId")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
 	return f, nil
+}
+
+// parseFilterValue rejects a string filter longer than MaxFilterValueLen characters.
+func parseFilterValue(name, s string) (string, error) {
+	if utf8.RuneCountInString(s) > controllers.MaxFilterValueLen {
+		return "", fmt.Errorf("%s must be at most %d characters", name, controllers.MaxFilterValueLen)
+	}
+	return s, nil
 }
 
 // parseMinThreshold parses an optional non-negative integer filter.

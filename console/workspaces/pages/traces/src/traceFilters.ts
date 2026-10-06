@@ -35,6 +35,9 @@ export const TRACE_FILTER_KEYS: TraceFilterKey[] = [
 const NUMERIC_KEYS: NumericFilterKey[] = ["minDurationMs", "minTokens", "minSpanCount"];
 const TEXT_KEYS: TextFilterKey[] = ["model", "conversationId"];
 
+// The API rejects longer model and conversationId values.
+export const MAX_TEXT_FILTER_LENGTH = 256;
+
 export const LATENCY_PRESETS_MS = [1000, 5000, 10000, 30000];
 export const TOKEN_PRESETS = [1000, 5000, 10000, 50000];
 export const STEP_PRESETS = [10, 20, 50];
@@ -62,7 +65,7 @@ export function parseTraceFilters(searchParams: URLSearchParams): TraceFilters {
   }
   for (const key of TEXT_KEYS) {
     const raw = searchParams.get(key)?.trim();
-    if (raw) filters[key] = raw;
+    if (raw && raw.length <= MAX_TEXT_FILTER_LENGTH) filters[key] = raw;
   }
   return filters;
 }

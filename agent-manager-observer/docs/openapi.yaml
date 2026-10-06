@@ -81,6 +81,9 @@ paths:
         window bounds each span, so a narrowed window leaves out traces still running at its edge.
         Traces are ordered by start time in `sortOrder`, then by `traceId`. Each page starts just
         after the previous page's last trace, so pages don't overlap.
+
+        A trace that can't be read is left out of the page; with a filter set it is retried once
+        first. The request fails only when it could read none of the traces it examined.
       operationId: listTraces
       security:
         - bearerAuth: []
@@ -581,6 +584,7 @@ components:
         never match.
       schema:
         type: string
+        maxLength: 256
         example: gpt-4o
     conversationIdFilter:
       name: conversationId
@@ -589,6 +593,7 @@ components:
       description: Keep traces whose `conversationId` equals this value exactly.
       schema:
         type: string
+        maxLength: 256
         example: conv-42
 
   responses:

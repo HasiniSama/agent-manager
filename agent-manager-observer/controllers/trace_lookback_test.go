@@ -327,37 +327,52 @@ func TestGetTraceOverviews_LookBackHonoursCancel(t *testing.T) {
 	}
 }
 
-// fakeClock is a controller clock that tests move by hand.
+// fakeClock is a controller clock that tests move by hand. Moving it past a
+// look-back budget ends that budget's context.
 type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
+	mu      sync.Mutex
+	elapsed time.Duration
+	budgets []fakeBudget
 }
 
-// now returns the fake time.
-func (c *fakeClock) now() time.Time {
+// fakeBudget is a look-back budget on a fakeClock.
+type fakeBudget struct {
+	end    time.Duration
+	cancel context.CancelCauseFunc
+}
+
+// budget starts a budget of d.
+func (c *fakeClock) budget(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.t
+	c.budgets = append(c.budgets, fakeBudget{end: c.elapsed + d, cancel: cancel})
+	return ctx, func() { cancel(context.Canceled) }
 }
 
-// advance moves the fake time forward by d.
+// advance moves the clock forward by d, ending the budgets it reaches.
 func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.t = c.t.Add(d)
+	c.elapsed += d
+	for _, b := range c.budgets {
+		if c.elapsed >= b.end {
+			b.cancel(context.DeadlineExceeded)
+		}
+	}
 }
 
 // withClock gives c a fake clock that stands still until advanced.
 func withClock(c *TracingController) *fakeClock {
-	clock := &fakeClock{t: lookBackWindowEnd}
-	c.now = clock.now
+	clock := &fakeClock{}
+	c.budget = clock.budget
 	return clock
 }
 
 // advanceOnRoot moves clock by d when rootID is fetched, during that trace's chunk.
 func advanceOnRoot(fake *fakeObserverClient, clock *fakeClock, rootID string, d time.Duration) {
 	var once sync.Once
-	fake.onGetSpanDetails = func(spanID string) {
+	fake.onGetSpanDetails = func(_ context.Context, spanID string) {
 		if spanID == rootID {
 			once.Do(func() { clock.advance(d) })
 		}
@@ -383,6 +398,18 @@ func logField(t *testing.T, buf *bytes.Buffer, msg, field string) any {
 	return nil
 }
 
+// warnings lists the messages of the WARN log lines.
+func warnings(buf *bytes.Buffer) []string {
+	var msgs []string
+	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+		var rec map[string]any
+		if json.Unmarshal(line, &rec) == nil && rec["level"] == "WARN" {
+			msgs = append(msgs, fmt.Sprint(rec["msg"]))
+		}
+	}
+	return msgs
+}
+
 // pageIDs lists the pages' trace IDs in order.
 func pageIDs(pages []cursorPage) []string {
 	var ids []string
@@ -394,8 +421,8 @@ func pageIDs(pages []cursorPage) []string {
 	return ids
 }
 
-// A sparse filter that runs out of time stops at a chunk boundary with a
-// cursor, and paging on returns what a run with no budget returns.
+// A sparse filter that runs out of time stops before the chunk it was
+// reading, with a cursor, and paging on returns what a run with no budget returns.
 func TestGetTraceOverviews_LookBackStopsAtTimeBudget(t *testing.T) {
 	tests := []struct {
 		name string
@@ -404,10 +431,10 @@ func TestGetTraceOverviews_LookBackStopsAtTimeBudget(t *testing.T) {
 		wantExamined int
 		wantFetches  int32
 	}{
-		// Chunk 2 ends the second fetch, so the walk stops before the third.
-		{name: "second chunk", passOn: "root-0050", wantExamined: 100, wantFetches: 2},
-		// Chunk 3 starts the third fetch, so the walk stops before chunk 4.
-		{name: "third chunk", passOn: "root-0100", wantExamined: 150, wantFetches: 3},
+		// The second fetch starts chunk 2, which the budget cuts.
+		{name: "second chunk", passOn: "root-0050", wantExamined: 50, wantFetches: 2},
+		// The third fetch starts chunk 3, which the budget cuts.
+		{name: "third chunk", passOn: "root-0100", wantExamined: 100, wantFetches: 3},
 	}
 	for _, matchEvery := range []int{1000, 45} {
 		for _, tt := range tests {
@@ -426,8 +453,8 @@ func TestGetTraceOverviews_LookBackStopsAtTimeBudget(t *testing.T) {
 				if !first.Truncated || first.NextCursor == "" {
 					t.Fatalf("truncated %v, nextCursor %q; want truncated with a cursor", first.Truncated, first.NextCursor)
 				}
-				if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != int32(tt.wantExamined) {
-					t.Errorf("GetSpanDetails calls = %d, want %d (one root per examined trace)", got, tt.wantExamined)
+				if got := logField(t, logs, "Retrieved trace overviews", "examined"); got != float64(tt.wantExamined) {
+					t.Errorf("examined logged as %v, want %d", got, tt.wantExamined)
 				}
 				if got := atomic.LoadInt32(&fake.queryTracesCalls); got != tt.wantFetches {
 					t.Errorf("QueryTraces calls = %d, want %d", got, tt.wantFetches)
@@ -482,6 +509,201 @@ func TestGetTraceOverviews_LookBackBudgetSpentOnFirstFetch(t *testing.T) {
 	}
 	if want := formatCursor(fake.traces[lookBackBatchSize-1].StartTime); resp.LookedBackTo != want {
 		t.Errorf("lookedBackTo = %s, want %s", resp.LookedBackTo, want)
+	}
+}
+
+// The budget cancels a fetch still in flight without a warning, and the walk
+// stops before its chunk.
+func TestGetTraceOverviews_LookBackBudgetCancelsInFlightFetch(t *testing.T) {
+	fake := lookBackFake(600, 1000)
+	fake.failOnDone = true
+	c := NewTracingController(fake)
+	clock := withClock(c)
+	var cancelled atomic.Bool
+	fake.onGetSpanDetails = func(ctx context.Context, spanID string) {
+		if spanID != "root-0050" {
+			return
+		}
+		clock.advance(listLookBackBudget)
+		select {
+		case <-ctx.Done():
+			cancelled.Store(true)
+		case <-time.After(5 * time.Second):
+		}
+	}
+	ctx, logs := logContext()
+
+	resp, err := c.GetTraceOverviews(ctx, lookBackParams(10))
+	if err != nil {
+		t.Fatalf("GetTraceOverviews returned error: %v", err)
+	}
+
+	if !cancelled.Load() {
+		t.Fatal("the fetch in flight was not cancelled")
+	}
+	if !resp.Truncated || resp.NextCursor == "" {
+		t.Fatalf("truncated %v, nextCursor %q; want truncated with a cursor", resp.Truncated, resp.NextCursor)
+	}
+	if want := formatCursor(fake.traces[49].StartTime); resp.LookedBackTo != want {
+		t.Errorf("lookedBackTo = %s, want the last trace before the chunk %s", resp.LookedBackTo, want)
+	}
+	if got := warnings(logs); len(got) != 0 {
+		t.Errorf("logged warnings %v, want none", got)
+	}
+	if got := logField(t, logs, "Retrieved trace overviews", "budgetExceeded"); got != true {
+		t.Errorf("budgetExceeded logged as %v, want true", got)
+	}
+}
+
+// A leaf fetch the budget cuts logs no warning; one that fails while the walk
+// runs does.
+func TestGetTraceOverviews_LookBackLeafFetchWarnings(t *testing.T) {
+	const leafWarning = "aggregateFromLeafLLMSpans: GetSpanDetails failed for leaf"
+	// No trace reaches minTokens, so every leaf is fetched and the walk reaches chunk 2.
+	minTokens := int64(1000)
+	params := lookBackParams(10)
+	params.Filters = TraceFilters{MinTokens: &minTokens}
+
+	t.Run("cut by budget", func(t *testing.T) {
+		fake := langGraphFake(200, noRootAttrs)
+		fake.failOnDone = true
+		c := NewTracingController(fake)
+		clock := withClock(c)
+		var once sync.Once
+		fake.onGetSpanDetails = func(_ context.Context, spanID string) {
+			if spanID == "leaf-a-0050" {
+				once.Do(func() { clock.advance(listLookBackBudget) })
+			}
+		}
+		ctx, logs := logContext()
+
+		resp, err := c.GetTraceOverviews(ctx, params)
+		if err != nil {
+			t.Fatalf("GetTraceOverviews returned error: %v", err)
+		}
+
+		if want := formatCursor(fake.traces[49].StartTime); !resp.Truncated || resp.LookedBackTo != want {
+			t.Errorf("truncated %v, lookedBackTo %s; want true, %s", resp.Truncated, resp.LookedBackTo, want)
+		}
+		if got := warnings(logs); len(got) != 0 {
+			t.Errorf("logged warnings %v, want none", got)
+		}
+		if got := logField(t, logs, "Retrieved trace overviews", "budgetExceeded"); got != true {
+			t.Errorf("budgetExceeded logged as %v, want true", got)
+		}
+	})
+
+	t.Run("fails live", func(t *testing.T) {
+		fake := langGraphFake(200, noRootAttrs)
+		fake.failCall = failTimes(map[string]int{"leaf-a-0050": -1})
+		ctx, logs := logContext()
+
+		if _, err := NewTracingController(fake).GetTraceOverviews(ctx, params); err != nil {
+			t.Fatalf("GetTraceOverviews returned error: %v", err)
+		}
+
+		if got := warnings(logs); !slices.Contains(got, leafWarning) {
+			t.Errorf("logged warnings %v, want %q", got, leafWarning)
+		}
+	})
+}
+
+// A chunk's failed traces aren't retried once the budget is spent, and the
+// walk stops before the chunk rather than listing them as failed.
+func TestGetTraceOverviews_LookBackNoRetryPastBudget(t *testing.T) {
+	fake := lookBackFake(600, 1000)
+	c := NewTracingController(fake)
+	clock := withClock(c)
+	var calls atomic.Int32
+	fake.onGetSpanDetails = func(_ context.Context, spanID string) {
+		if spanID == "root-0050" && calls.Add(1) == 1 {
+			clock.advance(listLookBackBudget)
+		}
+	}
+	fake.failCall = failTimes(map[string]int{"root-0050": 1})
+	ctx, logs := logContext()
+
+	resp, err := c.GetTraceOverviews(ctx, lookBackParams(10))
+	if err != nil {
+		t.Fatalf("GetTraceOverviews returned error: %v", err)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("root-0050 fetched %d times, want 1", got)
+	}
+	if want := formatCursor(fake.traces[49].StartTime); !resp.Truncated || resp.LookedBackTo != want {
+		t.Errorf("truncated %v, lookedBackTo %s; want true, %s", resp.Truncated, resp.LookedBackTo, want)
+	}
+	if got := logField(t, logs, "Retrieved trace overviews", "failed"); got != float64(0) {
+		t.Errorf("failed logged as %v, want 0", got)
+	}
+}
+
+// Every upstream call a trace list or export makes ends by requestTimeout,
+// the first chunk's and the export's span fetches included.
+func TestRequestTimeoutBoundsEveryCall(t *testing.T) {
+	ctx := context.Background()
+	tests := map[string]struct {
+		fake *fakeObserverClient
+		run  func(*TracingController) error
+	}{
+		"filtered list": {fake: lookBackFake(200, 5), run: func(c *TracingController) error {
+			_, err := c.GetTraceOverviews(ctx, lookBackParams(10))
+			return err
+		}},
+		"unfiltered list": {fake: lookBackFake(200, 5), run: func(c *TracingController) error {
+			params := lookBackParams(10)
+			params.Filters = TraceFilters{}
+			_, err := c.GetTraceOverviews(ctx, params)
+			return err
+		}},
+		"filtered export": {fake: langGraphFake(60, errorEvery(10)), run: func(c *TracingController) error {
+			_, err := c.ExportTraces(ctx, exportParams(100, TraceFilters{Status: TraceStatusError}))
+			return err
+		}},
+		"unfiltered export": {fake: langGraphFake(60, errorEvery(10)), run: func(c *TracingController) error {
+			_, err := c.ExportTraces(ctx, exportParams(100, TraceFilters{}))
+			return err
+		}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var calls, unbounded atomic.Int32
+			tt.fake.onCall = func(ctx context.Context) {
+				calls.Add(1)
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > requestTimeout {
+					unbounded.Add(1)
+				}
+			}
+
+			if err := tt.run(NewTracingController(tt.fake)); err != nil {
+				t.Fatalf("returned error: %v", err)
+			}
+
+			if calls.Load() == 0 || unbounded.Load() != 0 {
+				t.Errorf("%d of %d upstream calls without the request deadline", unbounded.Load(), calls.Load())
+			}
+		})
+	}
+}
+
+// An unfiltered page whose ctx ends during enrichment fails instead of leaving traces out.
+func TestGetTraceOverviews_PageFailsWhenCtxEndsDuringEnrichment(t *testing.T) {
+	fake := lookBackFake(200, 1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake.onGetSpanDetails = func(_ context.Context, spanID string) {
+		if spanID == "root-0005" {
+			cancel()
+		}
+	}
+	params := lookBackParams(20)
+	params.Filters = TraceFilters{}
+
+	resp, err := NewTracingController(fake).GetTraceOverviews(ctx, params)
+
+	if !errors.Is(err, context.Canceled) || resp != nil {
+		t.Fatalf("err = %v, response %v; want context.Canceled and no response", err, resp != nil)
 	}
 }
 
@@ -551,6 +773,9 @@ func TestGetTraceOverviews_LookBackRootFetchFails(t *testing.T) {
 			if got := logField(t, logs, "Retrieved trace overviews", "failed"); got != tt.wantFailed {
 				t.Errorf("failed logged as %v, want %v", got, tt.wantFailed)
 			}
+			if got := warnings(logs); !slices.Contains(got, "failed to fetch root span details, skipping trace") {
+				t.Errorf("logged warnings %v, want the root fetch's", got)
+			}
 			b, err := json.Marshal(resp)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
@@ -562,6 +787,109 @@ func TestGetTraceOverviews_LookBackRootFetchFails(t *testing.T) {
 			want := []string{"lookedBackTo", "nextCursor", "totalCount", "traces", "truncated"}
 			if got := slices.Sorted(maps.Keys(fields)); !reflect.DeepEqual(got, want) {
 				t.Errorf("response fields = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// failEvery fails every call.
+func failEvery(id string) error { return fmt.Errorf("fake: %s unavailable", id) }
+
+// A filtered list that can read none of the traces it examines fails, after
+// fetching each root twice.
+func TestGetTraceOverviews_LookBackEveryRootFetchFails(t *testing.T) {
+	fake := lookBackFake(200, 5)
+	fake.failCall = failEvery
+
+	resp, err := NewTracingController(fake).GetTraceOverviews(context.Background(), lookBackParams(10))
+
+	if err == nil || resp != nil {
+		t.Fatalf("err = %v, response %v; want an error and no response", err, resp != nil)
+	}
+	want := make(map[string]int, len(fake.traces))
+	for _, tr := range fake.traces {
+		want[tr.RootSpanID] = 2
+	}
+	got := make(map[string]int)
+	for _, id := range fake.detailSpanIDs {
+		got[id]++
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("root fetches = %v, want each of the %d roots twice", got, len(want))
+	}
+}
+
+// An unfiltered page fails when it can read none of its traces, and
+// otherwise leaves out the ones it can't read.
+func TestGetTraceOverviews_PageRootFetchFails(t *testing.T) {
+	tests := []struct {
+		name    string
+		fail    func(string) error
+		wantErr bool
+		want    int
+	}{
+		{name: "every root", fail: failEvery, wantErr: true},
+		{name: "one root", fail: failTimes(map[string]int{"root-0003": -1}), want: 19},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := lookBackFake(200, 5)
+			fake.failCall = tt.fail
+			params := lookBackParams(20)
+			params.Filters = TraceFilters{}
+
+			resp, err := NewTracingController(fake).GetTraceOverviews(context.Background(), params)
+
+			if tt.wantErr {
+				if err == nil || resp != nil {
+					t.Fatalf("err = %v, response %v; want an error and no response", err, resp != nil)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetTraceOverviews returned error: %v", err)
+			}
+			if len(resp.Traces) != tt.want {
+				t.Errorf("got %d traces, want %d", len(resp.Traces), tt.want)
+			}
+		})
+	}
+}
+
+// A filtered list that reads one trace that doesn't match, and none of the
+// rest, returns an empty page and logs the rest as failed.
+func TestGetTraceOverviews_LookBackOneTraceReads(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters TraceFilters
+	}{
+		{name: "ruled out by its root", filters: TraceFilters{ConversationID: "conv-match"}},
+		{name: "kept, short of minTokens", filters: TraceFilters{MinTokens: ptr(100)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := lookBackFake(200, 5)
+			// Only trace-0001 reads, and it matches neither filter.
+			fake.failCall = func(id string) error {
+				if id == "root-0001" || id == "trace-0001" {
+					return nil
+				}
+				return failEvery(id)
+			}
+			params := lookBackParams(10)
+			params.Filters = tt.filters
+			ctx, logs := logContext()
+
+			resp, err := NewTracingController(fake).GetTraceOverviews(ctx, params)
+			if err != nil {
+				t.Fatalf("GetTraceOverviews returned error: %v", err)
+			}
+
+			if len(resp.Traces) != 0 {
+				t.Errorf("got %d traces, want none", len(resp.Traces))
+			}
+			if got := logField(t, logs, "Retrieved trace overviews", "failed"); got != float64(199) {
+				t.Errorf("failed logged as %v, want 199", got)
 			}
 		})
 	}

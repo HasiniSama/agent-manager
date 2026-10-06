@@ -31,6 +31,7 @@ import {
 import { X as RemoveIcon } from "@wso2/oxygen-ui-icons-react";
 import {
   LATENCY_PRESETS_MS,
+  MAX_TEXT_FILTER_LENGTH,
   STEP_PRESETS,
   TOKEN_PRESETS,
   type TraceFilterKey,
@@ -106,7 +107,7 @@ function CommitTextField({ label, value, onCommit }: CommitTextFieldProps) {
       onKeyDown={(e) => {
         if (e.key === "Enter") commit();
       }}
-      slotProps={{ htmlInput: { "aria-label": label } }}
+      slotProps={{ htmlInput: { "aria-label": label, maxLength: MAX_TEXT_FILTER_LENGTH } }}
       sx={{ minWidth: 180 }}
     />
   );

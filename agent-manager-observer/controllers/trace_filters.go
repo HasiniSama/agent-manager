@@ -35,6 +35,9 @@ const (
 	TraceStatusOK    TraceStatusFilter = "ok"
 )
 
+// MaxFilterValueLen caps the model and conversationId filters, in characters.
+const MaxFilterValueLen = 256
+
 // TraceFilters holds trace-list filters; set fields combine with AND.
 // Min* are pointers so an explicit 0 still filters.
 type TraceFilters struct {
