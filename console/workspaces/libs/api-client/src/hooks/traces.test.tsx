@@ -220,6 +220,32 @@ describe("useTraceList cursor paging", () => {
     expect(t3?.score).toEqual({ score: 0.5, totalCount: 1, skippedCount: 0 });
   });
 
+  it("pages through scores until every trace on a filtered page is found", async () => {
+    mockList.mockResolvedValueOnce(page(
+      [trace("t1", "2026-10-02T09:50:00Z"), trace("t2", "2026-10-02T09:10:00Z")],
+    ));
+    const others = Array.from({ length: 100 }, (_, i) => (
+      { traceId: `other${i}`, score: 0.1, totalCount: 1, skippedCount: 0 }
+    ));
+    mockScores
+      .mockResolvedValueOnce({
+        traces: [{ traceId: "t1", score: 0.9, totalCount: 1, skippedCount: 0 }, ...others.slice(1)],
+        totalCount: 200,
+      })
+      .mockResolvedValueOnce({
+        traces: [...others.slice(0, 99), { traceId: "t2", score: 0.2, totalCount: 1, skippedCount: 0 }],
+        totalCount: 200,
+      });
+
+    const result = renderTraceList({ filters: { status: "error" } });
+    await waitFor(() => result.current.traceList?.traces.length === 2);
+
+    expect(mockScores).toHaveBeenCalledTimes(2);
+    expect(mockScores.mock.calls[0][0]).toMatchObject({ limit: 100, offset: 0 });
+    expect(mockScores.mock.calls[1][0]).toMatchObject({ limit: 100, offset: 100 });
+    expect(result.current.traceList?.traces.map((t) => t.score?.score)).toEqual([0.9, 0.2]);
+  });
+
   it("sends includeModels and filters on the first page", async () => {
     mockList.mockResolvedValueOnce(page([]));
 

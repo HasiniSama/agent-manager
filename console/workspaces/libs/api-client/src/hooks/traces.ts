@@ -63,11 +63,12 @@ async function fetchScoreMap(
   limit: number,
   sortOrder: string,
   getToken: (() => Promise<string>) | undefined,
+  offset = 0,
 ): Promise<Map<string, { score?: number | null; totalCount: number; skippedCount: number }>> {
   try {
     const res = await getAgentTraceScores(
       {
-        orgName, projName, agentName, startTime, endTime, limit, offset: 0,
+        orgName, projName, agentName, startTime, endTime, limit, offset,
         sortOrder: sortOrder as "asc" | "desc"
       },
       getToken,
@@ -94,6 +95,9 @@ async function fetchScoreMap(
 /** Highest limit the scores endpoint accepts. */
 const MAX_SCORES_PER_REQUEST = 100;
 
+/** Most score requests made for one page of traces. */
+const MAX_SCORE_PAGES = 10;
+
 /** Widens a page's score window to absorb timestamp precision differences. */
 const SCORE_WINDOW_PAD_MS = 1000;
 
@@ -105,16 +109,29 @@ async function fetchPageScoreMap(
 ): ReturnType<typeof fetchScoreMap> {
   if (!traces?.length) return new Map();
   const times = traces.map((t) => new Date(t.startTime).getTime());
-  return fetchScoreMap(
-    scope.organization,
-    scope.project,
-    scope.component,
-    new Date(Math.min(...times) - SCORE_WINDOW_PAD_MS).toISOString(),
-    new Date(Math.max(...times) + SCORE_WINDOW_PAD_MS).toISOString(),
-    MAX_SCORES_PER_REQUEST,
-    scope.sortOrder ?? "desc",
-    getToken,
-  );
+  const startTime = new Date(Math.min(...times) - SCORE_WINDOW_PAD_MS).toISOString();
+  const endTime = new Date(Math.max(...times) + SCORE_WINDOW_PAD_MS).toISOString();
+  const missing = new Set(traces.map((t) => t.traceId));
+  const map: Awaited<ReturnType<typeof fetchScoreMap>> = new Map();
+  // Other scored traces can sit between a filtered page's matches, so page until all are found.
+  for (let i = 0; i < MAX_SCORE_PAGES && missing.size > 0; i += 1) {
+    const batch = await fetchScoreMap(
+      scope.organization,
+      scope.project,
+      scope.component,
+      startTime,
+      endTime,
+      MAX_SCORES_PER_REQUEST,
+      scope.sortOrder ?? "desc",
+      getToken,
+      i * MAX_SCORES_PER_REQUEST,
+    );
+    for (const [id, s] of batch) {
+      if (missing.delete(id)) map.set(id, s);
+    }
+    if (batch.size < MAX_SCORES_PER_REQUEST) break;
+  }
+  return map;
 }
 
 export type TraceListWithRange = TraceListResponse & {
