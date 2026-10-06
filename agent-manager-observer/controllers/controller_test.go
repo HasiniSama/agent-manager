@@ -61,6 +61,9 @@ type fakeObserverClient struct {
 	windowed bool
 	// onQueryTraces runs at the start of each QueryTraces call.
 	onQueryTraces func()
+	// onGetSpanDetails runs at the start of each GetSpanDetails call, which
+	// enrichment makes concurrently.
+	onGetSpanDetails func(spanID string)
 	// tracesReqs records every QueryTraces request.
 	tracesReqs []observer.TracesQueryRequest
 
@@ -166,6 +169,9 @@ func (f *fakeObserverClient) QueryMetrics(_ context.Context, _ observer.MetricsQ
 
 func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, spanID string) (*observer.SpanDetailsResponse, error) {
 	atomic.AddInt32(&f.getSpanDetailsCalls, 1)
+	if f.onGetSpanDetails != nil {
+		f.onGetSpanDetails(spanID)
+	}
 	f.mu.Lock()
 	f.detailSpanIDs = append(f.detailSpanIDs, spanID)
 	f.mu.Unlock()

@@ -70,8 +70,9 @@ paths:
 
         The filter parameters (`status`, `minDurationMs`, `minTokens`, `minSpanCount`, `model`,
         `conversationId`) are optional and combine with AND. With any filter set, the server walks
-        the window in sort order until it has `limit` matches, the window runs out, or it has
-        examined 500 traces (`truncated` is then true).
+        the window in sort order until it has `limit` matches, the window runs out, it has examined
+        500 traces, or it has searched for 20 seconds (`truncated` is then true, and `nextCursor`
+        continues the search).
         With no filter and no `cursor` set the request makes one upstream trace query.
 
         To page, send the previous response's `nextCursor` as `cursor`, with the same `startTime`,
@@ -163,10 +164,11 @@ paths:
 
         The filter parameters are the list endpoint's and select the same traces: they combine with
         AND, and with any filter set the server walks the window in sort order until it has `limit`
-        matches, the window runs out, or it has examined 500 traces (`truncated` is then true, and
-        `lookedBackTo` says how far it got). Spans are fetched only for the matches, so a filtered
-        export returns at most 500 traces. There is no cursor: to export further back, narrow the
-        window. With no filter set the export makes one upstream trace query, as before.
+        matches, the window runs out, it has examined 500 traces, or it has searched for 10 seconds
+        (`truncated` is then true, and `lookedBackTo` says how far it got). Spans are fetched only
+        for the matches, so a filtered export returns at most 500 traces. There is no cursor: to
+        export further back, narrow the window. With no filter set the export makes one upstream
+        trace query, as before.
       operationId: exportTraces
       security:
         - bearerAuth: []
@@ -793,7 +795,8 @@ components:
           type: boolean
           description: |
             True when the export was cut short: a filtered export reached its cap of 500 examined
-            traces before the window ran out, or a trace hit the 10 000 span cap.
+            traces or its 10-second search budget before the window ran out, or a trace hit the
+            10 000 span cap.
 
     # ── schemas ─────────────────────────────────────────────────────────────
 
@@ -897,15 +900,17 @@ components:
           type: boolean
           description: |
             True when the server stopped before filling the page and before the window ran out:
-            a filtered request reached its cap of 500 examined traces (`nextCursor` continues
-            past them), or a `cursor` page went deeper than the server fetches (5000 traces into
-            the window; there is no `nextCursor`, so narrow the window to see more).
+            a filtered request reached its cap of 500 examined traces or its 20-second search
+            budget (`nextCursor` continues from where it stopped), or a `cursor` page went deeper
+            than the server fetches (5000 traces into the window; there is no `nextCursor`, so
+            narrow the window to see more).
         nextCursor:
           type: string
           description: |
             Opaque cursor for the next page; send it back as `cursor`. Present when the window
             holds traces past this page, including when `truncated` is true after the examine
-            cap. Absent when the window ran out or the cursor depth was reached.
+            cap or the search budget. Absent when the window ran out or the cursor depth was
+            reached.
 
     SpanSummary:
       type: object

@@ -17,13 +17,19 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/wso2/agent-manager/agent-manager-observer/middleware/logger"
 	"github.com/wso2/agent-manager/agent-manager-observer/observer"
 )
 
@@ -311,5 +317,195 @@ func TestGetTraceOverviews_LookBackHonoursCancel(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&fake.queryTracesCalls); got != 1 {
 		t.Errorf("QueryTraces calls = %d, want 1", got)
+	}
+}
+
+// fakeClock is a controller clock that tests move by hand.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// withClock gives c a fake clock that stands still until advanced.
+func withClock(c *TracingController) *fakeClock {
+	clock := &fakeClock{t: lookBackWindowEnd}
+	c.now = clock.now
+	return clock
+}
+
+// advanceOnRoot moves clock by d when rootID is fetched, during that trace's chunk.
+func advanceOnRoot(fake *fakeObserverClient, clock *fakeClock, rootID string, d time.Duration) {
+	var once sync.Once
+	fake.onGetSpanDetails = func(spanID string) {
+		if spanID == rootID {
+			once.Do(func() { clock.advance(d) })
+		}
+	}
+}
+
+// logContext returns a context whose logger writes JSON lines to the buffer.
+func logContext() (context.Context, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	return logger.WithLogger(context.Background(), slog.New(slog.NewJSONHandler(buf, nil))), buf
+}
+
+// logField returns field from the first log line with message msg.
+func logField(t *testing.T, buf *bytes.Buffer, msg, field string) any {
+	t.Helper()
+	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+		var rec map[string]any
+		if json.Unmarshal(line, &rec) == nil && rec["msg"] == msg {
+			return rec[field]
+		}
+	}
+	t.Fatalf("no %q log line", msg)
+	return nil
+}
+
+// pageIDs lists the pages' trace IDs in order, leaving out the traces a page
+// may repeat at the previous page's cursor time.
+func pageIDs(t *testing.T, pages []cursorPage) []string {
+	t.Helper()
+	var ids []string
+	var cur *TraceCursor
+	for _, p := range pages {
+		for _, tr := range p.resp.Traces {
+			if cur == nil || tr.StartTime != formatCursor(cur.Time) {
+				ids = append(ids, tr.TraceID)
+			}
+		}
+		if p.resp.NextCursor != "" {
+			var err error
+			if cur, err = DecodeTraceCursor(p.resp.NextCursor); err != nil {
+				t.Fatalf("nextCursor does not decode: %v", err)
+			}
+		}
+	}
+	return ids
+}
+
+// A sparse filter that runs out of time stops at a chunk boundary with a
+// cursor, and paging on returns what a run with no budget returns.
+func TestGetTraceOverviews_LookBackStopsAtTimeBudget(t *testing.T) {
+	tests := []struct {
+		name string
+		// passOn is the root fetched when the clock passes the budget.
+		passOn       string
+		wantExamined int
+		wantFetches  int32
+	}{
+		// Chunk 2 ends the second fetch, so the walk stops before the third.
+		{name: "second chunk", passOn: "root-0050", wantExamined: 100, wantFetches: 2},
+		// Chunk 3 starts the third fetch, so the walk stops before chunk 4.
+		{name: "third chunk", passOn: "root-0100", wantExamined: 150, wantFetches: 3},
+	}
+	for _, matchEvery := range []int{1000, 45} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s/1 in %d", tt.name, matchEvery), func(t *testing.T) {
+				fake := lookBackFake(600, matchEvery)
+				c := NewTracingController(fake)
+				advanceOnRoot(fake, withClock(c), tt.passOn, listLookBackBudget)
+				params := lookBackParams(10)
+				ctx, logs := logContext()
+
+				first, err := c.GetTraceOverviews(ctx, params)
+				if err != nil {
+					t.Fatalf("GetTraceOverviews returned error: %v", err)
+				}
+
+				if !first.Truncated || first.NextCursor == "" {
+					t.Fatalf("truncated %v, nextCursor %q; want truncated with a cursor", first.Truncated, first.NextCursor)
+				}
+				if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != int32(tt.wantExamined) {
+					t.Errorf("GetSpanDetails calls = %d, want %d (one root per examined trace)", got, tt.wantExamined)
+				}
+				if got := atomic.LoadInt32(&fake.queryTracesCalls); got != tt.wantFetches {
+					t.Errorf("QueryTraces calls = %d, want %d", got, tt.wantFetches)
+				}
+				if want := formatCursor(fake.traces[tt.wantExamined-1].StartTime); first.LookedBackTo != want {
+					t.Errorf("lookedBackTo = %s, want the last examined trace %s", first.LookedBackTo, want)
+				}
+				if got := logField(t, logs, "Retrieved trace overviews", "budgetExceeded"); got != true {
+					t.Errorf("budgetExceeded logged as %v, want true", got)
+				}
+
+				if params.Cursor, err = DecodeTraceCursor(first.NextCursor); err != nil {
+					t.Fatalf("nextCursor does not decode: %v", err)
+				}
+				got := pageIDs(t, append([]cursorPage{{resp: first}}, pageAll(t, c, fake, params)...))
+				assertNoDuplicates(t, got)
+
+				unbudgetedFake := lookBackFake(600, matchEvery)
+				unbudgeted := NewTracingController(unbudgetedFake)
+				withClock(unbudgeted)
+				if want := pageIDs(t, pageAll(t, unbudgeted, unbudgetedFake, lookBackParams(10))); !reflect.DeepEqual(got, want) {
+					t.Errorf("paged %v, want %v as with no budget", got, want)
+				}
+			})
+		}
+	}
+}
+
+// A budget already spent when the first fetch returns still examines one chunk.
+func TestGetTraceOverviews_LookBackBudgetSpentOnFirstFetch(t *testing.T) {
+	fake := lookBackFake(600, 1000)
+	c := NewTracingController(fake)
+	clock := withClock(c)
+	fake.onQueryTraces = func() { clock.advance(listLookBackBudget) }
+
+	resp, err := c.GetTraceOverviews(context.Background(), lookBackParams(10))
+	if err != nil {
+		t.Fatalf("GetTraceOverviews returned error: %v", err)
+	}
+
+	if len(resp.Traces) != 1 || resp.Traces[0].TraceID != "trace-0000" {
+		t.Errorf("got %d traces, want trace-0000 alone", len(resp.Traces))
+	}
+	if !resp.Truncated || resp.NextCursor == "" {
+		t.Fatalf("truncated %v, nextCursor %q; want truncated with a cursor", resp.Truncated, resp.NextCursor)
+	}
+	if got := atomic.LoadInt32(&fake.queryTracesCalls); got != 1 {
+		t.Errorf("QueryTraces calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != lookBackBatchSize {
+		t.Errorf("GetSpanDetails calls = %d, want %d (one chunk)", got, lookBackBatchSize)
+	}
+	if want := formatCursor(fake.traces[lookBackBatchSize-1].StartTime); resp.LookedBackTo != want {
+		t.Errorf("lookedBackTo = %s, want %s", resp.LookedBackTo, want)
+	}
+}
+
+// A clock short of the list's budget leaves the walk to the examine cap.
+func TestGetTraceOverviews_LookBackWithinBudget(t *testing.T) {
+	fake := lookBackFake(600, 1000)
+	c := NewTracingController(fake)
+	advanceOnRoot(fake, withClock(c), "root-0050", listLookBackBudget-time.Nanosecond)
+	ctx, logs := logContext()
+
+	resp, err := c.GetTraceOverviews(ctx, lookBackParams(10))
+	if err != nil {
+		t.Fatalf("GetTraceOverviews returned error: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&fake.getSpanDetailsCalls); got != maxExaminedTraces {
+		t.Errorf("GetSpanDetails calls = %d, want %d", got, maxExaminedTraces)
+	}
+	if !resp.Truncated || resp.NextCursor == "" {
+		t.Errorf("truncated %v, nextCursor %q; want truncated with a cursor", resp.Truncated, resp.NextCursor)
+	}
+	if got := logField(t, logs, "Retrieved trace overviews", "budgetExceeded"); got != false {
+		t.Errorf("budgetExceeded logged as %v, want false", got)
 	}
 }

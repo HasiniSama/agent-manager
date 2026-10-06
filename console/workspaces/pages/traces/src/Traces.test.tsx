@@ -312,14 +312,14 @@ describe("TracesComponent columns and cap notice", () => {
 
   it("shows the examine-cap banner only when the page was truncated", () => {
     const { unmount } = renderPage();
-    expect(screen.queryByText(/first 500 traces examined/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/traces searched so far/)).not.toBeInTheDocument();
     unmount();
 
     hookOverrides = { truncated: true, hasOlder: true };
     renderPage("?status=error");
     expect(
       screen.getByText(
-        "Showing matches from the first 500 traces examined. Narrow the time range to see more.",
+        "Showing matches from the traces searched so far. Narrow the time range to see more.",
       ),
     ).toBeInTheDocument();
   });
@@ -328,7 +328,7 @@ describe("TracesComponent columns and cap notice", () => {
     hookOverrides = { truncated: true, hasOlder: false };
     renderPage("?status=error");
 
-    expect(screen.queryByText(/first 500 traces examined/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/traces searched so far/)).not.toBeInTheDocument();
     expect(screen.getByText(/The list stops here/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Load Older Traces" })).not.toBeInTheDocument();
   });

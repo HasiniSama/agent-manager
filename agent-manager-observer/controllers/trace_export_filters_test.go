@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -184,5 +185,41 @@ func TestExportTraces_SelectsSameTracesAsList(t *testing.T) {
 					resp.LookedBackTo, resp.Truncated, list.LookedBackTo, list.Truncated)
 			}
 		})
+	}
+}
+
+// A filtered export that runs out of time exports the matches selected so far
+// and fetches full spans only for them. The list's budget would not stop it.
+func TestExportTraces_StopsAtTimeBudget(t *testing.T) {
+	fake := langGraphFake(600, errorEvery(30))
+	c := NewTracingController(fake)
+	advanceOnRoot(fake, withClock(c), "root-0050", exportLookBackBudget)
+	ctx, logs := logContext()
+
+	resp, err := c.ExportTraces(ctx, exportParams(100, TraceFilters{Status: TraceStatusError}))
+	if err != nil {
+		t.Fatalf("ExportTraces returned error: %v", err)
+	}
+
+	want := []string{"trace-0000", "trace-0030", "trace-0060", "trace-0090"}
+	if got := exportedIDs(resp); !reflect.DeepEqual(got, want) {
+		t.Fatalf("exported %v, want %v", got, want)
+	}
+	if !resp.Truncated {
+		t.Error("truncated = false, want true")
+	}
+	if want := formatCursor(fake.traces[99].StartTime); resp.LookedBackTo != want {
+		t.Errorf("lookedBackTo = %q, want the last examined trace %q", resp.LookedBackTo, want)
+	}
+	if got := atomic.LoadInt32(&fake.attrSpansCalls); got != int32(len(want)) {
+		t.Errorf("full span fetches = %d, want %d (one per match)", got, len(want))
+	}
+	for _, id := range fake.spansTraceIDs {
+		if !slices.Contains(want, id) {
+			t.Errorf("QueryTraceSpans called for %s, which was not selected", id)
+		}
+	}
+	if got := logField(t, logs, "Selected traces for export", "budgetExceeded"); got != true {
+		t.Errorf("budgetExceeded logged as %v, want true", got)
 	}
 }

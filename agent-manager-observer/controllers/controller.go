@@ -54,6 +54,10 @@ const (
 	// maxExaminedTraces caps the traces one filtered list request examines,
 	// bounding its enrichment calls when a filter rarely matches.
 	maxExaminedTraces = 500
+	// listLookBackBudget ends a filtered list's walk well inside the server's 30 s WriteTimeout.
+	listLookBackBudget = 20 * time.Second
+	// exportLookBackBudget leaves part of the 30 s WriteTimeout for a filtered export's span fetches.
+	exportLookBackBudget = 10 * time.Second
 	// maxCursorDepth caps the upstream fetch limit of a list request, which
 	// a deep cursor grows. Each trace bucket carries about six
 	// sub-aggregations, so this stays well under OpenSearch's default
@@ -64,11 +68,13 @@ const (
 // TracingController provides tracing functionality via the observer service.
 type TracingController struct {
 	observerClient observer.Client
+	// now is the clock the look-back's time budget reads.
+	now func() time.Time
 }
 
 // NewTracingController creates a new tracing controller.
 func NewTracingController(observerClient observer.Client) *TracingController {
-	return &TracingController{observerClient: observerClient}
+	return &TracingController{observerClient: observerClient, now: time.Now}
 }
 
 // TraceQueryParams holds parameters for trace queries.
@@ -83,8 +89,7 @@ type TraceQueryParams struct {
 	SortOrder    string
 	Include      Include
 	Filters      TraceFilters
-	// Cursor continues from a previous page of the same window, sort order and filters.
-	Cursor *TraceCursor
+	Cursor       *TraceCursor
 }
 
 // Include is the set of opt-in span-derived fields for a trace list.
@@ -121,16 +126,18 @@ type SpanListResponse struct {
 // GetTraceOverviews fetches a page of traces with root-span enrichment (input, output, tokenUsage).
 // With no filter and no cursor it calls QueryTraces once and fetches root span details in parallel.
 // With a filter it looks back through the window in batches until the page fills,
-// the window runs out, or maxExaminedTraces traces have been examined.
+// the window runs out, maxExaminedTraces traces have been examined, or
+// listLookBackBudget has passed.
 // A cursor continues from an earlier page over the same whole window.
 func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
 	var resp *opensearch.TraceOverviewResponse
 	var examined int
+	var budgetExceeded bool
 	var err error
 	if params.Filters.IsZero() {
 		resp, examined, err = c.traceOverviewPage(ctx, params)
 	} else {
-		resp, examined, err = c.lookBackForMatches(ctx, params)
+		resp, examined, budgetExceeded, err = c.lookBackForMatches(ctx, params, c.now().Add(listLookBackBudget))
 	}
 	if err != nil {
 		return nil, err
@@ -142,7 +149,8 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 		"cursor", params.Cursor != nil,
 		"examined", examined,
 		"matched", len(resp.Traces),
-		"truncated", resp.Truncated)
+		"truncated", resp.Truncated,
+		"budgetExceeded", budgetExceeded)
 
 	return resp, nil
 }
@@ -210,14 +218,18 @@ func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQ
 }
 
 // lookBackForMatches walks the window in sort order, keeping traces that
-// match params.Filters. It returns the matches and the number of traces
-// examined.
+// match params.Filters. It returns the matches, the number of traces
+// examined, and whether deadline stopped the walk.
 //
 // Each fetch covers the whole window with a doubled limit and skips trace IDs
 // already seen. The window is never narrowed: the Observer bounds each span's
 // end time, so a narrowed end would drop traces that overlap it. A cursor
 // skips traces before it by time; they are not enriched or examined.
-func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, int, error) {
+//
+// Past deadline the walk stops as the examine cap stops it, checked between
+// chunks once one has been examined. The deadline is not put on ctx, since a
+// fetch cancelled mid-chunk would count its trace as unmatched.
+func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams, deadline time.Time) (*opensearch.TraceOverviewResponse, int, bool, error) {
 	// A model filter needs Models filled.
 	if params.Filters.Model != "" {
 		params.Include.Models = true
@@ -232,8 +244,9 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 	examined, skipped, counted, rootless := 0, 0, 0, 0
 	// last is the last trace examined.
 	last := walkStart(params)
+	budgetExceeded := false
 
-	done := func(lookedBackTo time.Time, truncated, more bool) (*opensearch.TraceOverviewResponse, int, error) {
+	done := func(lookedBackTo time.Time, truncated, more bool) (*opensearch.TraceOverviewResponse, int, bool, error) {
 		resp := &opensearch.TraceOverviewResponse{
 			Traces:       matched,
 			TotalCount:   len(matched),
@@ -243,7 +256,11 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		if more {
 			resp.NextCursor = TraceCursor{Rank: skipped + examined + rootless, Time: last}.Encode()
 		}
-		return resp, examined, nil
+		return resp, examined, budgetExceeded, nil
+	}
+	// pastDeadline reports whether the budget is spent, never before the first chunk.
+	pastDeadline := func() bool {
+		return examined > 0 && !c.now().Before(deadline)
 	}
 
 	fetchLimit := lookBackBatchSize
@@ -252,11 +269,15 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, examined, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+			return nil, examined, false, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+		}
+		if pastDeadline() {
+			budgetExceeded = true
+			return done(last, true, true)
 		}
 		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, fetchLimit))
 		if err != nil {
-			return nil, examined, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+			return nil, examined, false, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
 		}
 		rootless = rootlessSlots(fetchLimit, len(tracesResp.Traces), tracesResp.Total)
 
@@ -276,6 +297,10 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		// Enrich in chunks and walk in sort order, so a full page stops at
 		// its last match and the cursor never passes an unreturned match.
 		for len(fresh) > 0 && examined < maxExaminedTraces {
+			if pastDeadline() {
+				budgetExceeded = true
+				return done(last, true, true)
+			}
 			chunk := fresh[:min(lookBackBatchSize, len(fresh), maxExaminedTraces-examined)]
 			// Summary-only survivors all match, so enrich no more than the page still needs.
 			if summaryOnly {
@@ -1119,7 +1144,7 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 
 // selectExportTraces picks the traces to export. Without a filter it calls
 // QueryTraces once. With one it selects matches the way a filtered list does,
-// from the start of the window, so the examine cap applies.
+// from the start of the window, so the examine cap and exportLookBackBudget apply.
 func (c *TracingController) selectExportTraces(ctx context.Context, params TraceQueryParams) ([]observer.TraceInfo, *opensearch.TraceExportResponse, error) {
 	if params.Filters.IsZero() {
 		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, params.Limit))
@@ -1130,7 +1155,7 @@ func (c *TracingController) selectExportTraces(ctx context.Context, params Trace
 	}
 
 	params.Cursor = nil
-	page, examined, err := c.lookBackForMatches(ctx, params)
+	page, examined, budgetExceeded, err := c.lookBackForMatches(ctx, params, c.now().Add(exportLookBackBudget))
 	if err != nil {
 		return nil, nil, fmt.Errorf("controllers.ExportTraces: %w", err)
 	}
@@ -1147,7 +1172,8 @@ func (c *TracingController) selectExportTraces(ctx context.Context, params Trace
 		"filters", params.Filters,
 		"examined", examined,
 		"matched", len(traces),
-		"truncated", page.Truncated)
+		"truncated", page.Truncated,
+		"budgetExceeded", budgetExceeded)
 	return traces, &opensearch.TraceExportResponse{
 		TotalCount:   page.TotalCount,
 		LookedBackTo: page.LookedBackTo,
