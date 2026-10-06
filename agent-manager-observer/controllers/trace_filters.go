@@ -87,10 +87,15 @@ func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
 	if !matchesSummary(overview.DurationInNanos, overview.SpanCount, f) {
 		return false
 	}
-	if f.MinTokens != nil && (overview.TokenUsage == nil || int64(overview.TokenUsage.TotalTokens) < *f.MinTokens) {
+	if !matchesMinTokens(overview.TokenUsage, f) {
 		return false
 	}
 	return matchesModel(overview.Models, f)
+}
+
+// matchesMinTokens checks the minTokens filter; a trace with no token usage fails it.
+func matchesMinTokens(tokens *opensearch.TokenUsage, f TraceFilters) bool {
+	return f.MinTokens == nil || (tokens != nil && int64(tokens.TotalTokens) >= *f.MinTokens)
 }
 
 // matchesModel checks the model filter; a trace with no models fails it.

@@ -423,6 +423,53 @@ func TestExportTraces_SpanListFailsInSelection(t *testing.T) {
 	}
 }
 
+// A minTokens filter lists a trace left short by a leaf it can't read, and
+// keeps one that reaches the threshold without it.
+func TestExportTraces_LeafFailsInSelection(t *testing.T) {
+	tests := []struct {
+		name       string
+		minTokens  int64
+		want       []string
+		wantFailed []string
+	}{
+		{name: "short", minTokens: 12,
+			want: []string{"trace-0000", "trace-0002", "trace-0003"}, wantFailed: []string{"trace-0001"}},
+		{name: "reaches it anyway", minTokens: 11,
+			want: []string{"trace-0000", "trace-0001", "trace-0002"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := langGraphFake(20, noRootAttrs)
+			fake.failCall = failTimes(map[string]int{"leaf-a-0001": -1})
+
+			resp := mustExport(t, NewTracingController(fake), exportParams(3, TraceFilters{MinTokens: ptr(tt.minTokens)}))
+
+			if got := exportedIDs(resp); !slices.Equal(got, tt.want) {
+				t.Fatalf("exported %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(resp.FailedTraceIDs, tt.wantFailed) {
+				t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, tt.wantFailed)
+			}
+		})
+	}
+}
+
+// A trace with no root span ID is listed instead of treated as a non-match.
+func TestExportTraces_NoRootSpanIDInSelection(t *testing.T) {
+	fake := langGraphFake(60, errorEvery(10))
+	fake.traces[20].RootSpanID = ""
+
+	resp := mustExport(t, NewTracingController(fake), exportParams(100, TraceFilters{Status: TraceStatusError}))
+
+	want := []string{"trace-0000", "trace-0010", "trace-0030", "trace-0040", "trace-0050"}
+	if got := exportedIDs(resp); !slices.Equal(got, want) {
+		t.Fatalf("exported %v, want %v", got, want)
+	}
+	if wantFailed := []string{"trace-0020"}; !slices.Equal(resp.FailedTraceIDs, wantFailed) {
+		t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, wantFailed)
+	}
+}
+
 // Without a filter, a span fetch that fails once is retried, and one that
 // keeps failing leaves its trace out while the others export in order.
 func TestExportTraces_SpanFetchFails(t *testing.T) {
@@ -458,6 +505,25 @@ func TestExportTraces_SpanFetchFails(t *testing.T) {
 				t.Errorf("span fetches for trace-0005 = %d, want 2", got)
 			}
 		})
+	}
+}
+
+// A filtered export whose span fetch keeps failing leaves the trace out of totalCount.
+func TestExportTraces_SpanFetchFailsFiltered(t *testing.T) {
+	fake := langGraphFake(60, errorEvery(10))
+	fake.failCall = failTimes(map[string]int{"trace-0020": -1})
+
+	resp := mustExport(t, NewTracingController(fake), exportParams(100, TraceFilters{Status: TraceStatusError}))
+
+	want := []string{"trace-0000", "trace-0010", "trace-0030", "trace-0040", "trace-0050"}
+	if got := exportedIDs(resp); !slices.Equal(got, want) {
+		t.Fatalf("exported %v, want %v", got, want)
+	}
+	if wantFailed := []string{"trace-0020"}; !slices.Equal(resp.FailedTraceIDs, wantFailed) {
+		t.Errorf("failedTraceIds = %v, want %v", resp.FailedTraceIDs, wantFailed)
+	}
+	if resp.TotalCount != len(want) {
+		t.Errorf("totalCount = %d, want %d", resp.TotalCount, len(want))
 	}
 }
 

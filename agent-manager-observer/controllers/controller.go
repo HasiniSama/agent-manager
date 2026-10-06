@@ -454,8 +454,9 @@ const (
 // enrichTraces fetches root spans and enriches traces in parallel, returning
 // overviews in input order. Traces whose root fails matchesRootFilters or whose
 // models fail the model filter are skipped before the rest of the cascade.
-// Traces that couldn't be read are skipped too and returned as failed: the
-// root fetch failed, or the span-list fetch a model or minTokens filter needs.
+// Traces that couldn't be read are skipped too and returned as failed: no
+// root span ID, a failed root fetch, or a failed fetch a model or minTokens
+// filter needs.
 // When listSpansFirst holds, the root comes from the trace's attribute span
 // list instead of its own fetch.
 func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) (overviews []opensearch.TraceOverview, failed []string) {
@@ -486,6 +487,7 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 	for i, t := range traces {
 		if t.RootSpanID == "" {
 			log.Warn("trace has no rootSpanId, skipping", "traceId", t.TraceID)
+			results[i] = result{verdict: enrichFailed}
 			continue
 		}
 		wg.Add(1)
@@ -628,7 +630,8 @@ func (c *TracingController) rootFromSpanList(
 // filter, the verdict is enrichRejected once the models rule the trace out,
 // before steps 2 and 3; traces over the span threshold have no models and are
 // rejected first. It is enrichFailed when a model or minTokens filter is set
-// and the span list can't be fetched, since the filter can't judge the trace.
+// and the span list can't be fetched, or when the token count falls short of
+// minTokens with leaves unread, since the filter can't judge the trace.
 //
 // When the span list carries attributes, steps 2 and 3 read their spans from
 // it instead of fetching them. spans is the list when the caller already
@@ -714,6 +717,7 @@ func (c *TracingController) enrichTraceOverview(
 
 	// Step 3: leaf LLM aggregation (OpenAI Agents SDK / pure-OTel path).
 	stillMissing := input == nil || output == nil || tokenUsage == nil
+	tokensUnread := false
 	if stillMissing {
 		if !aggregateLeaves {
 			logger.GetLogger(ctx).Debug("skipping leaf-LLM aggregation: trace exceeds spanCount threshold",
@@ -721,7 +725,7 @@ func (c *TracingController) enrichTraceOverview(
 				"spanCount", traceInfo.SpanCount,
 				"threshold", skipLeafAggregationSpanCountThreshold)
 		} else {
-			leafInput, leafOutput, leafTokens, leafModels := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, modelsFromList, fetchSem)
+			leafInput, leafOutput, leafTokens, leafModels, leavesUnread := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, modelsFromList, fetchSem)
 			if models == nil {
 				models = leafModels
 			}
@@ -733,11 +737,16 @@ func (c *TracingController) enrichTraceOverview(
 			}
 			if tokenUsage == nil {
 				tokenUsage = leafTokens
+				tokensUnread = leavesUnread
 			}
 		}
 	}
 
-	return input, output, cmp.Or(tokenUsage, entityTokens), models, enrichKept
+	tokenUsage = cmp.Or(tokenUsage, entityTokens)
+	if tokensUnread && !matchesMinTokens(tokenUsage, params.Filters) {
+		return nil, nil, nil, nil, enrichFailed
+	}
+	return input, output, tokenUsage, models, enrichKept
 }
 
 // fetchTraceSpanSummaries calls QueryTraceSpans for one trace and returns
@@ -873,14 +882,14 @@ func (c *TracingController) tryChildChainSpan(
 //
 // If the trace has more LLM leaves than the cap, or any leaf fetch fails, the
 // returned TokenUsage has Partial=true so the UI can render an "approximate"
-// marker.
+// marker. unread reports leaves left out, by the cap or a failed fetch.
 func (c *TracingController) aggregateFromLeafLLMSpans(
 	ctx context.Context,
 	traceID string,
 	spans []observer.SpanInfo,
 	inline bool,
 	fetchSem chan struct{},
-) (input interface{}, output interface{}, tokens *opensearch.TokenUsage, models []string) {
+) (input interface{}, output interface{}, tokens *opensearch.TokenUsage, models []string, unread bool) {
 	log := logger.GetLogger(ctx)
 
 	// Filter to leaf LLM spans, ordered by start time.
@@ -891,7 +900,7 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 		}
 	}
 	if len(leaves) == 0 {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, false
 	}
 	sort.Slice(leaves, func(i, j int) bool { return leaves[i].StartTime.Before(leaves[j].StartTime) })
 
@@ -935,13 +944,14 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 			validLeaves = append(validLeaves, s)
 		}
 	}
+	unread = len(validLeaves) < totalLeaves
 	if len(validLeaves) == 0 {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, unread
 	}
 
 	models = opensearch.ExtractModels(validLeaves)
 	tokens = opensearch.ExtractTokenUsage(validLeaves)
-	if tokens != nil && (partial || len(validLeaves) < len(leaves)) {
+	if tokens != nil && (partial || unread) {
 		tokens.Partial = true
 	}
 
@@ -958,7 +968,7 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 	// Output stays pinned to the last leaf: it is the turn's final model call,
 	// and walking backwards would surface an earlier turn's answer instead.
 	output = opensearch.ExtractOutputPreviewFromLeaf(&validLeaves[len(validLeaves)-1])
-	return input, output, tokens, models
+	return input, output, tokens, models, unread
 }
 
 // GetTraceSpans fetches span summaries for a specific trace (no attributes).
@@ -1207,6 +1217,10 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 	}
 
 	resp.Traces = fullTraces
+	// A filtered export counts what it exported.
+	if !params.Filters.IsZero() {
+		resp.TotalCount = len(fullTraces)
+	}
 	resp.SpansTruncated = truncated.Load()
 	resp.Truncated = resp.Truncated || resp.SpansTruncated
 
