@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -290,6 +291,58 @@ func TestGetTraceOverviews_CursorDepthCap(t *testing.T) {
 	}
 }
 
+// Traces that land between a filtered walk's fetches can carry its rank past
+// the depth cap. The issued cursor is clamped there, so it still decodes.
+func TestGetTraceOverviews_CursorRankClampedAtDepthCap(t *testing.T) {
+	// The cursor rank is 4500, so the walk fetches 4550 traces and then 4999.
+	at := maxCursorDepth - maxExaminedTraces - 1
+	// Only trace-0000 matches, and it is before the cursor.
+	fake := lookBackFake(maxCursorDepth+1000, maxCursorDepth+1000)
+	cursorTime := fake.traces[at].StartTime
+	add := func(id string, start time.Time) {
+		info := baseTraceInfo(2)
+		info.TraceID, info.RootSpanID = id, "root-"+id
+		info.StartTime, info.EndTime = start, start
+		fake.traces = append(fake.traces, info)
+		fake.spanDetails[info.RootSpanID] = &observer.SpanDetailsResponse{
+			SpanID: info.RootSpanID, SpanName: "invoke_agent LangGraph", Attributes: completeRootAttrs(),
+		}
+	}
+	calls := 0
+	fake.onQueryTraces = func() {
+		if calls++; calls != 2 {
+			return
+		}
+		// 50 traces land before the cursor and 500 just past it, which push
+		// the traces the first fetch examined out of the second.
+		for i := 1; i <= 50; i++ {
+			add(fmt.Sprintf("late-before-%03d", i), cursorTime.Add(time.Duration(i)*time.Millisecond))
+		}
+		for i := 1; i <= 500; i++ {
+			add(fmt.Sprintf("late-after-%03d", i), cursorTime.Add(-time.Duration(i)*time.Millisecond))
+		}
+	}
+	c := NewTracingController(fake)
+	params := lookBackParams(10)
+	params.Cursor = &TraceCursor{Rank: at + 1, Time: cursorTime}
+
+	resp, err := c.GetTraceOverviews(context.Background(), params)
+	if err != nil {
+		t.Fatalf("GetTraceOverviews returned error: %v", err)
+	}
+
+	if resp.NextCursor == "" {
+		t.Fatal("no nextCursor, want one")
+	}
+	next, err := DecodeTraceCursor(resp.NextCursor)
+	if err != nil {
+		t.Fatalf("nextCursor does not decode: %v", err)
+	}
+	if next.Rank != maxCursorDepth {
+		t.Errorf("nextCursor rank = %d, want %d", next.Rank, maxCursorDepth)
+	}
+}
+
 func TestTraceCursor_RoundTrip(t *testing.T) {
 	want := TraceCursor{Rank: 42, Time: time.Date(2026, 9, 1, 11, 59, 1, 123456789, time.UTC)}
 
@@ -303,14 +356,29 @@ func TestTraceCursor_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestDecodeTraceCursor_AcceptsDepthCap(t *testing.T) {
+	want := TraceCursor{Rank: maxCursorDepth, Time: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}
+
+	got, err := DecodeTraceCursor(want.Encode())
+
+	if err != nil {
+		t.Fatalf("DecodeTraceCursor returned error: %v", err)
+	}
+	if got.Rank != maxCursorDepth {
+		t.Errorf("rank = %d, want %d", got.Rank, maxCursorDepth)
+	}
+}
+
 func TestDecodeTraceCursor_Rejects(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	tests := map[string]string{
-		"not base64":    "not base64!",
-		"not JSON":      enc("nope"),
-		"negative rank": enc(`{"r":-1,"t":"2026-09-01T00:00:00Z"}`),
-		"missing time":  enc(`{"r":1}`),
-		"bad time":      enc(`{"r":1,"t":"yesterday"}`),
+		"not base64":          "not base64!",
+		"not JSON":            enc("nope"),
+		"negative rank":       enc(`{"r":-1,"t":"2026-09-01T00:00:00Z"}`),
+		"rank past depth cap": enc(fmt.Sprintf(`{"r":%d,"t":"2026-09-01T00:00:00Z"}`, maxCursorDepth+1)),
+		"rank near max int":   enc(fmt.Sprintf(`{"r":%d,"t":"2026-09-01T00:00:00Z"}`, math.MaxInt)),
+		"missing time":        enc(`{"r":1}`),
+		"bad time":            enc(`{"r":1,"t":"yesterday"}`),
 	}
 	for name, raw := range tests {
 		t.Run(name, func(t *testing.T) {

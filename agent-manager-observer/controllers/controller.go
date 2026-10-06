@@ -254,7 +254,8 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 			Truncated:    truncated,
 		}
 		if more {
-			resp.NextCursor = TraceCursor{Rank: skipped + examined + rootless, Time: last}.Encode()
+			// A window that changed between fetches can push the count past the cap.
+			resp.NextCursor = TraceCursor{Rank: min(skipped+examined+rootless, maxCursorDepth), Time: last}.Encode()
 		}
 		return resp, examined, budgetExceeded, nil
 	}

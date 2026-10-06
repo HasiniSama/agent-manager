@@ -476,10 +476,11 @@ func TestTraceEndpoints_InvalidFilters(t *testing.T) {
 func TestGetTraceOverviews_InvalidCursor(t *testing.T) {
 	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	tests := map[string]string{
-		"not base64":    "not base64!",
-		"not JSON":      enc("nope"),
-		"negative rank": enc(`{"r":-1,"t":"2026-04-02T00:00:00Z"}`),
-		"missing time":  enc(`{"r":1}`),
+		"not base64":        "not base64!",
+		"not JSON":          enc("nope"),
+		"negative rank":     enc(`{"r":-1,"t":"2026-04-02T00:00:00Z"}`),
+		"rank near max int": enc(`{"r":9223372036854775807,"t":"2026-04-02T00:00:00Z"}`),
+		"missing time":      enc(`{"r":1}`),
 	}
 	for name, cursor := range tests {
 		t.Run(name, func(t *testing.T) {

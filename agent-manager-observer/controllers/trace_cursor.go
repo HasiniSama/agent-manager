@@ -55,6 +55,9 @@ func DecodeTraceCursor(s string) (*TraceCursor, error) {
 	if c.Rank < 0 {
 		return nil, errors.New("controllers.DecodeTraceCursor: negative rank")
 	}
+	if c.Rank > maxCursorDepth {
+		return nil, errors.New("controllers.DecodeTraceCursor: rank past depth cap")
+	}
 	if c.Time.IsZero() {
 		return nil, errors.New("controllers.DecodeTraceCursor: missing time")
 	}
