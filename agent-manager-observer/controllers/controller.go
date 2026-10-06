@@ -1131,14 +1131,16 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 	}
 
 	resp.Traces = fullTraces
-	resp.Truncated = resp.Truncated || truncated.Load()
+	resp.SpansTruncated = truncated.Load()
+	resp.Truncated = resp.Truncated || resp.SpansTruncated
 
 	log.Info("Completed trace export",
 		"organization", params.Organization,
 		"filters", params.Filters,
 		"totalCount", resp.TotalCount,
 		"exported", len(fullTraces),
-		"truncated", resp.Truncated)
+		"truncated", resp.Truncated,
+		"spansTruncated", resp.SpansTruncated)
 
 	return resp, nil
 }

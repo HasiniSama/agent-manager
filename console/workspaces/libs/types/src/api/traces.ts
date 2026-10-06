@@ -246,8 +246,10 @@ export interface TraceExportResponse {
   totalCount: number;
   /** How far a filtered export looked (RFC3339Nano); absent without filters. */
   lookedBackTo?: string;
-  /** True when the examine cap stopped a filtered export or a trace hit the span cap. */
+  /** True when the search stopped before the end of the time range or spansTruncated is true. */
   truncated?: boolean;
+  /** True when an exported trace hit the 10,000 span cap and its spans were cut. */
+  spansTruncated?: boolean;
 }
 
 export type ExportTracesPathParams = {

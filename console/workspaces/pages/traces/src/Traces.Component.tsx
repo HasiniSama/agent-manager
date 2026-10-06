@@ -29,6 +29,7 @@ import {
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   GetTraceListPathParams,
+  TraceExportResponse,
   TraceFilters,
   TraceListTimeRange,
   getTimeRange,
@@ -54,6 +55,7 @@ import {
 import { TraceColumnsMenu, TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
 import { parseTraceFilters, withTraceFilters } from "./traceFilters";
 import { type TraceColumn, parseTraceColumns, withTraceColumns } from "./traceColumns";
+import { formatStartTime } from "./traceTime";
 import {
   Alert,
   Button,
@@ -72,6 +74,35 @@ const TIME_RANGE_OPTIONS = [
   { value: TraceListTimeRange.ONE_DAY, label: "1 Day" },
   { value: TraceListTimeRange.SEVEN_DAYS, label: "7 Days" },
 ];
+
+// Warning lines for an export file that may be partial, or null when it is complete.
+const exportWarningLines = (
+  resp: TraceExportResponse,
+  filtered: boolean,
+): string[] | null => {
+  const searchedTo = resp.lookedBackTo ? formatStartTime(resp.lookedBackTo) : undefined;
+  if (resp.spansTruncated) {
+    const lines = [
+      "Some traces have more than 10,000 spans. The file has the first 10,000 spans of each.",
+    ];
+    if (filtered && searchedTo) {
+      lines.push(`The search may also have stopped early: it searched as far as ${searchedTo}.`);
+    }
+    return lines;
+  }
+  if (resp.truncated && filtered) {
+    return [
+      [
+        "The export stopped before the end of the time range.",
+        searchedTo && `It searched as far as ${searchedTo}.`,
+        "Narrow the time range to export the rest.",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    ];
+  }
+  return null;
+};
 
 export const TracesComponent: React.FC = () => {
   const { agentId, orgId, projectId, envId } = useParams();
@@ -114,6 +145,7 @@ export const TracesComponent: React.FC = () => {
   const envNotFound =
     isEnvSuccess && environmentsData !== undefined && !environmentName;
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportWarning, setExportWarning] = useState<string[] | null>(null);
   const [drawerFullscreen, setDrawerFullscreen] = useState(false);
 
   const {
@@ -248,6 +280,7 @@ export const TracesComponent: React.FC = () => {
   }, [traceData, isLoading, selectedTrace, handleCloseDrawer]);
 
   const handleExportTraces = useCallback(async () => {
+    setExportWarning(null);
     if (!organization || !projectId || !agentId || !environmentName) {
       setExportError("Missing required parameters for export");
       return;
@@ -296,6 +329,8 @@ export const TracesComponent: React.FC = () => {
       // Cleanup
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
+
+      setExportWarning(exportWarningLines(exportData, hasActiveFilters));
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Export failed:", error);
@@ -312,6 +347,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     limit,
     filters,
+    hasActiveFilters,
     exportTracesAsync,
     hasCustomRange,
     customStartTime,
@@ -525,6 +561,18 @@ export const TracesComponent: React.FC = () => {
       >
         <Alert onClose={() => setExportError(null)} severity="error">
           {exportError}
+        </Alert>
+      </Snackbar>
+      {/* Stays until closed: a click elsewhere on the page doesn't dismiss it. */}
+      <Snackbar
+        open={!!exportWarning}
+        onClose={(_, reason) => {
+          if (reason !== "clickaway") setExportWarning(null);
+        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert onClose={() => setExportWarning(null)} severity="warning">
+          {exportWarning?.map((line) => <div key={line}>{line}</div>)}
         </Alert>
       </Snackbar>
     </>

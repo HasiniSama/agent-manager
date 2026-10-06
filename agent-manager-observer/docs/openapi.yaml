@@ -773,6 +773,7 @@ components:
         - traces
         - totalCount
         - truncated
+        - spansTruncated
       properties:
         traces:
           type: array
@@ -795,8 +796,14 @@ components:
           type: boolean
           description: |
             True when the export was cut short: a filtered export reached its cap of 500 examined
-            traces or its 10-second search budget before the window ran out, or a trace hit the
-            10 000 span cap.
+            traces or its 10-second search budget before the window ran out, or `spansTruncated`
+            is true. With a filter set and `spansTruncated` true, it doesn't say whether the
+            search also stopped early.
+        spansTruncated:
+          type: boolean
+          description: |
+            True when an exported trace has more than 10 000 spans; the file holds the first
+            10 000 spans of that trace.
 
     # ── schemas ─────────────────────────────────────────────────────────────
 

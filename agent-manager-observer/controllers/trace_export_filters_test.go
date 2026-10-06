@@ -18,8 +18,10 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -221,5 +223,85 @@ func TestExportTraces_StopsAtTimeBudget(t *testing.T) {
 	}
 	if got := logField(t, logs, "Selected traces for export", "budgetExceeded"); got != true {
 		t.Errorf("budgetExceeded logged as %v, want true", got)
+	}
+}
+
+// A trace over the span cap sets spansTruncated, and truncated with it, with or without a filter.
+func TestExportTraces_SpanCapSetsSpansTruncated(t *testing.T) {
+	filters := map[string]TraceFilters{
+		"no filter":    {},
+		"status=error": {Status: TraceStatusError},
+	}
+	for name, f := range filters {
+		t.Run(name, func(t *testing.T) {
+			fake := langGraphFake(60, errorEvery(10))
+			fake.traces[10].SpanCount = MaxSpansPerRequest + 1
+			c := NewTracingController(fake)
+			ctx, logs := logContext()
+
+			resp, err := c.ExportTraces(ctx, exportParams(100, f))
+			if err != nil {
+				t.Fatalf("ExportTraces returned error: %v", err)
+			}
+
+			if !slices.Contains(exportedIDs(resp), "trace-0010") {
+				t.Fatalf("exported %v, want trace-0010 among them", exportedIDs(resp))
+			}
+			if !resp.SpansTruncated || !resp.Truncated {
+				t.Errorf("spansTruncated %v, truncated %v; want both true", resp.SpansTruncated, resp.Truncated)
+			}
+			if got := logField(t, logs, "Completed trace export", "spansTruncated"); got != true {
+				t.Errorf("spansTruncated logged as %v, want true", got)
+			}
+		})
+	}
+}
+
+// A filtered export stopped by the examine cap is truncated without spansTruncated.
+func TestExportTraces_ExamineCapLeavesSpansTruncatedFalse(t *testing.T) {
+	fake := langGraphFake(maxExaminedTraces+100, errorEvery(100))
+	c := NewTracingController(fake)
+
+	resp := mustExport(t, c, exportParams(100, TraceFilters{Status: TraceStatusError}))
+
+	want := []string{"trace-0000", "trace-0100", "trace-0200", "trace-0300", "trace-0400"}
+	if got := exportedIDs(resp); !reflect.DeepEqual(got, want) {
+		t.Fatalf("exported %v, want %v", got, want)
+	}
+	if !resp.Truncated || resp.SpansTruncated {
+		t.Errorf("truncated %v, spansTruncated %v; want true, false", resp.Truncated, resp.SpansTruncated)
+	}
+}
+
+// An export that covers the window with every trace under the span cap sets neither flag.
+func TestExportTraces_CompleteExportSetsNeither(t *testing.T) {
+	filters := map[string]TraceFilters{
+		"no filter":    {},
+		"status=error": {Status: TraceStatusError},
+	}
+	for name, f := range filters {
+		t.Run(name, func(t *testing.T) {
+			c := NewTracingController(langGraphFake(60, errorEvery(10)))
+
+			resp := mustExport(t, c, exportParams(100, f))
+
+			if len(resp.Traces) == 0 {
+				t.Fatal("exported no traces")
+			}
+			if resp.Truncated || resp.SpansTruncated {
+				t.Errorf("truncated %v, spansTruncated %v; want both false", resp.Truncated, resp.SpansTruncated)
+			}
+		})
+	}
+}
+
+// spansTruncated is always in the JSON, so a client can read false without a default.
+func TestTraceExportResponse_SpansTruncatedAlwaysPresent(t *testing.T) {
+	b, err := json.Marshal(opensearch.TraceExportResponse{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"spansTruncated":false`) {
+		t.Errorf("marshalled %s, want spansTruncated false", b)
 	}
 }

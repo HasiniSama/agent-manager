@@ -16,11 +16,15 @@
  * under the License.
  */
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ThemeProvider, createTheme } from "@wso2/oxygen-ui";
-import type { TraceFilters, TraceOverview } from "@agent-management-platform/types";
+import type {
+  TraceExportResponse,
+  TraceFilters,
+  TraceOverview,
+} from "@agent-management-platform/types";
 
 // api-client crashes at import time outside a configured app shell, and
 // EnvironmentSelector pulls it in; stub both at the module boundary.
@@ -49,10 +53,11 @@ vi.mock("@agent-management-platform/shared-component", () => ({
   EnvironmentSelector: () => null,
 }));
 
-import { useTraceList } from "@agent-management-platform/api-client";
+import { useExportTraces, useTraceList } from "@agent-management-platform/api-client";
 import { TracesComponent } from "./Traces.Component";
 import { parseTraceFilters, traceFilterChips } from "./traceFilters";
 import { parseTraceColumns } from "./traceColumns";
+import { formatStartTime } from "./traceTime";
 
 const mockUseTraceList = vi.mocked(useTraceList);
 
@@ -344,5 +349,148 @@ describe("TracesComponent columns and cap notice", () => {
     expect(
       screen.getByText(/^Looked back to \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
     ).toBeInTheDocument();
+  });
+});
+
+describe("TracesComponent export warning", () => {
+  const LOOKED_BACK_TO = "2026-10-01T08:14:00Z";
+  const SPANS_TEXT =
+    "Some traces have more than 10,000 spans. The file has the first 10,000 spans of each.";
+  const exportTraces = vi.fn<(params: unknown) => Promise<TraceExportResponse>>();
+  const createObjectURL = vi.fn(() => "blob:export");
+  let clickSpy: ReturnType<typeof vi.spyOn>;
+
+  const exportResponse = (extra: Partial<TraceExportResponse> = {}): TraceExportResponse => ({
+    traces: [],
+    totalCount: 0,
+    truncated: false,
+    spansTruncated: false,
+    ...extra,
+  });
+  const clickExport = () => fireEvent.click(screen.getByRole("button", { name: "Export" }));
+
+  beforeEach(() => {
+    exportTraces.mockReset();
+    vi.mocked(useExportTraces).mockReturnValue({
+      mutateAsync: exportTraces,
+      isPending: false,
+    } as unknown as ReturnType<typeof useExportTraces>);
+    // jsdom has no object URLs and would try to navigate on the link click.
+    Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    clickSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("says a filtered export stopped early and how far it searched", async () => {
+    exportTraces.mockResolvedValue(
+      exportResponse({ truncated: true, lookedBackTo: LOOKED_BACK_TO }),
+    );
+    renderPage("?status=error");
+
+    clickExport();
+
+    expect(
+      await screen.findByText(
+        "The export stopped before the end of the time range. " +
+          `It searched as far as ${formatStartTime(LOOKED_BACK_TO)}. ` +
+          "Narrow the time range to export the rest.",
+      ),
+    ).toBeInTheDocument();
+    expect(formatStartTime(LOOKED_BACK_TO)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(exportTraces).toHaveBeenCalledWith(expect.objectContaining({ filters: { status: "error" } }));
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(SPANS_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("leaves out how far it searched when lookedBackTo is missing", async () => {
+    exportTraces.mockResolvedValue(exportResponse({ truncated: true }));
+    renderPage("?status=error");
+
+    clickExport();
+
+    expect(
+      await screen.findByText(
+        "The export stopped before the end of the time range. Narrow the time range to export the rest.",
+      ),
+    ).toBeInTheDocument();
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it("says spans were cut, without a search line when no filter is set", async () => {
+    exportTraces.mockResolvedValue(exportResponse({ truncated: true, spansTruncated: true }));
+    renderPage();
+
+    clickExport();
+
+    expect(await screen.findByText(SPANS_TEXT)).toBeInTheDocument();
+    expect(screen.queryByText(/stopped/)).not.toBeInTheDocument();
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it("says spans were cut and the search may also have stopped early with a filter set", async () => {
+    exportTraces.mockResolvedValue(
+      exportResponse({ truncated: true, spansTruncated: true, lookedBackTo: LOOKED_BACK_TO }),
+    );
+    renderPage("?status=error");
+
+    clickExport();
+
+    expect(await screen.findByText(SPANS_TEXT)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `The search may also have stopped early: it searched as far as ${formatStartTime(LOOKED_BACK_TO)}.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/export stopped before/)).not.toBeInTheDocument();
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no warning when the export is complete", async () => {
+    exportTraces.mockResolvedValue(exportResponse({ lookedBackTo: LOOKED_BACK_TO }));
+    renderPage("?status=error");
+
+    clickExport();
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps the warning until it is closed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    exportTraces.mockResolvedValue(exportResponse({ truncated: true, spansTruncated: true }));
+    renderPage();
+
+    clickExport();
+    await screen.findByText(SPANS_TEXT);
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    fireEvent.click(document.body);
+    expect(screen.getByText(SPANS_TEXT)).toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Close" }));
+    expect(screen.queryByText(SPANS_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("clears the warning when a new export starts", async () => {
+    let finishSecond!: (resp: TraceExportResponse) => void;
+    exportTraces
+      .mockResolvedValueOnce(exportResponse({ truncated: true, spansTruncated: true }))
+      .mockReturnValueOnce(new Promise((resolve) => (finishSecond = resolve)));
+    renderPage();
+
+    clickExport();
+    await screen.findByText(SPANS_TEXT);
+    clickExport();
+
+    expect(exportTraces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(SPANS_TEXT)).not.toBeInTheDocument();
+    await act(async () => finishSecond(exportResponse()));
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(SPANS_TEXT)).not.toBeInTheDocument();
   });
 });

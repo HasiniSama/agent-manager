@@ -40,8 +40,8 @@ import {
   Workflow,
   XCircle,
 } from "@wso2/oxygen-ui-icons-react";
-import { format } from "date-fns";
 import { DEFAULT_TRACE_COLUMNS, type TraceColumn } from "../traceColumns";
+import { formatStartTime } from "../traceTime";
 
 interface TracesTableProps {
   traces: TraceOverview[];
@@ -64,8 +64,6 @@ interface TracesTableProps {
 const toNStoSeconds = (ns: number) => {
   return ns / 1000_000_000;
 };
-
-const formatStartTime = (time: string) => format(new Date(time), "yyyy-MM-dd HH:mm:ss");
 
 const ellipsisSx = {
   display: "block",
