@@ -345,38 +345,57 @@ if [ "$KATA_TAINT" = "true" ]; then
     FB_NAMESPACE="openchoreo-observability-plane"
     FB_RELEASE="observability-logs-opensearch"
     FB_CHART="oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch"
+    # Tolerations as operator/key/effect lines. `Exists//` tolerates every taint and
+    # `Exists//NoSchedule` every NoSchedule taint, which covers the Kata taint. The value set
+    # below is `Exists//`, so it may replace other entries without losing any node.
+    FB_TOLERATIONS_JSONPATH='{range .spec.template.spec.tolerations[*]}{.operator}/{.key}/{.effect}{"\n"}{end}'
+    fb_tolerates_all() { grep -qxE 'Exists//(NoSchedule)?' <<<"$1"; }
+    fb_print_helm_command() {
+        echo "         helm upgrade ${FB_RELEASE} ${FB_CHART} \\"
+        echo "           --namespace ${FB_NAMESPACE} \\"
+        echo "           --version <installed chart version, from: helm list -n ${FB_NAMESPACE}> \\"
+        echo "           --reuse-values \\"
+        echo "           --set \"fluent-bit.tolerations[0].operator=Exists\""
+    }
     if kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" &>/dev/null; then
         echo "🪵 Ensuring Fluent Bit tolerates the Kata taint (so agent logs are collected)..."
-        FB_TOLERATIONS="$(kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" \
-            -o jsonpath='{range .spec.template.spec.tolerations[*]}{.operator}/{.key}/{.effect}{"\n"}{end}')"
-        if printf '%s\n' "$FB_TOLERATIONS" | grep -qxE 'Exists//(NoSchedule)?'; then
-            echo "   ✅ Fluent Bit already tolerates all taints"
+        # `|| true`: under pipefail a failing helm would otherwise abort the script here
+        # instead of reaching the patch fallback below.
+        FB_CHART_VERSION="$(helm list -n "$FB_NAMESPACE" --filter "^${FB_RELEASE}\$" -o yaml 2>/dev/null \
+            | sed -n "s/^[- ]*chart: ${FB_RELEASE}-//p" || true)"
+        FB_RELEASE_TOLERATIONS=""
+        if [ -n "$FB_CHART_VERSION" ]; then
+            # Read the toleration from the release's stored manifest, not the live DaemonSet: a
+            # toleration patched onto the live object (as earlier versions of this script did)
+            # passes a live check but is gone once Helm recreates the DaemonSet.
+            FB_RELEASE_TOLERATIONS="$(helm get manifest "$FB_RELEASE" -n "$FB_NAMESPACE" 2>/dev/null \
+                | awk '/^---/{if(ds)printf "%s",buf; buf="";ds=0;next} {buf=buf $0 "\n"} /^kind: DaemonSet$/{ds=1} END{if(ds)printf "%s",buf}' \
+                | kubectl create --dry-run=client -f - -o jsonpath="$FB_TOLERATIONS_JSONPATH" 2>/dev/null || true)"
+        fi
+        if [ -n "$FB_CHART_VERSION" ] && fb_tolerates_all "$FB_RELEASE_TOLERATIONS"; then
+            echo "   ✅ fluent-bit.tolerations is already set on the ${FB_RELEASE} release"
+        elif [ -n "$FB_CHART_VERSION" ] && helm upgrade "$FB_RELEASE" "$FB_CHART" \
+                --namespace "$FB_NAMESPACE" \
+                --version "$FB_CHART_VERSION" \
+                --reuse-values \
+                --set "fluent-bit.tolerations[0].operator=Exists" \
+                ${HELM_ARGS[@]+"${HELM_ARGS[@]}"} >/dev/null; then
+            echo "   ✅ Set fluent-bit.tolerations on the ${FB_RELEASE} release (chart ${FB_CHART_VERSION})"
+        elif fb_tolerates_all "$(kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" -o jsonpath="$FB_TOLERATIONS_JSONPATH")"; then
+            echo "   ⚠️  Fluent Bit tolerates the taint only through a patch on the DaemonSet, which is"
+            echo "       lost if the DaemonSet is recreated. Make it durable with:"
+            fb_print_helm_command
+        # Fallback for a log module that is not a Helm release we can upgrade from here. The
+        # patch works now but does not survive the DaemonSet being recreated.
+        elif kubectl patch daemonset fluent-bit -n "$FB_NAMESPACE" --type=json \
+                -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"operator":"Exists"}]}]' >/dev/null; then
+            echo "   ⚠️  Could not set the toleration through Helm; patched the DaemonSet instead."
+            echo "       The patch is lost if the DaemonSet is recreated. Make it durable with:"
+            fb_print_helm_command
         else
-            # `|| true`: under pipefail a failing helm list would otherwise abort the script
-            # here instead of reaching the patch fallback below.
-            FB_CHART_VERSION="$(helm list -n "$FB_NAMESPACE" --filter "^${FB_RELEASE}\$" -o yaml 2>/dev/null \
-                | sed -n "s/^[- ]*chart: ${FB_RELEASE}-//p" || true)"
-            if [ -n "$FB_CHART_VERSION" ] && helm upgrade "$FB_RELEASE" "$FB_CHART" \
-                    --namespace "$FB_NAMESPACE" \
-                    --version "$FB_CHART_VERSION" \
-                    --reuse-values \
-                    --set "fluent-bit.tolerations[0].operator=Exists" \
-                    ${HELM_ARGS[@]+"${HELM_ARGS[@]}"} >/dev/null; then
-                echo "   ✅ Set fluent-bit.tolerations on the ${FB_RELEASE} release (chart ${FB_CHART_VERSION})"
-            else
-                # Fallback for a log module that is not a Helm release we can upgrade from here
-                # (a different release name, or the upgrade failed). The patch works now but
-                # does not survive the DaemonSet being recreated.
-                kubectl patch daemonset fluent-bit -n "$FB_NAMESPACE" --type=json \
-                    -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"operator":"Exists"}]}]' >/dev/null 2>&1 || true
-                echo "   ⚠️  Could not set the toleration through Helm; patched the DaemonSet instead."
-                echo "       The patch is lost if the DaemonSet is recreated. Make it durable with:"
-                echo "         helm upgrade ${FB_RELEASE} ${FB_CHART} \\"
-                echo "           --namespace ${FB_NAMESPACE} \\"
-                echo "           --version <installed chart version, from: helm list -n ${FB_NAMESPACE}> \\"
-                echo "           --reuse-values \\"
-                echo "           --set \"fluent-bit.tolerations[0].operator=Exists\""
-            fi
+            echo "   ❌ Could not set the Fluent Bit toleration through Helm or patch the DaemonSet."
+            echo "       Agents on the Kata node(s) produce no runtime logs until it is set with:"
+            fb_print_helm_command
         fi
     fi
 else
