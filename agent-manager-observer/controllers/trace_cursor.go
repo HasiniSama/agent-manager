@@ -21,18 +21,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/wso2/agent-manager/agent-manager-observer/observer"
 )
 
-// TraceCursor marks where a trace-list page stopped in its window and sort order.
+// TraceCursor names the trace a trace-list page stopped on. Traces are in
+// page order: start time in the sort order, then trace ID ascending. The next
+// page starts strictly after the cursor trace, so pages never overlap.
 // The API carries it as opaque base64url JSON.
 type TraceCursor struct {
 	// Rank is the upstream trace slots up to and including the cursor trace.
 	// It only sizes the next fetch.
 	Rank int `json:"r"`
-	// Time is the cursor trace's start time. The next page skips traces on
-	// the near side of it and keeps traces at exactly this time.
+	// Time is the cursor trace's start time.
 	Time time.Time `json:"t"`
+	// ID is the cursor trace's ID. An empty ID sorts before every ID, so a
+	// cursor without one keeps every trace at Time.
+	ID string `json:"i,omitempty"`
 }
 
 // Encode returns the cursor's wire form.
@@ -64,22 +72,53 @@ func DecodeTraceCursor(s string) (*TraceCursor, error) {
 	return &c, nil
 }
 
-// beforeCursor reports whether start is strictly on the near side of cur:
-// newer for desc, older for asc.
-func beforeCursor(start time.Time, cur *TraceCursor, asc bool) bool {
-	switch {
-	case cur == nil:
-		return false
-	case asc:
-		return start.Before(cur.Time)
-	default:
-		return start.After(cur.Time)
+// compareTraces orders traces by page order: start time in the sort order,
+// then trace ID ascending.
+func compareTraces(a, b observer.TraceInfo, asc bool) int {
+	if c := a.StartTime.Compare(b.StartTime); c != 0 {
+		if asc {
+			return c
+		}
+		return -c
 	}
+	return strings.Compare(a.TraceID, b.TraceID)
 }
 
-// atCursor reports whether start is exactly the cursor time.
-func atCursor(start time.Time, cur *TraceCursor) bool {
-	return cur != nil && start.Equal(cur.Time)
+// pastCursor reports whether t comes strictly after cur in page order. Every
+// trace is past a nil cursor.
+func pastCursor(t observer.TraceInfo, cur *TraceCursor, asc bool) bool {
+	return cur == nil || compareTraces(t, observer.TraceInfo{StartTime: cur.Time, TraceID: cur.ID}, asc) > 0
+}
+
+// sortedTraces returns a copy of traces in page order. The upstream sorts by
+// start time only, so traces with the same start time come back in any order.
+func sortedTraces(traces []observer.TraceInfo, asc bool) []observer.TraceInfo {
+	sorted := slices.Clone(traces)
+	slices.SortFunc(sorted, func(a, b observer.TraceInfo) int { return compareTraces(a, b, asc) })
+	return sorted
+}
+
+// settledLen is how many leading traces of a sorted response are settled:
+// the response holds every trace at their start time. A response cut by its
+// limit can hold only part of the traces at its last start time, so a page
+// may stop only on a settled trace. complete means the response holds the
+// whole window.
+func settledLen(sorted []observer.TraceInfo, complete bool) int {
+	n := len(sorted)
+	if complete || n == 0 {
+		return n
+	}
+	last := sorted[n-1].StartTime
+	for n > 0 && sorted[n-1].StartTime.Equal(last) {
+		n--
+	}
+	return n
+}
+
+// fetchSize is the upstream limit for a walk that needs n traces: one more,
+// which only shows whether the n-th is settled, capped at maxCursorDepth.
+func fetchSize(n int) int {
+	return min(n+1, maxCursorDepth)
 }
 
 // rootlessSlots estimates the limit slots a response spent on traces whose

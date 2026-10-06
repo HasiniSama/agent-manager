@@ -67,7 +67,7 @@ export const TracesView: React.FC<TracesViewProps> = ({
         <Alert severity="info" sx={{ mb: 2 }}>
           {hasOlder
             ? "Showing matches from the traces searched so far. Narrow the time range to see more."
-            : "The list stops here: older traces are more than 5,000 traces into this time range. Narrow the time range to see more."}
+            : "The list stops here: older traces are more than 1,000 traces into this time range. Narrow the time range to see more."}
         </Alert>
       )}
       <TracesTable

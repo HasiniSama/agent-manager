@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -59,6 +60,9 @@ type fakeObserverClient struct {
 	// windowed makes QueryTraces apply the request's window, sort order and
 	// limit the way the upstream Observer does.
 	windowed bool
+	// shuffleTies makes QueryTraces return traces with the same start time in
+	// a different order on every call, before the limit cuts them.
+	shuffleTies bool
 	// onQueryTraces runs at the start of each QueryTraces call.
 	onQueryTraces func()
 	// onGetSpanDetails runs at the start of each GetSpanDetails call, which
@@ -79,7 +83,7 @@ type fakeObserverClient struct {
 
 // QueryTraces records the request and returns the configured traces, windowed like upstream when windowed is set.
 func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQueryRequest) (*observer.TracesQueryResponse, error) {
-	atomic.AddInt32(&f.queryTracesCalls, 1)
+	calls := atomic.AddInt32(&f.queryTracesCalls, 1)
 	f.tracesReqs = append(f.tracesReqs, req)
 	if f.onQueryTraces != nil {
 		f.onQueryTraces()
@@ -119,6 +123,17 @@ func (f *fakeObserverClient) QueryTraces(_ context.Context, req observer.TracesQ
 		}
 		return a.TraceID < b.TraceID
 	})
+	if f.shuffleTies {
+		rng := rand.New(rand.NewPCG(uint64(calls), 0))
+		for i := 0; i < len(buckets); {
+			j := i + 1
+			for j < len(buckets) && buckets[j].info.StartTime.Equal(buckets[i].info.StartTime) {
+				j++
+			}
+			rng.Shuffle(j-i, func(a, b int) { buckets[i+a], buckets[i+b] = buckets[i+b], buckets[i+a] })
+			i = j
+		}
+	}
 	if req.Limit != nil && len(buckets) > *req.Limit {
 		buckets = buckets[:*req.Limit]
 	}

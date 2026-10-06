@@ -135,10 +135,10 @@ func matchesSummary(durationNs int64, spanCount int, f TraceFilters) bool {
 	return true
 }
 
-// summaryChunkLen is the shortest prefix of traces holding need survivors past the cursor time.
-func summaryChunkLen(traces []observer.TraceInfo, f TraceFilters, cur *TraceCursor, need int) int {
+// summaryChunkLen is the shortest prefix of traces holding need survivors.
+func summaryChunkLen(traces []observer.TraceInfo, f TraceFilters, need int) int {
 	for i, t := range traces {
-		if matchesSummary(t.DurationNs, t.SpanCount, f) && !atCursor(t.StartTime, cur) {
+		if matchesSummary(t.DurationNs, t.SpanCount, f) {
 			need--
 			if need == 0 {
 				return i + 1

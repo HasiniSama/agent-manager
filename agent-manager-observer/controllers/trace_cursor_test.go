@@ -121,7 +121,7 @@ func cursorParams(limit int, sortOrder string, filtered bool) TraceQueryParams {
 }
 
 // Paging by cursor returns exactly the traces rooted in the window, with
-// overlapping traces, in both sort orders, filtered and not.
+// overlapping traces, in both sort orders, filtered and not. Pages don't overlap.
 func TestGetTraceOverviews_CursorPagesWholeWindow(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -148,6 +148,7 @@ func TestGetTraceOverviews_CursorPagesWholeWindow(t *testing.T) {
 				pages := pageAll(t, c, fake, params)
 
 				assertIDs(t, unionIDs(pages), wantIDs(4, 300, tt.matchEvery))
+				assertNoDuplicates(t, pageIDs(pages))
 				for i, p := range pages {
 					if p.resp.Truncated {
 						t.Errorf("page %d truncated", i)
@@ -216,7 +217,8 @@ func TestGetTraceOverviews_CursorChangeBeforeCursor(t *testing.T) {
 	}
 }
 
-// More traces at one timestamp than fit on a page still make progress.
+// More traces at one timestamp than fit on a page still make progress, pages
+// don't overlap, and each page holds limit traces until the last.
 func TestGetTraceOverviews_CursorTiesMakeProgress(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -242,6 +244,192 @@ func TestGetTraceOverviews_CursorTiesMakeProgress(t *testing.T) {
 			pages := pageAll(t, c, fake, params)
 
 			assertIDs(t, unionIDs(pages), wantIDs(0, 60, 1))
+			assertNoDuplicates(t, pageIDs(pages))
+			for i, p := range pages[:len(pages)-1] {
+				if len(p.resp.Traces) != params.Limit {
+					t.Errorf("page %d holds %d traces, want %d", i, len(p.resp.Traces), params.Limit)
+				}
+			}
+		})
+	}
+}
+
+// A cursor inside a tie group bigger than the page returns and enriches only
+// the page, not every trace at the cursor time.
+func TestGetTraceOverviews_CursorInsideLargeTieGroup(t *testing.T) {
+	// Traces 10-899 share one start time, and the deepest fetch sees past them.
+	fake := lookBackFake(maxCursorDepth-50, 1)
+	for i := 10; i < maxCursorDepth-100; i++ {
+		fake.traces[i].StartTime = fake.traces[10].StartTime
+		fake.traces[i].EndTime = fake.traces[10].StartTime
+	}
+	c := NewTracingController(fake)
+	params := cursorParams(20, "desc", false)
+
+	var ids []string
+	for page := 0; page < 5; page++ {
+		before := rootFetches(fake)
+		resp, err := c.GetTraceOverviews(context.Background(), params)
+		if err != nil {
+			t.Fatalf("page %d: GetTraceOverviews returned error: %v", page, err)
+		}
+		if got := rootFetches(fake) - before; got > params.Limit {
+			t.Errorf("page %d made %d root GetSpanDetails calls, want at most %d", page, got, params.Limit)
+		}
+		if len(resp.Traces) != params.Limit || resp.NextCursor == "" {
+			t.Fatalf("page %d: %d traces, nextCursor %q; want %d and a cursor", page, len(resp.Traces), resp.NextCursor, params.Limit)
+		}
+		for _, tr := range resp.Traces {
+			ids = append(ids, tr.TraceID)
+		}
+		if params.Cursor, err = DecodeTraceCursor(resp.NextCursor); err != nil {
+			t.Fatalf("page %d: nextCursor does not decode: %v", page, err)
+		}
+	}
+
+	// Ties are in trace ID order, so five pages are trace-0000 to trace-0099.
+	want := make([]string, 0, 100)
+	for i := 0; i < 100; i++ {
+		want = append(want, fmt.Sprintf("trace-%04d", i))
+	}
+	if !slices.Equal(ids, want) {
+		t.Errorf("paged %v, want %v", ids, want)
+	}
+}
+
+// A filter that matches none of a tie group bigger than the examine cap
+// pages through the group to the match after it, and every page moves on.
+func TestGetTraceOverviews_CursorPastNonMatchingTies(t *testing.T) {
+	for _, sortOrder := range []string{"desc", "asc"} {
+		t.Run(sortOrder, func(t *testing.T) {
+			// Traces 0-689 share one start time and match nothing; trace-0690 matches.
+			fake := lookBackFake(700, 690)
+			fake.spanDetails["root-0000"].Attributes["gen_ai.conversation.id"] = "conv-other"
+			for i := 0; i < 690; i++ {
+				fake.traces[i].StartTime = fake.traces[0].StartTime
+				fake.traces[i].EndTime = fake.traces[0].StartTime
+			}
+			c := NewTracingController(fake)
+
+			pages := pageAll(t, c, fake, cursorParams(20, sortOrder, true))
+
+			assertIDs(t, unionIDs(pages), map[string]bool{"trace-0690": true})
+			cursors := map[string]bool{}
+			for i, p := range pages {
+				if cursors[p.resp.NextCursor] {
+					t.Fatalf("page %d repeats an earlier nextCursor", i)
+				}
+				cursors[p.resp.NextCursor] = true
+			}
+		})
+	}
+}
+
+// Ties that come back in a different order on every fetch, cut anywhere by
+// the fetch limit, page to exactly the window with no repeats.
+func TestGetTraceOverviews_CursorTiesInAnyOrder(t *testing.T) {
+	tests := []struct {
+		name       string
+		filtered   bool
+		matchEvery int
+	}{
+		{name: "unfiltered", matchEvery: 1},
+		{name: "filtered", filtered: true, matchEvery: 3},
+	}
+	for _, sortOrder := range []string{"desc", "asc"} {
+		for _, tt := range tests {
+			// Groups of 7 straddle pages; groups of 61 are bigger than the first fetch.
+			for _, group := range []int{7, 61} {
+				t.Run(fmt.Sprintf("%s/%s/groups of %d", sortOrder, tt.name, group), func(t *testing.T) {
+					fake := lookBackFake(300, tt.matchEvery)
+					fake.shuffleTies = true
+					for i := range fake.traces {
+						fake.traces[i].StartTime = fake.traces[i-i%group].StartTime
+						fake.traces[i].EndTime = fake.traces[i].StartTime
+					}
+					c := NewTracingController(fake)
+
+					pages := pageAll(t, c, fake, cursorParams(10, sortOrder, tt.filtered))
+
+					assertNoDuplicates(t, pageIDs(pages))
+					assertIDs(t, unionIDs(pages), wantIDs(0, 300, tt.matchEvery))
+				})
+			}
+		}
+	}
+}
+
+// A tie group bigger than the deepest fetch stops truncated with no cursor.
+func TestGetTraceOverviews_TieGroupPastDepthCap(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("filtered=%t", filtered), func(t *testing.T) {
+			fake := lookBackFake(maxCursorDepth+100, 1)
+			tie := fake.traces[0].StartTime
+			for i := range fake.traces {
+				fake.traces[i].StartTime = tie
+				fake.traces[i].EndTime = tie
+			}
+			c := NewTracingController(fake)
+
+			resp, err := c.GetTraceOverviews(context.Background(), cursorParams(20, "desc", filtered))
+			if err != nil {
+				t.Fatalf("GetTraceOverviews returned error: %v", err)
+			}
+
+			if !resp.Truncated || resp.NextCursor != "" {
+				t.Errorf("truncated %v, nextCursor %q; want true and none", resp.Truncated, resp.NextCursor)
+			}
+			// No fetch sees past the group, so no trace is settled. Unfiltered,
+			// no cursor follows, so the page still fills; the filtered walk
+			// holds the unsettled group back.
+			want := 20
+			if filtered {
+				want = 0
+			}
+			if len(resp.Traces) != want {
+				t.Errorf("got %d traces, want %d", len(resp.Traces), want)
+			}
+			var ids []string
+			for _, tr := range resp.Traces {
+				ids = append(ids, tr.TraceID)
+				if tr.StartTime != tie.Format(time.RFC3339Nano) {
+					t.Errorf("%s startTime = %q, want the tie time", tr.TraceID, tr.StartTime)
+				}
+			}
+			if !slices.IsSorted(ids) {
+				t.Errorf("page %v not in trace ID order", ids)
+			}
+			for i, req := range fake.tracesReqs {
+				if *req.Limit > maxCursorDepth {
+					t.Errorf("fetch %d limit = %d, want at most %d", i, *req.Limit, maxCursorDepth)
+				}
+			}
+		})
+	}
+}
+
+// A cursor without a trace ID still decodes and pages. It keeps every trace
+// at its time, so the trace it was issued at comes back.
+func TestGetTraceOverviews_CursorWithoutID(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("filtered=%t", filtered), func(t *testing.T) {
+			fake := lookBackFake(60, 1)
+			c := NewTracingController(fake)
+			params := cursorParams(10, "desc", filtered)
+			raw := fmt.Sprintf(`{"r":10,"t":%q}`, fake.traces[9].StartTime.Format(time.RFC3339Nano))
+			cur, err := DecodeTraceCursor(base64.RawURLEncoding.EncodeToString([]byte(raw)))
+			if err != nil {
+				t.Fatalf("DecodeTraceCursor returned error: %v", err)
+			}
+			if cur.ID != "" {
+				t.Fatalf("cursor ID = %q, want empty", cur.ID)
+			}
+			params.Cursor = cur
+
+			pages := pageAll(t, c, fake, params)
+
+			assertNoDuplicates(t, pageIDs(pages))
+			assertIDs(t, unionIDs(pages), wantIDs(9, 60, 1))
 		})
 	}
 }
@@ -270,7 +458,8 @@ func TestGetTraceOverviews_CursorDepthCap(t *testing.T) {
 			fake := lookBackFake(maxCursorDepth+1000, 1)
 			c := NewTracingController(fake)
 			params := cursorParams(20, "desc", filtered)
-			params.Cursor = &TraceCursor{Rank: maxCursorDepth - 10, Time: fake.traces[maxCursorDepth-11].StartTime}
+			at := fake.traces[maxCursorDepth-11]
+			params.Cursor = &TraceCursor{Rank: maxCursorDepth - 10, Time: at.StartTime, ID: at.TraceID}
 
 			resp, err := c.GetTraceOverviews(context.Background(), params)
 			if err != nil {
@@ -280,9 +469,15 @@ func TestGetTraceOverviews_CursorDepthCap(t *testing.T) {
 			if !resp.Truncated || resp.NextCursor != "" {
 				t.Errorf("truncated %v, nextCursor %q; want true and none", resp.Truncated, resp.NextCursor)
 			}
-			// The trace at the cursor time plus the 10 the depth still reaches.
-			if len(resp.Traces) != 11 {
-				t.Errorf("got %d traces, want 11", len(resp.Traces))
+			// The depth still reaches 10 traces. The last may have ties past
+			// the fetch: unfiltered, no cursor follows, so it is kept; the
+			// filtered walk leaves it out.
+			want := 10
+			if filtered {
+				want = 9
+			}
+			if len(resp.Traces) != want {
+				t.Errorf("got %d traces, want %d", len(resp.Traces), want)
 			}
 			for i, req := range fake.tracesReqs {
 				if *req.Limit > maxCursorDepth {
@@ -293,10 +488,45 @@ func TestGetTraceOverviews_CursorDepthCap(t *testing.T) {
 	}
 }
 
+// Unfiltered paging over unique start times reaches the depth cap: the first
+// maxCursorDepth traces in page order, at any limit, ending truncated with no cursor.
+func TestGetTraceOverviews_UnfilteredPagesToDepthCap(t *testing.T) {
+	for _, sortOrder := range []string{"desc", "asc"} {
+		for _, limit := range []int{10, 500, 999, 1000} {
+			t.Run(fmt.Sprintf("%s/limit=%d", sortOrder, limit), func(t *testing.T) {
+				fake := lookBackFake(1500, 1)
+				c := NewTracingController(fake)
+
+				pages := pageAll(t, c, fake, cursorParams(limit, sortOrder, false))
+
+				want := make([]string, 0, maxCursorDepth)
+				for i := 0; i < maxCursorDepth; i++ {
+					n := i
+					if sortOrder == "asc" {
+						n = len(fake.traces) - 1 - i
+					}
+					want = append(want, fmt.Sprintf("trace-%04d", n))
+				}
+				got := pageIDs(pages)
+				assertNoDuplicates(t, got)
+				if !slices.Equal(got, want) {
+					t.Errorf("paged %d traces, want the first %d in page order", len(got), len(want))
+				}
+				if last := pages[len(pages)-1].resp; !last.Truncated || last.NextCursor != "" {
+					t.Errorf("last page truncated %v, nextCursor %q; want true and none", last.Truncated, last.NextCursor)
+				}
+				if limit == maxCursorDepth && (len(pages) != 1 || pages[0].calls != 1) {
+					t.Errorf("%d pages, first made %d QueryTraces calls; want 1 page from 1 call", len(pages), pages[0].calls)
+				}
+			})
+		}
+	}
+}
+
 // Traces that land between a filtered walk's fetches can carry its rank past
 // the depth cap. The issued cursor is clamped there, so it still decodes.
 func TestGetTraceOverviews_CursorRankClampedAtDepthCap(t *testing.T) {
-	// The cursor rank is 4500, so the walk fetches 4550 traces and then 4999.
+	// The cursor rank is 500, so the walk fetches 551 traces and then 1000.
 	at := maxCursorDepth - maxExaminedTraces - 1
 	// Only trace-0000 matches, and it is before the cursor.
 	fake := lookBackFake(maxCursorDepth+1000, maxCursorDepth+1000)
@@ -345,16 +575,16 @@ func TestGetTraceOverviews_CursorRankClampedAtDepthCap(t *testing.T) {
 	}
 }
 
-// A cursor decodes to the rank and time it was encoded with.
+// A cursor decodes to the rank, time and trace ID it was encoded with.
 func TestTraceCursor_RoundTrip(t *testing.T) {
-	want := TraceCursor{Rank: 42, Time: time.Date(2026, 9, 1, 11, 59, 1, 123456789, time.UTC)}
+	want := TraceCursor{Rank: 42, Time: time.Date(2026, 9, 1, 11, 59, 1, 123456789, time.UTC), ID: "trace-0042"}
 
 	got, err := DecodeTraceCursor(want.Encode())
 
 	if err != nil {
 		t.Fatalf("DecodeTraceCursor returned error: %v", err)
 	}
-	if got.Rank != want.Rank || !got.Time.Equal(want.Time) {
+	if got.Rank != want.Rank || !got.Time.Equal(want.Time) || got.ID != want.ID {
 		t.Errorf("got %+v, want %+v", *got, want)
 	}
 }

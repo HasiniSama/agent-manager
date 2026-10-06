@@ -73,13 +73,14 @@ paths:
         the window in sort order until it has `limit` matches, the window runs out, it has examined
         500 traces, or it has searched for 20 seconds (`truncated` is then true, and `nextCursor`
         continues the search).
-        With no filter and no `cursor` set the request makes one upstream trace query.
+        With no filter and no `cursor` set the request makes one upstream trace query, unless
+        traces share a start time at the end of the page.
 
         To page, send the previous response's `nextCursor` as `cursor`, with the same `startTime`,
         `endTime`, `sortOrder` and filters. Do not page by narrowing `endTime` or `startTime`: the
         window bounds each span, so a narrowed window leaves out traces still running at its edge.
-        A page can repeat traces that start at exactly the previous page's last start time; those
-        do not count toward `limit`, so de-duplicate them by `traceId`.
+        Traces are ordered by start time in `sortOrder`, then by `traceId`. Each page starts just
+        after the previous page's last trace, so pages don't overlap.
       operationId: listTraces
       security:
         - bearerAuth: []
@@ -908,9 +909,10 @@ components:
           description: |
             True when the server stopped before filling the page and before the window ran out:
             a filtered request reached its cap of 500 examined traces or its 20-second search
-            budget (`nextCursor` continues from where it stopped), or a `cursor` page went deeper
-            than the server fetches (5000 traces into the window; there is no `nextCursor`, so
-            narrow the window to see more).
+            budget (`nextCursor` continues from where it stopped), or the page went deeper than
+            the server fetches (1000 traces into the window, reached by a deep `cursor` or by more
+            traces at one start time than that; there is no `nextCursor`, so narrow the window to
+            see more).
         nextCursor:
           type: string
           description: |

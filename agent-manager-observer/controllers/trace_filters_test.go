@@ -198,13 +198,14 @@ func TestGetTraceOverviews_StatusFilterFetchesNoModels(t *testing.T) {
 // TotalCount is the matched count when filtered, the upstream total otherwise.
 // Summary filters drop traces before their root span is fetched.
 func TestGetTraceOverviews_FiltersDropNonMatching(t *testing.T) {
-	// trace-a: 2 spans, 1s; trace-b: 12 spans, 2s; trace-c: 22 spans, 3s.
+	// trace-a: 2 spans, 1s; trace-b: 12 spans, 2s; trace-c: 22 spans, 3s. Newest first.
 	newFake := func() *fakeObserverClient {
 		fake := rootCompleteFake()
 		fake.traces = nil
 		for i, id := range []string{"trace-a", "trace-b", "trace-c"} {
 			info := baseTraceInfo(2 + i*10)
 			info.TraceID = id
+			info.StartTime = info.StartTime.Add(-time.Duration(i) * time.Second)
 			info.DurationNs = int64(time.Duration(i+1) * time.Second)
 			fake.traces = append(fake.traces, info)
 		}

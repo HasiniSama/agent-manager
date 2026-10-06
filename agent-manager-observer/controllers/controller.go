@@ -59,10 +59,9 @@ const (
 	// exportLookBackBudget leaves part of the 30 s WriteTimeout for a filtered export's span fetches.
 	exportLookBackBudget = 10 * time.Second
 	// maxCursorDepth caps the upstream fetch limit of a list request, which
-	// a deep cursor grows. Each trace bucket carries about six
-	// sub-aggregations, so this stays well under OpenSearch's default
-	// search.max_buckets of 65535.
-	maxCursorDepth = 5000
+	// a deep cursor or a large tie group grows. The upstream Observer rejects
+	// a trace query limit above 1000.
+	maxCursorDepth = 1000
 )
 
 // TracingController provides tracing functionality via the observer service.
@@ -124,7 +123,8 @@ type SpanListResponse struct {
 }
 
 // GetTraceOverviews fetches a page of traces with root-span enrichment (input, output, tokenUsage).
-// With no filter and no cursor it calls QueryTraces once and fetches root span details in parallel.
+// With no filter and no cursor it calls QueryTraces once, unless traces share a
+// start time at the page's end, and fetches root span details in parallel.
 // With a filter it looks back through the window in batches until the page fills,
 // the window runs out, maxExaminedTraces traces have been examined, or
 // listLookBackBudget has passed.
@@ -155,76 +155,76 @@ func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQ
 	return resp, nil
 }
 
-// traceOverviewPage serves an unfiltered list. Without a cursor it calls
-// QueryTraces once. With one it fetches the whole window, skips traces before
-// the cursor, and fetches more only when the response comes back short.
+// traceOverviewPage serves an unfiltered list. It fetches the window up to
+// the page's end plus one trace, which shows whether the page's last trace is
+// settled, and skips traces not past the cursor. It fetches more only when
+// the page is short or ends on an unsettled trace.
 func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, int, error) {
 	cur := params.Cursor
 	asc := params.SortOrder == "asc"
-	fetchLimit := params.Limit
+	size := params.Limit
 	if cur != nil {
-		fetchLimit = min(cur.Rank+params.Limit, maxCursorDepth)
+		size = cur.Rank + params.Limit
 	}
 	for {
+		fetchLimit := fetchSize(size)
 		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, fetchLimit))
 		if err != nil {
 			return nil, 0, err
 		}
-		traces := tracesResp.Traces
+		traces := sortedTraces(tracesResp.Traces, asc)
+		complete := len(traces) >= tracesResp.Total
+		settled := settledLen(traces, complete)
 
-		// Traces at the cursor time were on the previous page. They come back
-		// but don't count toward the limit, so a page always moves past ties.
-		page := make([]observer.TraceInfo, 0, min(len(traces), params.Limit))
-		passed, counted := 0, 0
-		last := walkStart(params)
-		for _, t := range traces {
-			if counted == params.Limit {
-				break
-			}
-			passed++
-			if beforeCursor(t.StartTime, cur, asc) {
-				continue
-			}
-			page = append(page, t)
-			last = t.StartTime
-			if !atCursor(t.StartTime, cur) {
-				counted++
-			}
+		start := 0
+		for start < len(traces) && !pastCursor(traces[start], cur, asc) {
+			start++
 		}
-		full := counted == params.Limit
-		exhausted := passed == len(traces) && len(traces) >= tracesResp.Total
-		if cur != nil && !full && !exhausted && fetchLimit < maxCursorDepth {
-			fetchLimit = min(2*fetchLimit, maxCursorDepth)
-			continue
+		end := min(start+params.Limit, len(traces))
+		full := end-start == params.Limit
+		// Without a cursor a short response still makes a page, so the first
+		// page stays one call when traces rooted outside the window take slots.
+		if cur == nil && !full && !complete {
+			end = settled
 		}
 
-		resp := &opensearch.TraceOverviewResponse{
-			Traces:       c.enrichTraces(ctx, params, page),
-			TotalCount:   tracesResp.Total,
-			LookedBackTo: formatCursor(last),
-		}
+		resp := &opensearch.TraceOverviewResponse{TotalCount: tracesResp.Total}
 		switch {
-		case exhausted:
+		case complete && end == len(traces):
 			resp.LookedBackTo = formatCursor(windowEdge(params))
-		case full || cur == nil:
-			rank := passed + rootlessSlots(fetchLimit, len(traces), tracesResp.Total)
-			resp.NextCursor = TraceCursor{Rank: rank, Time: last}.Encode()
+		case end > start && end <= settled && (full || cur == nil):
+			last := traces[end-1]
+			rank := end + rootlessSlots(fetchLimit, len(traces), tracesResp.Total)
+			resp.LookedBackTo = formatCursor(last.StartTime)
+			resp.NextCursor = TraceCursor{Rank: rank, Time: last.StartTime, ID: last.TraceID}.Encode()
+		case fetchLimit < maxCursorDepth:
+			size = 2 * fetchLimit
+			continue
 		default:
-			// The cursor is too deep to fetch past.
+			// No cursor follows, so the page may end inside an unsettled group.
+			end = min(start+params.Limit, len(traces))
+			resp.LookedBackTo = formatCursor(walkStart(params))
+			if end > start {
+				resp.LookedBackTo = formatCursor(traces[end-1].StartTime)
+			}
 			resp.Truncated = true
 		}
+		page := traces[start:end]
+		resp.Traces = c.enrichTraces(ctx, params, page)
 		return resp, len(page), nil
 	}
 }
 
-// lookBackForMatches walks the window in sort order, keeping traces that
+// lookBackForMatches walks the window in page order, keeping traces that
 // match params.Filters. It returns the matches, the number of traces
 // examined, and whether deadline stopped the walk.
 //
 // Each fetch covers the whole window with a doubled limit and skips trace IDs
 // already seen. The window is never narrowed: the Observer bounds each span's
 // end time, so a narrowed end would drop traces that overlap it. A cursor
-// skips traces before it by time; they are not enriched or examined.
+// skips traces not past it; they are not enriched or examined. Each fetch
+// holds back its unsettled tail, so the next, bigger fetch returns those
+// traces whole and in order, and the walk stops only on a settled trace.
 //
 // Past deadline the walk stops as the examine cap stops it, checked between
 // chunks once one has been examined. The deadline is not put on ctx, since a
@@ -239,11 +239,13 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 	summaryOnly := params.Filters.SummaryOnly()
 	matched := make([]opensearch.TraceOverview, 0, params.Limit)
 	seen := make(map[string]struct{})
-	// counted is the matches past the cursor time; rootless is the latest
-	// fetch's slots spent on traces rooted outside the window.
-	examined, skipped, counted, rootless := 0, 0, 0, 0
-	// last is the last trace examined.
-	last := walkStart(params)
+	// rootless is the latest fetch's slots spent on traces rooted outside the window.
+	examined, skipped, rootless := 0, 0, 0
+	// last is the last trace examined, or where the walk began.
+	last := observer.TraceInfo{StartTime: walkStart(params)}
+	if cur != nil {
+		last.TraceID = cur.ID
+	}
 	budgetExceeded := false
 
 	done := func(lookedBackTo time.Time, truncated, more bool) (*opensearch.TraceOverviewResponse, int, bool, error) {
@@ -255,7 +257,8 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		}
 		if more {
 			// A window that changed between fetches can push the count past the cap.
-			resp.NextCursor = TraceCursor{Rank: min(skipped+examined+rootless, maxCursorDepth), Time: last}.Encode()
+			rank := min(skipped+examined+rootless, maxCursorDepth)
+			resp.NextCursor = TraceCursor{Rank: rank, Time: last.StartTime, ID: last.TraceID}.Encode()
 		}
 		return resp, examined, budgetExceeded, nil
 	}
@@ -264,9 +267,10 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		return examined > 0 && !c.now().Before(deadline)
 	}
 
-	fetchLimit := lookBackBatchSize
+	// size is the traces the next fetch needs; it asks for one more.
+	size := lookBackBatchSize
 	if cur != nil {
-		fetchLimit = min(cur.Rank+lookBackBatchSize, maxCursorDepth)
+		size = cur.Rank + lookBackBatchSize
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -274,38 +278,45 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 		}
 		if pastDeadline() {
 			budgetExceeded = true
-			return done(last, true, true)
+			return done(last.StartTime, true, true)
 		}
+		fetchLimit := fetchSize(size)
 		tracesResp, err := c.observerClient.QueryTraces(ctx, c.traceListRequest(params, fetchLimit))
 		if err != nil {
 			return nil, examined, false, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
 		}
 		rootless = rootlessSlots(fetchLimit, len(tracesResp.Traces), tracesResp.Total)
 
-		fresh := make([]observer.TraceInfo, 0, len(tracesResp.Traces))
-		for _, t := range tracesResp.Traces {
+		// Total counts every trace in the window. A short response does not
+		// mean the window ran out: the limit also counts traces whose root
+		// span lies outside the window, which the Observer then drops.
+		traces := sortedTraces(tracesResp.Traces, asc)
+		complete := len(traces) >= tracesResp.Total
+		settled := settledLen(traces, complete)
+		fresh := make([]observer.TraceInfo, 0, settled)
+		for _, t := range traces[:settled] {
 			if _, ok := seen[t.TraceID]; ok {
 				continue
 			}
 			seen[t.TraceID] = struct{}{}
-			if beforeCursor(t.StartTime, cur, asc) {
+			if !pastCursor(t, cur, asc) {
 				skipped++
 				continue
 			}
 			fresh = append(fresh, t)
 		}
 
-		// Enrich in chunks and walk in sort order, so a full page stops at
+		// Enrich in chunks and walk in page order, so a full page stops at
 		// its last match and the cursor never passes an unreturned match.
 		for len(fresh) > 0 && examined < maxExaminedTraces {
 			if pastDeadline() {
 				budgetExceeded = true
-				return done(last, true, true)
+				return done(last.StartTime, true, true)
 			}
 			chunk := fresh[:min(lookBackBatchSize, len(fresh), maxExaminedTraces-examined)]
 			// Summary-only survivors all match, so enrich no more than the page still needs.
 			if summaryOnly {
-				chunk = chunk[:summaryChunkLen(chunk, params.Filters, cur, params.Limit-counted)]
+				chunk = chunk[:summaryChunkLen(chunk, params.Filters, params.Limit-len(matched))]
 			}
 			fresh = fresh[len(chunk):]
 			byID := make(map[string]opensearch.TraceOverview, len(chunk))
@@ -314,18 +325,14 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 			}
 			for i, t := range chunk {
 				examined++
-				last = t.StartTime
+				last = t
 				ov, ok := byID[t.TraceID]
 				if !ok || !matchesFilters(ov, params.Filters) {
 					continue
 				}
 				matched = append(matched, ov)
-				// Matches at the cursor time were on the previous page.
-				if !atCursor(t.StartTime, cur) {
-					counted++
-				}
-				if counted == params.Limit {
-					if i == len(chunk)-1 && len(fresh) == 0 && len(seen) >= tracesResp.Total {
+				if len(matched) == params.Limit {
+					if i == len(chunk)-1 && len(fresh) == 0 && complete {
 						return done(windowEdge(params), false, false)
 					}
 					return done(t.StartTime, false, true)
@@ -333,22 +340,23 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 			}
 		}
 
-		// Total counts every trace in the window. A short response does not
-		// mean the window ran out: the limit also counts traces whose root
-		// span lies outside the window, which the Observer then drops.
-		exhausted := len(fresh) == 0 && len(seen) >= tracesResp.Total
-		// A fetch past skipped+maxExaminedTraces would only add traces the cap rules out.
-		next := min(2*fetchLimit, skipped+maxExaminedTraces, maxCursorDepth)
+		exhausted := len(fresh) == 0 && complete
+		next := 2 * size
+		// A fetch past skipped+maxExaminedTraces would only add traces the cap
+		// rules out, unless an unsettled tail still needs a bigger fetch.
+		if settled == len(traces) {
+			next = min(next, skipped+maxExaminedTraces)
+		}
 		switch {
 		case exhausted:
 			return done(windowEdge(params), false, false)
-		case examined >= maxExaminedTraces || (next <= fetchLimit && fetchLimit < maxCursorDepth):
-			return done(last, true, true)
-		case next <= fetchLimit:
+		case examined >= maxExaminedTraces || (fetchSize(next) <= fetchLimit && fetchLimit < maxCursorDepth):
+			return done(last.StartTime, true, true)
+		case fetchSize(next) <= fetchLimit:
 			// The cursor is too deep to fetch past.
-			return done(last, true, false)
+			return done(last.StartTime, true, false)
 		}
-		fetchLimit = next
+		size = next
 	}
 }
 

@@ -138,9 +138,9 @@ type wantPage struct {
 }
 
 // wantPages is up to n pages of fake's traces, where match(i) picks trace i.
-// A page walks the traces in sort order from the cursor time, returns matches
-// at that time again without counting them, and stops at params.Limit counted
-// matches or maxExaminedTraces examined traces.
+// A page walks the traces in page order from just after the previous page's
+// last trace, and stops at params.Limit matches or maxExaminedTraces examined
+// traces.
 func wantPages(fake *fakeObserverClient, params TraceQueryParams, n int, match func(i int) bool) []wantPage {
 	asc := params.SortOrder == "asc"
 	order := make([]int, len(fake.traces))
@@ -148,39 +148,30 @@ func wantPages(fake *fakeObserverClient, params TraceQueryParams, n int, match f
 		order[i] = i
 	}
 	sort.SliceStable(order, func(a, b int) bool {
-		ta, tb := fake.traces[order[a]].StartTime, fake.traces[order[b]].StartTime
-		if !ta.Equal(tb) {
-			return ta.Before(tb) == asc
-		}
-		return order[a] < order[b]
+		return compareTraces(fake.traces[order[a]], fake.traces[order[b]], asc) < 0
 	})
 	edge := params.StartTime
 	if asc {
 		edge = params.EndTime
 	}
 	var pages []wantPage
-	var cur time.Time
 	start := 0
 	for len(pages) < n {
 		p := wantPage{lookedBackTo: edge}
-		counted, k := 0, start
+		k := start
 		for ; k < len(order) && k-start < maxExaminedTraces; k++ {
-			tr := fake.traces[order[k]]
 			if !match(order[k]) {
 				continue
 			}
-			p.ids = append(p.ids, tr.TraceID)
-			if !tr.StartTime.Equal(cur) {
-				counted++
-			}
-			if counted == params.Limit {
+			p.ids = append(p.ids, fake.traces[order[k]].TraceID)
+			if len(p.ids) == params.Limit {
 				break
 			}
 		}
 		switch {
-		case counted == params.Limit && k < len(order)-1:
+		case len(p.ids) == params.Limit && k < len(order)-1:
 			p.lookedBackTo, p.more = fake.traces[order[k]].StartTime, true
-		case counted < params.Limit && k < len(order):
+		case len(p.ids) < params.Limit && k < len(order):
 			k--
 			p.lookedBackTo, p.more, p.truncated = fake.traces[order[k]].StartTime, true, true
 		}
@@ -188,11 +179,8 @@ func wantPages(fake *fakeObserverClient, params TraceQueryParams, n int, match f
 		if !p.more {
 			return pages
 		}
-		// The next page starts at the first trace at the cursor time.
-		cur, start = p.lookedBackTo, k
-		for start > 0 && fake.traces[order[start-1]].StartTime.Equal(cur) {
-			start--
-		}
+		// The next page starts just after the cursor trace.
+		start = k + 1
 	}
 	return pages
 }

@@ -99,7 +99,8 @@ func traceIDs(c *TracingController, t *testing.T, params TraceQueryParams) ([]st
 	return ids, resp.LookedBackTo, resp.Truncated
 }
 
-// No filter: one QueryTraces call for the requested limit.
+// No filter: one QueryTraces call for the requested limit plus one, which
+// shows the page's last trace is settled.
 func TestGetTraceOverviews_NoFilterQueriesOnce(t *testing.T) {
 	fake := lookBackFake(200, 5)
 	c := NewTracingController(fake)
@@ -111,8 +112,8 @@ func TestGetTraceOverviews_NoFilterQueriesOnce(t *testing.T) {
 	if got := atomic.LoadInt32(&fake.queryTracesCalls); got != 1 {
 		t.Fatalf("QueryTraces calls = %d, want 1", got)
 	}
-	if got := *fake.tracesReqs[0].Limit; got != 20 {
-		t.Errorf("QueryTraces limit = %d, want 20", got)
+	if got := *fake.tracesReqs[0].Limit; got != 21 {
+		t.Errorf("QueryTraces limit = %d, want 21", got)
 	}
 	if len(ids) != 20 || truncated {
 		t.Errorf("got %d traces, truncated %v; want 20, false", len(ids), truncated)
@@ -141,7 +142,8 @@ func TestGetTraceOverviews_LookBackFillsPage(t *testing.T) {
 	if want := formatCursor(fake.traces[120].StartTime); lookedBackTo != want {
 		t.Errorf("lookedBackTo = %s, want %s", lookedBackTo, want)
 	}
-	wantLimits := []int{50, 100, 200}
+	// Each fetch asks for one more trace than it needs.
+	wantLimits := []int{51, 101, 201}
 	if len(fake.tracesReqs) != len(wantLimits) {
 		t.Fatalf("QueryTraces calls = %d, want %d", len(fake.tracesReqs), len(wantLimits))
 	}
@@ -379,23 +381,12 @@ func logField(t *testing.T, buf *bytes.Buffer, msg, field string) any {
 	return nil
 }
 
-// pageIDs lists the pages' trace IDs in order, leaving out the traces a page
-// may repeat at the previous page's cursor time.
-func pageIDs(t *testing.T, pages []cursorPage) []string {
-	t.Helper()
+// pageIDs lists the pages' trace IDs in order.
+func pageIDs(pages []cursorPage) []string {
 	var ids []string
-	var cur *TraceCursor
 	for _, p := range pages {
 		for _, tr := range p.resp.Traces {
-			if cur == nil || tr.StartTime != formatCursor(cur.Time) {
-				ids = append(ids, tr.TraceID)
-			}
-		}
-		if p.resp.NextCursor != "" {
-			var err error
-			if cur, err = DecodeTraceCursor(p.resp.NextCursor); err != nil {
-				t.Fatalf("nextCursor does not decode: %v", err)
-			}
+			ids = append(ids, tr.TraceID)
 		}
 	}
 	return ids
@@ -449,13 +440,13 @@ func TestGetTraceOverviews_LookBackStopsAtTimeBudget(t *testing.T) {
 				if params.Cursor, err = DecodeTraceCursor(first.NextCursor); err != nil {
 					t.Fatalf("nextCursor does not decode: %v", err)
 				}
-				got := pageIDs(t, append([]cursorPage{{resp: first}}, pageAll(t, c, fake, params)...))
+				got := pageIDs(append([]cursorPage{{resp: first}}, pageAll(t, c, fake, params)...))
 				assertNoDuplicates(t, got)
 
 				unbudgetedFake := lookBackFake(600, matchEvery)
 				unbudgeted := NewTracingController(unbudgetedFake)
 				withClock(unbudgeted)
-				if want := pageIDs(t, pageAll(t, unbudgeted, unbudgetedFake, lookBackParams(10))); !reflect.DeepEqual(got, want) {
+				if want := pageIDs(pageAll(t, unbudgeted, unbudgetedFake, lookBackParams(10))); !reflect.DeepEqual(got, want) {
 					t.Errorf("paged %v, want %v as with no budget", got, want)
 				}
 			})
