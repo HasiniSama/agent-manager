@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EnvironmentSelector } from "@agent-management-platform/shared-component";
 import {
   DrawerContent,
@@ -29,6 +29,8 @@ import {
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   GetTraceListPathParams,
+  TraceExportResponse,
+  TraceFilters,
   TraceListTimeRange,
   getTimeRange,
 } from "@agent-management-platform/types";
@@ -50,7 +52,10 @@ import {
   ConsoleAction,
   useTrack,
 } from "@agent-management-platform/api-client";
-import { TraceDetails, TracesView } from "./subComponents";
+import { TraceColumnsMenu, TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
+import { parseTraceFilters, withTraceFilters } from "./traceFilters";
+import { type TraceColumn, parseTraceColumns, withTraceColumns } from "./traceColumns";
+import { formatStartTime } from "./traceTime";
 import {
   Alert,
   Button,
@@ -70,6 +75,43 @@ const TIME_RANGE_OPTIONS = [
   { value: TraceListTimeRange.SEVEN_DAYS, label: "7 Days" },
 ];
 
+// Warning lines for an export file that may be partial, or null when it is complete.
+const exportWarningLines = (
+  resp: TraceExportResponse,
+  filtered: boolean,
+): string[] | null => {
+  const searchedTo = resp.lookedBackTo ? formatStartTime(resp.lookedBackTo) : undefined;
+  const lines: string[] = [];
+  if (resp.spansTruncated) {
+    lines.push(
+      "Some traces have more than 10,000 spans. The file has the first 10,000 spans of each.",
+    );
+    if (filtered && searchedTo) {
+      lines.push(`The search may also have stopped early: it searched as far as ${searchedTo}.`);
+    }
+  } else if (resp.truncated && filtered) {
+    lines.push(
+      [
+        "The export stopped before the end of the time range.",
+        searchedTo && `It searched as far as ${searchedTo}.`,
+        "Narrow the time range to export the rest.",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+  }
+  const failed = resp.failedTraceIds?.length ?? 0;
+  if (failed === 1) {
+    lines.push("1 trace couldn't be read, so the file may be missing it. Export again to retry.");
+  } else if (failed > 1) {
+    lines.push(
+      `${failed} traces couldn't be read, so the file may be missing them. Export again to retry.`,
+    );
+  }
+  return lines.length > 0 ? lines : null;
+};
+
+/** Traces page: filter bar, trace list and trace drawer, with state kept in the URL. */
 export const TracesComponent: React.FC = () => {
   const { agentId, orgId, projectId, envId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -111,6 +153,7 @@ export const TracesComponent: React.FC = () => {
   const envNotFound =
     isEnvSuccess && environmentsData !== undefined && !environmentName;
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportWarning, setExportWarning] = useState<string[] | null>(null);
   const [drawerFullscreen, setDrawerFullscreen] = useState(false);
 
   const {
@@ -141,6 +184,12 @@ export const TracesComponent: React.FC = () => {
     const raw = searchParams.get("sortOrder");
     return (raw === "asc" || raw === "desc") ? raw : "desc" as GetTraceListPathParams["sortOrder"];
   }, [searchParams]);
+
+  const filters = useMemo(() => parseTraceFilters(searchParams), [searchParams]);
+  const hasActiveFilters = Object.keys(filters).length > 0;
+
+  const visibleColumns = useMemo(() => parseTraceColumns(searchParams), [searchParams]);
+
   const {
     data: traceData,
     isLoading,
@@ -150,6 +199,9 @@ export const TracesComponent: React.FC = () => {
     loadNewer,
     isLoadingOlder,
     isLoadingNewer,
+    hasOlder,
+    truncated,
+    lookedBackTo,
   } = useTraceList(
     organization,
     projectId,
@@ -160,6 +212,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     customStartTime,
     customEndTime,
+    { filters },
   );
 
   // Resolved time range used by the TraceDetails drawer.
@@ -201,7 +254,45 @@ export const TracesComponent: React.FC = () => {
     setDrawerFullscreen(false);
   }, [searchParams, setSearchParams]);
 
+  // Set on a filter change; holds the list shown before it so the check waits for the new one.
+  const selectionCheckRef = useRef<{ staleData: typeof traceData } | null>(null);
+
+  /** Writes the filters to the URL and rechecks the open trace once the new list loads. */
+  const handleFiltersChange = useCallback(
+    (nextFilters: TraceFilters) => {
+      const next = withTraceFilters(searchParams, nextFilters);
+      if (JSON.stringify(parseTraceFilters(next)) === JSON.stringify(filters)) return;
+      selectionCheckRef.current = selectedTrace ? { staleData: traceData } : null;
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams, filters, selectedTrace, traceData],
+  );
+
+  /** Filters the list to one conversation. */
+  const handleConversationSelect = useCallback(
+    (conversationId: string) => handleFiltersChange({ ...filters, conversationId }),
+    [handleFiltersChange, filters],
+  );
+
+  /** Writes the visible columns to the URL. */
+  const handleColumnsChange = useCallback(
+    (columns: TraceColumn[]) => setSearchParams(withTraceColumns(searchParams, columns)),
+    [searchParams, setSearchParams],
+  );
+
+  // After a filter change, close the drawer only if its trace left the list.
+  useEffect(() => {
+    const pending = selectionCheckRef.current;
+    if (!pending || isLoading || !traceData || traceData === pending.staleData) return;
+    selectionCheckRef.current = null;
+    if (selectedTrace && !traceData.traces.some((t) => t.traceId === selectedTrace)) {
+      handleCloseDrawer();
+    }
+  }, [traceData, isLoading, selectedTrace, handleCloseDrawer]);
+
+  /** Downloads the filtered traces and warns when the file may be partial. */
   const handleExportTraces = useCallback(async () => {
+    setExportWarning(null);
     if (!organization || !projectId || !agentId || !environmentName) {
       setExportError("Missing required parameters for export");
       return;
@@ -230,6 +321,7 @@ export const TracesComponent: React.FC = () => {
         endTime,
         sortOrder,
         limit,
+        filters,
       });
 
       // Create a blob from the JSON data
@@ -249,6 +341,8 @@ export const TracesComponent: React.FC = () => {
       // Cleanup
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
+
+      setExportWarning(exportWarningLines(exportData, hasActiveFilters));
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Export failed:", error);
@@ -264,6 +358,8 @@ export const TracesComponent: React.FC = () => {
     timeRange,
     sortOrder,
     limit,
+    filters,
+    hasActiveFilters,
     exportTracesAsync,
     hasCustomRange,
     customStartTime,
@@ -374,6 +470,11 @@ export const TracesComponent: React.FC = () => {
               )}
             </IconButton>
 
+            <TraceColumnsMenu
+              visibleColumns={visibleColumns}
+              onChange={handleColumnsChange}
+            />
+
             {/* Refresh Button */}
             <IconButton
               size="small"
@@ -412,6 +513,7 @@ export const TracesComponent: React.FC = () => {
           </Stack>
         }
       >
+        <TraceFilterBar filters={filters} onChange={handleFiltersChange} />
         <TracesView
           traces={traceData?.traces ?? []}
           isLoading={prereqsPending || isLoading}
@@ -419,9 +521,15 @@ export const TracesComponent: React.FC = () => {
           sortOrder={sortOrder}
           isLoadingOlder={isLoadingOlder}
           isLoadingNewer={isLoadingNewer}
+          hasOlder={hasOlder}
+          hasActiveFilters={hasActiveFilters}
+          truncated={truncated}
+          lookedBackTo={lookedBackTo}
+          visibleColumns={visibleColumns}
           onTraceSelect={handleTraceSelect}
           onLoadOlder={loadOlder}
           onLoadNewer={loadNewer}
+          onConversationSelect={handleConversationSelect}
         />
         <DrawerWrapper
           open={!!selectedTrace}
@@ -465,6 +573,18 @@ export const TracesComponent: React.FC = () => {
       >
         <Alert onClose={() => setExportError(null)} severity="error">
           {exportError}
+        </Alert>
+      </Snackbar>
+      {/* Stays until closed: a click elsewhere on the page doesn't dismiss it. */}
+      <Snackbar
+        open={!!exportWarning}
+        onClose={(_, reason) => {
+          if (reason !== "clickaway") setExportWarning(null);
+        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert onClose={() => setExportWarning(null)} severity="warning">
+          {exportWarning?.map((line) => <div key={line}>{line}</div>)}
         </Alert>
       </Snackbar>
     </>

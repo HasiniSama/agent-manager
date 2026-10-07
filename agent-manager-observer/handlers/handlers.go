@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/controllers"
 	"github.com/wso2/agent-manager/agent-manager-observer/middleware/logger"
@@ -120,6 +122,28 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	include, err := parseInclude(query["include"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	filters, err := parseTraceFilters(query)
+	if err != nil {
+		log.Info("Rejected trace filter", "organization", organization, "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var cursor *controllers.TraceCursor
+	if raw := query.Get("cursor"); raw != "" {
+		if cursor, err = controllers.DecodeTraceCursor(raw); err != nil {
+			log.Info("Rejected trace list cursor", "organization", organization, "error", err)
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+	}
+
 	params := controllers.TraceQueryParams{
 		Organization: organization,
 		Project:      &project,
@@ -129,6 +153,9 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 		EndTime:      endTime,
 		Limit:        limit,
 		SortOrder:    sortOrder,
+		Include:      include,
+		Filters:      filters,
+		Cursor:       cursor,
 	}
 
 	result, err := h.controller.GetTraceOverviews(r.Context(), params)
@@ -259,6 +286,13 @@ func (h *Handler) ExportTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	filters, err := parseTraceFilters(query)
+	if err != nil {
+		log.Info("Rejected trace filter", "organization", organization, "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	params := controllers.TraceQueryParams{
 		Organization: organization,
 		Project:      &project,
@@ -268,6 +302,7 @@ func (h *Handler) ExportTraces(w http.ResponseWriter, r *http.Request) {
 		EndTime:      endTime,
 		Limit:        limit,
 		SortOrder:    sortOrder,
+		Filters:      filters,
 	}
 
 	result, err := h.controller.ExportTraces(r.Context(), params)
@@ -562,6 +597,75 @@ func parseSortOrder(s, defaultVal string) (string, error) {
 		return "", fmt.Errorf("sortOrder must be 'asc' or 'desc'")
 	}
 	return s, nil
+}
+
+// parseInclude parses the comma-separated include query parameter of
+// GET /api/v1/traces; unknown values are an error.
+func parseInclude(raw []string) (controllers.Include, error) {
+	var include controllers.Include
+	for _, list := range raw {
+		for _, item := range strings.Split(list, ",") {
+			switch v := strings.TrimSpace(item); v {
+			case "":
+			case "models":
+				include.Models = true
+			default:
+				return controllers.Include{}, fmt.Errorf("invalid include value %q: must be one of 'models'", v)
+			}
+		}
+	}
+	return include, nil
+}
+
+// parseTraceFilters parses the optional filter params of GET /api/v1/traces.
+func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
+	var f controllers.TraceFilters
+
+	switch status := controllers.TraceStatusFilter(query.Get("status")); status {
+	case controllers.TraceStatusAny, controllers.TraceStatusError, controllers.TraceStatusOK:
+		f.Status = status
+	default:
+		return controllers.TraceFilters{}, fmt.Errorf("status must be 'error' or 'ok'")
+	}
+
+	var err error
+	if f.MinDurationMs, err = parseMinThreshold("minDurationMs", query.Get("minDurationMs")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.MinTokens, err = parseMinThreshold("minTokens", query.Get("minTokens")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.MinSpanCount, err = parseMinThreshold("minSpanCount", query.Get("minSpanCount")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+
+	if f.Model, err = parseFilterValue("model", query.Get("model")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.ConversationID, err = parseFilterValue("conversationId", query.Get("conversationId")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	return f, nil
+}
+
+// parseFilterValue rejects a string filter longer than MaxFilterValueLen characters.
+func parseFilterValue(name, s string) (string, error) {
+	if utf8.RuneCountInString(s) > controllers.MaxFilterValueLen {
+		return "", fmt.Errorf("%s must be at most %d characters", name, controllers.MaxFilterValueLen)
+	}
+	return s, nil
+}
+
+// parseMinThreshold parses an optional non-negative integer filter.
+func parseMinThreshold(name, s string) (*int64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || v < 0 {
+		return nil, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return &v, nil
 }
 
 // validateLogTimeRange ports validateTimes from

@@ -78,6 +78,8 @@ type TraceOverview struct {
 	Status          *TraceStatus `json:"status,omitempty"`
 	Input           any          `json:"input,omitempty"`
 	Output          any          `json:"output,omitempty"`
+	Models          []string     `json:"models,omitempty"`
+	ConversationID  string       `json:"conversationId,omitempty"`
 }
 
 type TraceOverviewResponse struct {
@@ -109,9 +111,12 @@ type FullTrace struct {
 }
 
 type TraceExportResponse struct {
-	Traces     []FullTrace `json:"traces"`
-	TotalCount int         `json:"totalCount"`
-	Truncated  bool        `json:"truncated"`
+	Traces         []FullTrace `json:"traces"`
+	TotalCount     int         `json:"totalCount"`
+	LookedBackTo   string      `json:"lookedBackTo,omitempty"`
+	Truncated      bool        `json:"truncated"`
+	SpansTruncated bool        `json:"spansTruncated"`
+	FailedTraceIDs []string    `json:"failedTraceIds,omitempty"`
 }
 
 type SpanSummary struct {
