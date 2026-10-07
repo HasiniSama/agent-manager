@@ -101,23 +101,54 @@ const listFor = (filters: TraceFilters = {}) => {
 const lastFilters = () => mockUseTraceList.mock.lastCall?.[9]?.filters;
 const lastIncludeModels = () => mockUseTraceList.mock.lastCall?.[9]?.includeModels;
 
-// Hook fields a test can override, such as truncated or hasOlder.
+// Hook fields a test can override, such as truncated or hasMore.
 let hookOverrides: Record<string, unknown> = {};
+const loadMore = vi.fn();
+
+// jsdom has no IntersectionObserver; tests capture each observer and trigger it by hand.
+const observers: { callback: IntersectionObserverCallback; targets: Element[]; live: boolean }[] =
+  [];
+class FakeIntersectionObserver {
+  private record: (typeof observers)[number];
+  constructor(callback: IntersectionObserverCallback) {
+    this.record = { callback, targets: [], live: true };
+    observers.push(this.record);
+  }
+  observe(target: Element) {
+    this.record.targets.push(target);
+  }
+  unobserve() {}
+  disconnect() {
+    this.record.live = false;
+  }
+  takeRecords() {
+    return [];
+  }
+}
+vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+// Reports every observed sentinel as in view.
+const scrollToSentinel = () =>
+  act(() => {
+    for (const o of observers.filter((x) => x.live)) {
+      const entries = o.targets.map((target) => ({ isIntersecting: true, target }));
+      o.callback(entries as unknown as IntersectionObserverEntry[], {} as IntersectionObserver);
+    }
+  });
 
 beforeEach(() => {
   vi.clearAllMocks();
   listCache.clear();
+  observers.length = 0;
   hookOverrides = {};
   mockUseTraceList.mockImplementation((...args) => ({
     data: listFor(args[9]?.filters),
     isLoading: false,
     refetch: vi.fn(),
     isRefetching: false,
-    loadOlder: vi.fn(),
-    loadNewer: vi.fn(),
-    isLoadingOlder: false,
-    isLoadingNewer: false,
-    hasOlder: false,
+    loadMore,
+    isLoadingMore: false,
+    hasMore: false,
     truncated: false,
     lookedBackTo: undefined,
     ...hookOverrides,
@@ -130,9 +161,8 @@ function SearchProbe() {
 }
 const currentParams = () => new URLSearchParams(screen.getByTestId("search").textContent ?? "");
 
-/** Renders the traces page at the given search string. */
-const renderPage = (search = "") =>
-  render(
+/** The traces page at the given search string. */
+const pageTree = (search: string) => (
     <ThemeProvider theme={createTheme()}>
       <MemoryRouter initialEntries={[`/org/o/project/p/agents/a/environment/dev/traces${search}`]}>
         <Routes>
@@ -147,8 +177,14 @@ const renderPage = (search = "") =>
           />
         </Routes>
       </MemoryRouter>
-    </ThemeProvider>,
-  );
+    </ThemeProvider>
+);
+
+/** Renders the traces page; rerenderPage re-reads hookOverrides, as a hook state change would. */
+const renderPage = (search = "") => {
+  const view = render(pageTree(search));
+  return { ...view, rerenderPage: () => view.rerender(pageTree(search)) };
+};
 
 // hidden: an open drawer marks the page behind it aria-hidden.
 const pickOption = (selectName: string, optionName: string) => {
@@ -337,7 +373,7 @@ describe("TracesComponent columns and cap notice", () => {
     expect(screen.queryByText(/traces searched so far/)).not.toBeInTheDocument();
     unmount();
 
-    hookOverrides = { truncated: true, hasOlder: true };
+    hookOverrides = { truncated: true, hasMore: true };
     renderPage("?status=error");
     expect(
       screen.getByText(
@@ -346,25 +382,29 @@ describe("TracesComponent columns and cap notice", () => {
     ).toBeInTheDocument();
   });
 
-  it("says the list stops here when truncated without an older page", () => {
-    hookOverrides = { truncated: true, hasOlder: false };
+  it("says the list stops here when truncated without a next page", () => {
+    hookOverrides = { truncated: true, hasMore: false };
     renderPage("?status=error");
 
     expect(screen.queryByText(/traces searched so far/)).not.toBeInTheDocument();
-    expect(screen.getByText(/The list stops here/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Load Older Traces" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The list stops here: the remaining traces are more than 1,000 traces into this time range. Narrow the time range to see more.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load More Traces" })).not.toBeInTheDocument();
   });
 
-  it("shows how far a filtered list looked back, next to Load older", () => {
-    hookOverrides = { hasOlder: true, lookedBackTo: "2026-10-01T08:14:00Z" };
+  it("shows how far a filtered list searched in the row after the traces", () => {
+    hookOverrides = { hasMore: true, lookedBackTo: "2026-10-01T08:14:00Z" };
     const { unmount } = renderPage();
-    expect(screen.getByRole("button", { name: "Load Older Traces" })).toBeInTheDocument();
-    expect(screen.queryByText(/Looked back to/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Searched as far as/)).not.toBeInTheDocument();
     unmount();
 
     renderPage("?status=error");
+    const sentinelRow = screen.getByTestId("traces-sentinel").closest("tr")!;
     expect(
-      screen.getByText(/^Looked back to \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+      within(sentinelRow).getByText(/^Searched as far as \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
     ).toBeInTheDocument();
   });
 });
@@ -578,5 +618,100 @@ describe("TracesComponent export warning", () => {
 
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("TracesComponent infinite scroll", () => {
+  const loadMoreButton = () => screen.queryByRole("button", { name: "Load More Traces" });
+
+  it("loads the next page once when the sentinel comes into view", () => {
+    hookOverrides = { hasMore: true };
+    renderPage();
+    expect(loadMoreButton()).not.toBeInTheDocument();
+
+    scrollToSentinel();
+    scrollToSentinel();
+    expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't load while a page is loading or when there are no more pages", () => {
+    hookOverrides = { hasMore: true, isLoadingMore: true };
+    const { unmount } = renderPage();
+    const sentinelRow = screen.getByTestId("traces-sentinel").closest("tr")!;
+    expect(within(sentinelRow).getByRole("progressbar")).toBeInTheDocument();
+    scrollToSentinel();
+    expect(loadMore).not.toHaveBeenCalled();
+    unmount();
+
+    hookOverrides = { hasMore: false };
+    renderPage();
+    scrollToSentinel();
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
+  it("pauses on a page that adds no rows and resumes when a click adds some", () => {
+    hookOverrides = { hasMore: true };
+    const { rerenderPage } = renderPage("?status=error");
+    scrollToSentinel();
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    // The page lands with no new matches.
+    hookOverrides = { hasMore: true, isLoadingMore: true };
+    rerenderPage();
+    hookOverrides = { hasMore: true };
+    rerenderPage();
+    expect(loadMoreButton()).toBeInTheDocument();
+    scrollToSentinel();
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(loadMoreButton()!);
+    expect(loadMore).toHaveBeenCalledTimes(2);
+
+    // The clicked page adds a row, so scrolling loads again.
+    const grown = [...ALL, makeTrace("t-new", 1)];
+    hookOverrides = { hasMore: true, isLoadingMore: true };
+    rerenderPage();
+    hookOverrides = { hasMore: true, data: { traces: grown, totalCount: grown.length } };
+    rerenderPage();
+    expect(loadMoreButton()).not.toBeInTheDocument();
+    scrollToSentinel();
+    expect(loadMore).toHaveBeenCalledTimes(3);
+  });
+
+  it("shows the button under an empty filtered page and doesn't auto-load", () => {
+    hookOverrides = { hasMore: true, data: { traces: [], totalCount: 0 } };
+    renderPage("?status=error");
+
+    expect(screen.getByText("No traces found!")).toBeInTheDocument();
+    scrollToSentinel();
+    expect(loadMore).not.toHaveBeenCalled();
+    fireEvent.click(loadMoreButton()!);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows Retry after a failed load and stops auto-loading", () => {
+    hookOverrides = { hasMore: true, loadError: new Error("upstream down") };
+    renderPage();
+
+    expect(screen.getByText("Couldn't load more traces.")).toBeInTheDocument();
+    scrollToSentinel();
+    expect(loadMore).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["desc", "", "desc"],
+    ["asc", "?sortOrder=asc", "asc"],
+  ])("puts the sentinel after the last row in %s order", (_, search, sortOrder) => {
+    hookOverrides = { hasMore: true };
+    renderPage(search);
+
+    expect(mockUseTraceList.mock.lastCall?.[6]).toBe(sortOrder);
+    const lastRow = screen.getByText("root t-ok").closest("tr")!;
+    const sentinel = screen.getByTestId("traces-sentinel");
+    const position = lastRow.compareDocumentPosition(sentinel);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sentinel.closest("tr")).not.toBe(lastRow);
   });
 });

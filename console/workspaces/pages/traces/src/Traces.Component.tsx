@@ -195,13 +195,12 @@ export const TracesComponent: React.FC = () => {
     isLoading,
     refetch,
     isRefetching,
-    loadOlder,
-    loadNewer,
-    isLoadingOlder,
-    isLoadingNewer,
-    hasOlder,
+    loadMore,
+    isLoadingMore,
+    hasMore,
     truncated,
     lookedBackTo,
+    loadError,
   } = useTraceList(
     organization,
     projectId,
@@ -518,17 +517,15 @@ export const TracesComponent: React.FC = () => {
           traces={traceData?.traces ?? []}
           isLoading={prereqsPending || isLoading}
           selectedTrace={selectedTrace}
-          sortOrder={sortOrder}
-          isLoadingOlder={isLoadingOlder}
-          isLoadingNewer={isLoadingNewer}
-          hasOlder={hasOlder}
+          isLoadingMore={isLoadingMore}
+          hasMore={hasMore}
           hasActiveFilters={hasActiveFilters}
           truncated={truncated}
           lookedBackTo={lookedBackTo}
+          loadError={loadError}
           visibleColumns={visibleColumns}
           onTraceSelect={handleTraceSelect}
-          onLoadOlder={loadOlder}
-          onLoadNewer={loadNewer}
+          onLoadMore={loadMore}
           onConversationSelect={handleConversationSelect}
         />
         <DrawerWrapper

@@ -16,12 +16,13 @@
  * under the License.
  */
 
-import React from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Typography,
   Tooltip,
   ListingTable,
   DataGrid,
+  Box,
   Button,
   CircularProgress,
   Link,
@@ -35,7 +36,6 @@ import {
 } from "@agent-management-platform/types";
 import {
   ArrowDown,
-  ArrowUp,
   CheckCircle,
   Workflow,
   XCircle,
@@ -46,20 +46,24 @@ import { formatStartTime } from "../traceTime";
 interface TracesTableProps {
   traces: TraceOverview[];
   onTraceSelect?: (traceId: string) => void;
-  sortOrder?: "asc" | "desc";
   selectedTrace: string | null;
   isLoading?: boolean;
-  isLoadingOlder?: boolean;
-  isLoadingNewer?: boolean;
-  hasOlder?: boolean;
+  isLoadingMore?: boolean;
+  hasMore?: boolean;
   hasActiveFilters?: boolean;
   // Optional columns to show; the rest are always shown.
   visibleColumns?: TraceColumn[];
   lookedBackTo?: string;
-  onLoadOlder?: () => void;
-  onLoadNewer?: () => void;
+  // The last loadMore failed; auto-loading stops until Retry.
+  loadError?: Error | null;
+  onLoadMore?: () => void;
   onConversationSelect?: (conversationId: string) => void;
 }
+
+// How far below the visible area the end of the list is when the next page starts loading.
+// The page scrolls inside PageContent, which clips the sentinel, so a viewport rootMargin
+// would have no effect; the sentinel is this tall instead.
+const PRELOAD_DISTANCE_PX = 200;
 
 const toNStoSeconds = (ns: number) => {
   return ns / 1000_000_000;
@@ -127,79 +131,94 @@ function ConversationCell({
     </Tooltip>
   );
 }
-/** Trace list table with optional columns and older/newer paging. */
+/** Trace list table with optional columns; loads the next page as its end scrolls into view. */
 export function TracesTable({
   traces,
   onTraceSelect,
-  sortOrder = "desc",
   selectedTrace,
   isLoading = false,
-  isLoadingOlder = false,
-  isLoadingNewer = false,
-  hasOlder = false,
+  isLoadingMore = false,
+  hasMore = false,
   hasActiveFilters = false,
   visibleColumns = DEFAULT_TRACE_COLUMNS,
   lookedBackTo,
-  onLoadOlder,
-  onLoadNewer,
+  loadError,
+  onLoadMore,
   onConversationSelect,
 }: TracesTableProps) {
   const columns = COLUMNS.filter((c) => !c.optional || visibleColumns.includes(c.optional));
   const showConversation = visibleColumns.includes("conversation");
-  const isDesc = sortOrder === "desc";
 
-  // Load older, shown only while the server has an older page, plus how far a filtered list looked.
-  const olderControl = (hasOlder && onLoadOlder) || (hasActiveFilters && lookedBackTo) ? (
-    <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
-      {hasOlder && onLoadOlder && (
-        <Button
-          size="small"
-          variant="text"
-          disabled={isLoadingOlder}
-          onClick={onLoadOlder}
-          startIcon={
-            isLoadingOlder ? (
-              <CircularProgress size={16} />
-            ) : isDesc ? (
-              <ArrowDown size={16} />
-            ) : (
-              <ArrowUp size={16} />
-            )
-          }
-        >
-          {isLoadingOlder ? "Loading..." : "Load Older Traces"}
+  const [sentinel, setSentinel] = useState<HTMLElement | null>(null);
+  // Set when a load added no rows; auto-loading waits for a click.
+  const [paused, setPaused] = useState(false);
+  // traces.length when the pending load was requested; null when none is pending.
+  const loadStartRef = useRef<number | null>(null);
+  const wasLoadingRef = useRef(isLoadingMore);
+  const prevTracesRef = useRef(traces);
+
+  const loadMore = useCallback(() => {
+    if (!onLoadMore) return;
+    loadStartRef.current = traces.length;
+    onLoadMore();
+  }, [onLoadMore, traces.length]);
+
+  // Pause when a finished load added no rows, resume when one did, and reset on a new list.
+  useEffect(() => {
+    const start = loadStartRef.current;
+    if (start !== null && wasLoadingRef.current && !isLoadingMore) {
+      setPaused(traces.length === start);
+      loadStartRef.current = null;
+    } else if (start === null && traces !== prevTracesRef.current) {
+      setPaused(false);
+    }
+    wasLoadingRef.current = isLoadingMore;
+    prevTracesRef.current = traces;
+  }, [traces, isLoadingMore]);
+
+  const autoLoad = hasMore && !isLoadingMore && !paused && !loadError;
+
+  // Loads once when the sentinel is in view. A new observer after each load checks again.
+  useEffect(() => {
+    if (!sentinel || !autoLoad) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      observer.disconnect();
+      loadMore();
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [sentinel, autoLoad, loadMore]);
+
+  const showMoreRow = hasMore || isLoadingMore || (hasActiveFilters && !!lookedBackTo);
+
+  // Spinner, Retry after an error, or a Load More button when auto-loading is off.
+  const moreStatus = (manual: boolean) => (
+    <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" minHeight={32}>
+      {isLoadingMore ? (
+        <CircularProgress size={16} />
+      ) : loadError && hasMore ? (
+        <>
+          <Typography variant="caption" color="error">
+            Couldn&apos;t load more traces.
+          </Typography>
+          <Button size="small" variant="text" onClick={loadMore}>
+            Retry
+          </Button>
+        </>
+      ) : manual && hasMore ? (
+        <Button size="small" variant="text" onClick={loadMore} startIcon={<ArrowDown size={16} />}>
+          Load More Traces
         </Button>
-      )}
+      ) : null}
       {hasActiveFilters && lookedBackTo && (
         <Typography variant="caption" color="text.secondary">
-          Looked back to {formatStartTime(lookedBackTo)}
+          Searched as far as {formatStartTime(lookedBackTo)}
         </Typography>
       )}
     </Stack>
-  ) : null;
-
-  const newerControl = (
-    <Button
-      size="small"
-      variant="text"
-      disabled={!onLoadNewer || isLoadingNewer}
-      onClick={onLoadNewer}
-      startIcon={
-        isLoadingNewer ? (
-          <CircularProgress size={16} />
-        ) : isDesc ? (
-          <ArrowUp size={16} />
-        ) : (
-          <ArrowDown size={16} />
-        )
-      }
-    >
-      {isLoadingNewer ? "Loading..." : "Load Newer Traces"}
-    </Button>
   );
 
-  const topControl = isDesc ? newerControl : olderControl;
-  const bottomControl = isDesc ? olderControl : newerControl;
   return (
     <FadeIn>
       {isLoading ? (
@@ -231,13 +250,6 @@ export function TracesTable({
               </ListingTable.Row>
             </ListingTable.Head>
             <ListingTable.Body>
-              {topControl && (
-                <ListingTable.Row>
-                  <ListingTable.Cell colSpan={columns.length} align="center">
-                    {topControl}
-                  </ListingTable.Cell>
-                </ListingTable.Row>
-              )}
               {traces.map((trace) => (
                 <ListingTable.Row
                   key={trace.traceId}
@@ -412,10 +424,27 @@ export function TracesTable({
                   </ListingTable.Cell>
                 </ListingTable.Row>
               ))}
-              {bottomControl && (
+              {showMoreRow && (
                 <ListingTable.Row>
-                  <ListingTable.Cell colSpan={columns.length} align="center">
-                    {bottomControl}
+                  <ListingTable.Cell
+                    colSpan={columns.length}
+                    align="center"
+                    sx={{ position: "relative" }}
+                  >
+                    <Box
+                      ref={setSentinel}
+                      data-testid="traces-sentinel"
+                      aria-hidden
+                      sx={{
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        height: PRELOAD_DISTANCE_PX,
+                        pointerEvents: "none",
+                      }}
+                    />
+                    {moreStatus(paused)}
                   </ListingTable.Cell>
                 </ListingTable.Row>
               )}
@@ -433,8 +462,8 @@ export function TracesTable({
                 : "Try changing the time range"
             }
           />
-          {/* A filtered page can be empty while older pages still hold matches. */}
-          {olderControl && <Stack sx={{ pb: 2 }}>{olderControl}</Stack>}
+          {/* A filtered page can be empty while later pages hold matches; load those on click. */}
+          {showMoreRow && <Box sx={{ pb: 2 }}>{moreStatus(true)}</Box>}
         </ListingTable.Container>
       )}
     </FadeIn>
