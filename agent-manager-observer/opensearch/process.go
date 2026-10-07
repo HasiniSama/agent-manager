@@ -21,7 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -677,26 +679,37 @@ func IsLLMLeafSpan(spanName string) bool {
 	return strings.HasSuffix(lower, ".chat") || lower == "chat" || strings.HasPrefix(lower, "chat ")
 }
 
-// ExtractConversationID returns the span's gen_ai.conversation.id from
-// AgentData or, for non-agent roots, the raw attribute. "" when absent.
+// conversationIDKeys name a span's conversation, in the order they're read.
+// langsmith.trace.session_id is left out: it names a LangSmith project.
+var conversationIDKeys = []string{
+	"gen_ai.conversation.id",                           // OTel GenAI, Google ADK, Traceloop @conversation
+	"session.id",                                       // OpenInference, Strands trace_attributes
+	"langfuse.session.id",                              // Langfuse SDK
+	"traceloop.association.properties.session_id",      // Traceloop associations, LangChain metadata
+	"traceloop.association.properties.conversation_id", // LangChain metadata
+	"traceloop.association.properties.thread_id",       // LangGraph thread via LangChain metadata
+	"langsmith.metadata.session_id",                    // LangSmith threads
+	"langsmith.metadata.thread_id",                     // LangSmith threads
+}
+
+// ExtractConversationID returns the first conversationIDKeys value on the
+// span: a non-empty string, or a whole number such as an int thread_id.
+// "" when absent.
 func ExtractConversationID(span *Span) string {
 	if span == nil {
 		return ""
 	}
-	if span.AmpAttributes != nil {
-		switch d := span.AmpAttributes.Data.(type) {
-		case AgentData:
-			if d.ConversationID != "" {
-				return d.ConversationID
+	for _, key := range conversationIDKeys {
+		switch v := span.Attributes[key].(type) {
+		case string:
+			if v != "" {
+				return v
 			}
-		case *AgentData:
-			if d != nil && d.ConversationID != "" {
-				return d.ConversationID
+		case float64:
+			if v == math.Trunc(v) {
+				return strconv.FormatFloat(v, 'f', -1, 64)
 			}
 		}
-	}
-	if convID, ok := span.Attributes["gen_ai.conversation.id"].(string); ok {
-		return convID
 	}
 	return ""
 }

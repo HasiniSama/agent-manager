@@ -84,7 +84,7 @@ func (f TraceFilters) LogValue() slog.Value {
 
 // matchesFilters reports whether overview satisfies f.
 func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
-	if !matchesRootFilters(overview.Status, overview.ConversationID, f) {
+	if !matchesStatus(overview.Status, f) || !matchesConversation(overview.ConversationID, f) {
 		return false
 	}
 	if !matchesSummary(overview.DurationInNanos, overview.SpanCount, f) {
@@ -106,23 +106,32 @@ func matchesModel(models []string, f TraceFilters) bool {
 	return f.Model == "" || slices.ContainsFunc(models, containsFold(f.Model))
 }
 
-// matchesRootFilters checks the filters the root span alone can answer.
-func matchesRootFilters(status *opensearch.TraceStatus, conversationID string, f TraceFilters) bool {
+// matchesStatus checks the status filter, which the root span alone answers.
+func matchesStatus(status *opensearch.TraceStatus, f TraceFilters) bool {
 	hasErrors := status != nil && status.ErrorCount > 0
 	switch f.Status {
 	case TraceStatusError:
-		if !hasErrors {
-			return false
-		}
+		return hasErrors
 	case TraceStatusOK:
-		if hasErrors {
-			return false
-		}
-	}
-	if f.ConversationID != "" && conversationID != f.ConversationID {
-		return false
+		return !hasErrors
 	}
 	return true
+}
+
+// matchesConversation checks the conversationId filter; a trace with no conversation ID fails it.
+func matchesConversation(conversationID string, f TraceFilters) bool {
+	return f.ConversationID == "" || conversationID == f.ConversationID
+}
+
+// conversationRulesOut reports whether a conversation ID found so far fails
+// the filter. "" doesn't, since a later span may carry one.
+func conversationRulesOut(conversationID string, f TraceFilters) bool {
+	return conversationID != "" && !matchesConversation(conversationID, f)
+}
+
+// conversationPending reports whether a conversationId filter still lacks the trace's ID.
+func conversationPending(conversationID string, f TraceFilters) bool {
+	return f.ConversationID != "" && conversationID == ""
 }
 
 // containsFold reports whether a model name contains sub, ignoring case.

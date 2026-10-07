@@ -890,7 +890,18 @@ components:
           example: ["gpt-4o", "gpt-4o-mini"]
         conversationId:
           type: string
-          description: gen_ai.conversation.id of the root span.
+          description: |
+            The trace's conversation, session or thread ID. Read from the root span, then
+            from the spans fetched to fill `input`, `output` or `tokenUsage`: the root's
+            first child, then the LLM spans in start order. With a `conversationId` filter, a
+            root without one reads those spans even when it has all three. The first span with
+            one wins.
+            On each span the keys are read in this order: `gen_ai.conversation.id`,
+            `session.id`, `langfuse.session.id`, the Traceloop association properties
+            `session_id`, `conversation_id` and `thread_id` (LangGraph's thread), then
+            `langsmith.metadata.session_id` and `langsmith.metadata.thread_id`. A whole
+            number is returned as its decimal string. Absent when none of those spans
+            carries one.
           example: conv-42
 
     TraceOverviewListResponse:

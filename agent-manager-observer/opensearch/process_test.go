@@ -2141,9 +2141,9 @@ func TestExtractTokenUsageSurvivesParentCycle(t *testing.T) {
 	}
 }
 
-// ExtractConversationID reads gen_ai.conversation.id off any root span, not
-// only those classified as agent spans: a Traceloop workflow root and a
-// CrewAI root both go through parsers that do not populate AgentData.
+// ExtractConversationID reads the conversation keys off any span, not only
+// those classified as agent spans: a Traceloop workflow root and a CrewAI root
+// both go through parsers that do not populate AgentData.
 func TestExtractConversationID(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -2181,6 +2181,93 @@ func TestExtractConversationID(t *testing.T) {
 			kinds: []SpanType{SpanTypeAgent},
 		},
 		{
+			name: "openinference session",
+			span: &Span{Name: "agent", Attributes: map[string]interface{}{"session.id": "sess-oi"}},
+			want: "sess-oi",
+		},
+		{
+			name: "langfuse session",
+			span: &Span{Name: "agent", Attributes: map[string]interface{}{"langfuse.session.id": "sess-lf"}},
+			want: "sess-lf",
+		},
+		{
+			name: "traceloop session association property",
+			span: &Span{Name: "agent", Attributes: map[string]interface{}{
+				"traceloop.association.properties.session_id": "sess-tl",
+			}},
+			want: "sess-tl",
+		},
+		{
+			name: "traceloop conversation association property",
+			span: &Span{Name: "agent", Attributes: map[string]interface{}{
+				"traceloop.association.properties.conversation_id": "conv-tl",
+			}},
+			want: "conv-tl",
+		},
+		{
+			name: "langgraph thread via traceloop",
+			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
+				"traceloop.span.kind":                        "workflow",
+				"traceloop.association.properties.thread_id": "thread556",
+			}},
+			want: "thread556",
+		},
+		{
+			name: "gen_ai.conversation.id wins over the others",
+			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
+				"traceloop.association.properties.thread_id": "thread556",
+				"session.id":             "sess-oi",
+				"gen_ai.conversation.id": "conv-otel",
+			}},
+			want: "conv-otel",
+		},
+		{
+			name: "session.id wins over a traceloop thread",
+			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
+				"traceloop.association.properties.thread_id": "thread556",
+				"session.id": "sess-oi",
+			}},
+			want: "sess-oi",
+		},
+		{
+			name: "an empty value falls through to the next key",
+			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
+				"gen_ai.conversation.id":                     "",
+				"traceloop.association.properties.thread_id": "thread556",
+			}},
+			want: "thread556",
+		},
+		{
+			name: "langsmith thread",
+			span: &Span{Name: "LangGraph", Attributes: map[string]interface{}{
+				"langsmith.metadata.thread_id": "thread-ls",
+			}},
+			want: "thread-ls",
+		},
+		{
+			name: "langsmith session over its thread",
+			span: &Span{Name: "LangGraph", Attributes: map[string]interface{}{
+				"langsmith.metadata.thread_id":  "thread-ls",
+				"langsmith.metadata.session_id": "sess-ls",
+			}},
+			want: "sess-ls",
+		},
+		{
+			name: "the langsmith project is not a conversation",
+			span: &Span{Name: "LangGraph", Attributes: map[string]interface{}{
+				"langsmith.trace.session_id": "project-1",
+			}},
+			want: "",
+		},
+		{
+			name: "unrelated association properties are ignored",
+			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
+				"traceloop.association.properties.passenger_id": "3442 587242",
+				"traceloop.association.properties.user_id":      "user-1",
+			}},
+			want: "",
+		},
+		{
 			name: "no conversation attribute",
 			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
 				"traceloop.span.kind": "workflow",
@@ -2188,10 +2275,19 @@ func TestExtractConversationID(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "non-string attribute is ignored",
+			name: "a whole number is read, as JSON decodes it",
+			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
+				"traceloop.span.kind":                        "workflow",
+				"traceloop.association.properties.thread_id": float64(556),
+			}},
+			want: "556",
+		},
+		{
+			name: "a fraction or a bool is ignored",
 			span: &Span{Name: "LangGraph.workflow", Attributes: map[string]interface{}{
 				"traceloop.span.kind":    "workflow",
-				"gen_ai.conversation.id": 42,
+				"gen_ai.conversation.id": 4.5,
+				"session.id":             true,
 			}},
 			want: "",
 		},

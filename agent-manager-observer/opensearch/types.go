@@ -183,7 +183,7 @@ type TraceOverview struct {
 	Input           interface{}  `json:"input,omitempty"`          // Input from root span (nil if not found)
 	Output          interface{}  `json:"output,omitempty"`         // Output from root span (nil if not found)
 	Models          []string     `json:"models,omitempty"`         // Distinct model names across the trace's LLM spans, first-seen order
-	ConversationID  string       `json:"conversationId,omitempty"` // gen_ai.conversation.id from the root span
+	ConversationID  string       `json:"conversationId,omitempty"` // First conversation ID on the root or the spans enrichment read (ExtractConversationID)
 }
 
 // TraceStatus represents the status of a trace
