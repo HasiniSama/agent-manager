@@ -186,6 +186,7 @@ type TraceOverview struct {
 	ConversationID  string       `json:"conversationId,omitempty"` // First conversation ID on the root or the spans enrichment read (ExtractConversationID)
 	Tools           []string     `json:"tools,omitempty"`          // Distinct tools named by the trace's tool spans, first-call order
 	FailedTools     []string     `json:"failedTools,omitempty"`    // The Tools with a span whose status is error
+	MCPServers      []string     `json:"mcpServers,omitempty"`     // Distinct MCP servers named by the trace's initialize spans, handshake order
 }
 
 // TraceStatus represents the status of a trace

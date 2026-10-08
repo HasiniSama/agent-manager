@@ -55,6 +55,7 @@ export interface TraceOverview {
   conversationId?: string;
   tools?: string[];
   failedTools?: string[];
+  mcpServers?: string[];
   score?: TraceScore | null;
 }
 
@@ -82,6 +83,8 @@ export interface TraceFilters {
   tool?: string;
   /** Only traces with a failed tool, that is, a non-empty TraceOverview.failedTools. */
   toolError?: boolean;
+  /** Case-insensitive substring of any entry in TraceOverview.mcpServers. */
+  mcpServer?: string;
 }
 
 // Keep Trace as an alias for backward compatibility

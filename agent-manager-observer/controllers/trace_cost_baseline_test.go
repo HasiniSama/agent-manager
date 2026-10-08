@@ -242,6 +242,78 @@ var costGoldens = map[string]costRow{
 		Order:  "trace-0000: spans, root, detail×3, attrSpans",
 		SHA256: "468cdc1ba68cdd2c8ce59e58d2ab226b942beea35a23f4e762265153e0009b44",
 	},
+	"list include=mcpServers": {
+		Calls:  kindCounts{Traces: 1, Root: 10, Detail: 34, Spans: 10, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 2303, Root: 2768, Detail: 19728, Spans: 8949, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×4",
+		SHA256: "50716d09bbcd3572a4f2a481f35c11242f2e8682438db59d8c9afb0e8116efbf",
+	},
+	"list root-complete include=mcpServers": {
+		Calls:  kindCounts{Traces: 1, Root: 10, Detail: 4, Spans: 10, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 2303, Root: 4918, Detail: 10070, Spans: 8949, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail",
+		SHA256: "c55858d57040131256711174a14f0465bca1fff10233bd33ae7666e921cd51a2",
+	},
+	"list mcpServer=github (16.7%)": {
+		Calls:  kindCounts{Traces: 2, Root: 17, Detail: 85, Spans: 100, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 31516, Root: 4714, Detail: 101955, Spans: 86166, AttrSpans: 0},
+		Order:  "trace-0000: spans, detail, root, detail×3",
+		SHA256: "0d662f2221ce5f94a0ea73c77d63db539fe861e6faa8734efd4c0d544f7283a6",
+	},
+	"list mcpServer=github no handshake": {
+		Calls:  kindCounts{Traces: 5, Root: 0, Detail: 0, Spans: 500, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 280417, Root: 0, Detail: 0, Spans: 402114, AttrSpans: 0},
+		Order:  "trace-0000: spans",
+		SHA256: "6c7bbb26b277bf83e6f0c5457c7b719d0d10b753c0f117064d18cdf13bf4d577",
+	},
+	"list mcpServer=github 8 handshakes": {
+		Calls:  kindCounts{Traces: 2, Root: 17, Detail: 85, Spans: 100, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 31567, Root: 4714, Detail: 101955, Spans: 125708, AttrSpans: 0},
+		Order:  "trace-0000: spans, detail, root, detail×3",
+		SHA256: "c64804b094043cd32368c92cf70978c3817da470f529eccd35453cdfea93af84",
+	},
+	"list mcpServer=github toolError=true": {
+		Calls:  kindCounts{Traces: 4, Root: 10, Detail: 40, Spans: 300, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 156182, Root: 2880, Detail: 56673, Spans: 257390, AttrSpans: 0},
+		Order:  "trace-0000: spans, detail, root, detail×3",
+		SHA256: "a1eaeda1690da759ab2d3bbf9fdc19ebb4aac652d30508bb23bc86b681f99b7b",
+	},
+	"list mcpServer=github status=error": {
+		Calls:  kindCounts{Traces: 5, Root: 500, Detail: 36, Spans: 25, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 280417, Root: 137700, Detail: 51006, Spans: 22186, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×4",
+		SHA256: "c90249270c6286f14e365f89bc0f00bd3c0e2c6878cae00b6cab5763ed99f489",
+	},
+	"list mcpServer=atlassian model=claude": {
+		Calls:  kindCounts{Traces: 2, Root: 0, Detail: 17, Spans: 0, AttrSpans: 100},
+		Bytes:  kindCounts{Traces: 31516, Root: 0, Detail: 5627, Spans: 0, AttrSpans: 221229},
+		Order:  "trace-0003: attrSpans, detail",
+		SHA256: "b7fcbe4c1d2d4fe3a429e6369da8bc19212a5d132ee8eca7b9eb5d00572c3c6e",
+	},
+	"list mcpServer=github over cap": {
+		Calls:  kindCounts{Traces: 5, Root: 0, Detail: 0, Spans: 0, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 283125, Root: 0, Detail: 0, Spans: 0, AttrSpans: 0},
+		Order:  "trace-0000: none",
+		SHA256: "6c7bbb26b277bf83e6f0c5457c7b719d0d10b753c0f117064d18cdf13bf4d577",
+	},
+	"export mcpServer=github": {
+		Calls:  kindCounts{Traces: 2, Root: 17, Detail: 85, Spans: 100, AttrSpans: 10},
+		Bytes:  kindCounts{Traces: 31516, Root: 4714, Detail: 101955, Spans: 86166, AttrSpans: 64118},
+		Order:  "trace-0000: spans, detail, root, detail×3, attrSpans",
+		SHA256: "54b7726731efc4f758a9cbf8fe8defd4f3d65e96cc1d47843565b7bb367e0fb0",
+	},
+	"list mcpServer=github 8 handshakes 8 tools": {
+		Calls:  kindCounts{Traces: 2, Root: 17, Detail: 221, Spans: 100, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 31567, Root: 4714, Detail: 445151, Spans: 168310, AttrSpans: 0},
+		Order:  "trace-0000: spans, detail×5, root, detail×3",
+		SHA256: "2b016a4f96ca71ed184a5d3a426f3023e91f4613a2f808166674e223614440ab",
+	},
+	"list mcpServer=github handshake cap (no match)": {
+		Calls:  kindCounts{Traces: 2, Root: 0, Detail: 100, Spans: 100, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 31516, Root: 0, Detail: 33100, Spans: 119496, AttrSpans: 0},
+		Order:  "trace-0000: spans, detail",
+		SHA256: "8fb26729def57f0c231da7ac2595fd35655e41b6384cac1dc1a77e4087a5782f",
+	},
 	// golden:end
 }
 
@@ -536,6 +608,21 @@ func costScenarios() []costScenario {
 		{name: "list toolError=true root-complete", fixture: costRootCompleteFake, params: withFilters(TraceFilters{ToolError: true})},
 		{name: "list toolError=true over cap", fixture: costOverCapFake, params: withFilters(TraceFilters{ToolError: true})},
 		{name: "export toolError=true", export: true, params: withFilters(TraceFilters{ToolError: true})},
+		{name: "list include=mcpServers", fixture: mcpFake1, params: includeMCPServers},
+		{name: "list root-complete include=mcpServers", fixture: mcpRootCompleteFake, params: includeMCPServers},
+		{name: "list mcpServer=github (16.7%)", fixture: mcpFake1, params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "list mcpServer=github no handshake", params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "list mcpServer=github 8 handshakes", fixture: func() *fakeObserverClient { return mcpFake(8) },
+			params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "list mcpServer=github toolError=true", fixture: mcpFake1, params: withFilters(TraceFilters{MCPServer: "github", ToolError: true})},
+		{name: "list mcpServer=github status=error", fixture: mcpFake1, params: withFilters(TraceFilters{MCPServer: "github", Status: TraceStatusError})},
+		{name: "list mcpServer=atlassian model=claude", fixture: mcpFake1, params: withFilters(TraceFilters{MCPServer: "atlassian", Model: "claude"})},
+		{name: "list mcpServer=github over cap", fixture: costOverCapFake, params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "export mcpServer=github", fixture: mcpFake1, export: true, params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "list mcpServer=github 8 handshakes 8 tools", fixture: func() *fakeObserverClient { return mcpToolsFake(8) },
+			params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "list mcpServer=github handshake cap (no match)", fixture: func() *fakeObserverClient { return mcpEveryTraceFake(1, atlassianOnly) },
+			params: withFilters(TraceFilters{MCPServer: "github"})},
 	}
 }
 

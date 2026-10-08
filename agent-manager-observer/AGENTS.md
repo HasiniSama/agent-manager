@@ -118,6 +118,12 @@ All in `controllers/controller.go`.
   - It reuses the list the cascade reads. A root-complete trace fetches it without attributes, so it costs one call; other traces cost none.
   - It reads only span names (`ToolNameFromSpanName`: `execute_tool {name}`, `{name}.tool`) and the OTel status, never attributes.
   - Limitation: spans named only after the tool (OpenInference, Logfire) aren't recognised, and a bare `execute_tool` names no tool.
+- With `include=mcpServers`, at most 200 spans, `mcpServers` come from the trace's `initialize.mcp` spans (`readMCPServers`):
+  - They're found by name in the same list. `handshakesToFetch` keeps one per tool: each is keyed by its parent span's tool name (`ToolNameFromSpanName`, from the same attribute-free list), and one whose parent isn't in the list or names no tool is its own key. A client that opens a session per tool call puts a handshake under every call, and calls to one tool reach one server.
+  - Each kept handshake costs one `GetSpanDetails`, for the first **5** keys in start order (`maxMCPHandshakesPerTrace`), fetched after the tool and model checks and before the child and leaf steps.
+  - A filtered walk also counts its handshake fetches across traces; see the per-request cap below. An unfiltered page doesn't walk, so it's bounded only per trace: up to `limit` × 5.
+  - The server is `serverInfo.name` (else `title`) from the span's `traceloop.entity.output` (`MCPServerFromHandshake`); the rest of that output is skipped.
+  - Limitation: only Traceloop's MCP instrumentation emits the span, and only when the agent opens a session inside the trace. An agent that holds one session for its lifetime reports no servers in later traces.
 
 ### Filtered list
 
@@ -131,15 +137,18 @@ Filters run as early as possible, so a rejected trace stays cheap:
   - With no `status` or `conversationId` filter, the span list is fetched before the root, without attributes unless `listSpansFirst` already wants them. A rejected trace costs one list call and no root fetch; only matches fetch the root and run the cascade.
   - With `status` or `conversationId`, the root comes first, then the list.
   - A failed list fetch lists the trace as failed.
+- **`mcpServer`** — `matchesMCPServer` on `mcpServers`; implies `include=mcpServers`. It shares the tool filters' span cap and list-before-root order, and its handshake fetches come last, before the child and leaf steps. A trace with no handshake span is rejected after the list, at no extra call. A failed handshake fetch lists the trace as failed.
 
 The walk stops at the 500-trace examine cap or after **20 s** (`listLookBackBudget`), returning `truncated` and a `nextCursor`. The budget doesn't cut the first chunk; only the **25 s** request deadline (`requestTimeout`) does, failing the request. After it, the walk's fetches run under the budget, which cancels those in flight without a warning; the walk then stops before the chunk they belong to.
+
+With `mcpServer` or `include=mcpServers`, the walk also stops before its next chunk once it has fetched **100** MCP handshakes (`maxMCPHandshakesPerRequest`), the same way: `truncated`, a `nextCursor` at the last examined trace, and `handshakeCapReached` in the walk's log line. The first chunk always runs and a chunk in flight finishes, so a request fetches at most 99 + 50 × 5 = 349 handshakes. Once the cap is reached, that chunk's failed traces aren't retried. Export selection uses the same walk. Other requests never fetch a handshake, so the cap never stops them.
 
 A trace that can't be read is retried once, then left out. The list fails, filtered or not, when it could read none of the traces it examined. A trace a filter rejected after reading it counts as read.
 
 ### Export
 
 - **No filter** — one `QueryTraces` call.
-- **Filtered** — selects traces with `lookBackForMatches`, then fetches full spans only for the matches. Selection has no cursor, the same 500-trace examine cap, and a **10 s** budget that leaves the rest of the 25 s `requestTimeout` for the span fetches. An export still running at `requestTimeout` fails.
+- **Filtered** — selects traces with `lookBackForMatches`, then fetches full spans only for the matches. Selection has no cursor, the same 500-trace examine cap and 100-handshake cap, and a **10 s** budget that leaves the rest of the 25 s `requestTimeout` for the span fetches. An export still running at `requestTimeout` fails.
 - Uses the same filter criteria as the list, but the shorter budget and no paging can cover a different part of history, so it may not select the same traces.
 
 Retried once:

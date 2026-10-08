@@ -82,6 +82,7 @@ type TraceOverview struct {
 	ConversationID  string       `json:"conversationId,omitempty"`
 	Tools           []string     `json:"tools,omitempty"`
 	FailedTools     []string     `json:"failedTools,omitempty"`
+	MCPServers      []string     `json:"mcpServers,omitempty"`
 }
 
 type TraceOverviewResponse struct {

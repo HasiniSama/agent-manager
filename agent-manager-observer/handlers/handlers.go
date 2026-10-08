@@ -610,8 +610,10 @@ func parseInclude(raw []string) (controllers.Include, error) {
 				include.Models = true
 			case "tools":
 				include.Tools = true
+			case "mcpServers":
+				include.MCPServers = true
 			default:
-				return controllers.Include{}, fmt.Errorf("invalid include value %q: must be one of 'models', 'tools'", v)
+				return controllers.Include{}, fmt.Errorf("invalid include value %q: must be one of 'models', 'tools', 'mcpServers'", v)
 			}
 		}
 	}
@@ -649,6 +651,10 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 		return controllers.TraceFilters{}, err
 	}
 	if f.ToolError, err = parseToolError(query.Get("toolError")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	f.MCPServer = query.Get("mcpServer")
+	if err := controllers.CheckFilterValue("mcpServer", f.MCPServer); err != nil {
 		return controllers.TraceFilters{}, err
 	}
 	return f, nil
