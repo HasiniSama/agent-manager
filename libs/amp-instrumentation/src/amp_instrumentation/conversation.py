@@ -118,15 +118,15 @@ class ConversationIdSpanProcessor(SpanProcessor):
             if root.get_span_context().span_id == context.span_id:
                 self._roots.pop(context.trace_id, None)
                 return
-            if not root.is_recording() or _has_conversation_key(root.attributes):
+            if not root.is_recording() or _has_conversation_key(root.attributes or {}):
                 return
-            conversation_id = _conversation_id(span.attributes)
+            conversation_id = _conversation_id(span.attributes or {})
             if conversation_id is not None:
                 root.set_attribute(CONVERSATION_ID_KEY, conversation_id)
 
 
 # Providers that already carry the processor; Traceloop and init_otel() can both reach one.
-_registered = weakref.WeakSet()
+_registered: "weakref.WeakSet[object]" = weakref.WeakSet()
 _registered_lock = threading.Lock()
 
 

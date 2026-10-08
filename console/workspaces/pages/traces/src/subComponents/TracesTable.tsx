@@ -25,10 +25,12 @@ import {
   Box,
   Button,
   CircularProgress,
+  IconButton,
   Link,
   Stack,
 } from "@wso2/oxygen-ui";
 import { FadeIn, scoreColor } from "@agent-management-platform/views";
+import { copyToClipboard } from "@agent-management-platform/shared-component";
 
 const { DataGrid: DataGridComponent } = DataGrid;
 import {
@@ -37,6 +39,7 @@ import {
 import {
   ArrowDown,
   CheckCircle,
+  Copy,
   Workflow,
   XCircle,
 } from "@wso2/oxygen-ui-icons-react";
@@ -86,16 +89,51 @@ const COLUMNS: {
   optional?: TraceColumn;
 }[] = [
   { field: "status", headerName: "Status", width: 4, align: "center" },
-  { field: "name", headerName: "Name", width: 10, align: "left" },
-  { field: "input", headerName: "Input", width: 21, align: "left" },
-  { field: "output", headerName: "Output", width: 22, align: "left" },
-  { field: "conversation", headerName: "Conversation", width: 10, align: "left", optional: "conversation" },
-  { field: "startTime", headerName: "Start Time", width: 11, align: "center" },
+  { field: "name", headerName: "Name", width: 9, align: "left" },
+  { field: "traceId", headerName: "Trace ID", width: 9, align: "left", optional: "traceId" },
+  { field: "input", headerName: "Input", width: 18, align: "left" },
+  { field: "output", headerName: "Output", width: 19, align: "left" },
+  { field: "conversation", headerName: "Conversation", width: 9, align: "left", optional: "conversation" },
+  { field: "startTime", headerName: "Start Time", width: 10, align: "center" },
   { field: "duration", headerName: "Duration", width: 6, align: "right" },
   { field: "tokens", headerName: "Tokens", width: 6, align: "right" },
   { field: "spans", headerName: "Spans", width: 5, align: "right" },
   { field: "score", headerName: "Score", width: 5, align: "right" },
 ];
+
+// Trace ID, truncated, with a button that copies it.
+function TraceIdCell({ traceId }: { traceId: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  /** Copies the ID and shows "Copied!" briefly. */
+  const copy = async (e: React.MouseEvent) => {
+    // The row opens the trace drawer; this click only copies.
+    e.stopPropagation();
+    if (!(await copyToClipboard(traceId))) return;
+    setCopied(true);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <Stack direction="row" alignItems="center" spacing={0.5}>
+      <Tooltip title={traceId}>
+        <Typography
+          variant="caption"
+          component="span"
+          sx={{ ...ellipsisSx, fontFamily: "monospace" }}
+        >
+          {traceId}
+        </Typography>
+      </Tooltip>
+      <Tooltip title={copied ? "Copied!" : "Copy trace ID"}>
+        <IconButton size="small" aria-label={`Copy trace ID ${traceId}`} onClick={copy}>
+          <Copy size={14} />
+        </IconButton>
+      </Tooltip>
+    </Stack>
+  );
+}
 
 // Conversation ID, truncated, that sets the conversation filter on click.
 function ConversationCell({
@@ -147,6 +185,7 @@ export function TracesTable({
   onConversationSelect,
 }: TracesTableProps) {
   const columns = COLUMNS.filter((c) => !c.optional || visibleColumns.includes(c.optional));
+  const showTraceId = visibleColumns.includes("traceId");
   const showConversation = visibleColumns.includes("conversation");
 
   const [sentinel, setSentinel] = useState<HTMLElement | null>(null);
@@ -298,6 +337,11 @@ export function TracesTable({
                       {trace.rootSpanName}
                     </Typography>
                   </ListingTable.Cell>
+                  {showTraceId && (
+                    <ListingTable.Cell align="left" sx={{ maxWidth: 160 }}>
+                      <TraceIdCell traceId={trace.traceId} />
+                    </ListingTable.Cell>
+                  )}
                   <ListingTable.Cell align="left" sx={{ maxWidth: 200 }}>
                     <Tooltip
                       title="Preview only. Open the trace for the full input."

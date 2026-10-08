@@ -52,7 +52,12 @@ import {
   ConsoleAction,
   useTrack,
 } from "@agent-management-platform/api-client";
-import { TraceColumnsMenu, TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
+import {
+  TraceColumnsMenu,
+  TraceDetails,
+  TraceFilterBar,
+  TracesView,
+} from "./subComponents";
 import { parseTraceFilters, withTraceFilters } from "./traceFilters";
 import { type TraceColumn, parseTraceColumns, withTraceColumns } from "./traceColumns";
 import { formatStartTime } from "./traceTime";
@@ -512,7 +517,11 @@ export const TracesComponent: React.FC = () => {
           </Stack>
         }
       >
-        <TraceFilterBar filters={filters} onChange={handleFiltersChange} />
+        <TraceFilterBar
+          filters={filters}
+          onChange={handleFiltersChange}
+          onTraceSearch={handleTraceSelect}
+        />
         <TracesView
           traces={traceData?.traces ?? []}
           isLoading={prereqsPending || isLoading}

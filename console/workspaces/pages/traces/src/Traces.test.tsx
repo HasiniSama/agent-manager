@@ -51,9 +51,11 @@ vi.mock("@agent-management-platform/api-client", () => ({
 }));
 vi.mock("@agent-management-platform/shared-component", () => ({
   EnvironmentSelector: () => null,
+  copyToClipboard: vi.fn(() => Promise.resolve(true)),
 }));
 
-import { useExportTraces, useTraceList } from "@agent-management-platform/api-client";
+import { useExportTraces, useTrace, useTraceList } from "@agent-management-platform/api-client";
+import { copyToClipboard } from "@agent-management-platform/shared-component";
 import { TracesComponent } from "./Traces.Component";
 import { parseTraceFilters, traceFilterChips } from "./traceFilters";
 import { parseTraceColumns } from "./traceColumns";
@@ -306,10 +308,72 @@ describe("TracesComponent filters", () => {
   });
 });
 
+describe("TracesComponent trace ID search", () => {
+  it("opens the trace on Enter, trimmed and lowercased, keeping the other params", () => {
+    renderPage("?timeRange=1h&status=error");
+
+    const input = screen.getByRole("textbox", { name: "Go to trace ID" });
+    fireEvent.change(input, { target: { value: "  ABC123  " } });
+    expect(currentParams().get("selectedTrace")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    const params = currentParams();
+    expect(params.get("selectedTrace")).toBe("abc123");
+    expect(params.get("timeRange")).toBe("1h");
+    expect(params.get("status")).toBe("error");
+  });
+
+  it("opens the trace from the button", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Go to trace ID" }), {
+      target: { value: "abc123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Go to trace" }));
+
+    expect(currentParams().get("selectedTrace")).toBe("abc123");
+  });
+
+  it("does nothing for a blank ID", () => {
+    renderPage();
+
+    const input = screen.getByRole("textbox", { name: "Go to trace ID" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Go to trace" }));
+
+    expect(currentParams().get("selectedTrace")).toBeNull();
+  });
+
+  it("reads the trace through the spans lookup over the page's window, not the list", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Go to trace ID" }), {
+      target: { value: "not-in-the-list" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Go to trace ID" }), { key: "Enter" });
+
+    expect(vi.mocked(useTrace).mock.lastCall).toEqual([
+      "ns",
+      "p",
+      "a",
+      "dev",
+      "not-in-the-list",
+      "2026-10-01T09:00:00Z",
+      "2026-10-01T11:00:00Z",
+    ]);
+    expect(lastFilters()).toEqual({});
+  });
+});
+
 describe("trace column URL parsing", () => {
   it("defaults to Conversation, drops unknown columns, and reads empty as none", () => {
     expect(parseTraceColumns(new URLSearchParams(""))).toEqual(["conversation"]);
     expect(parseTraceColumns(new URLSearchParams("columns=model,bogus,conversation"))).toEqual([
+      "conversation",
+    ]);
+    expect(parseTraceColumns(new URLSearchParams("columns=conversation,traceId"))).toEqual([
+      "traceId",
       "conversation",
     ]);
     expect(parseTraceColumns(new URLSearchParams("columns="))).toEqual([]);
@@ -340,6 +404,7 @@ describe("TracesComponent columns and cap notice", () => {
 
     openColumnsMenu();
     expect(screen.getAllByRole("menuitemcheckbox").map((el) => el.textContent)).toEqual([
+      "Trace ID",
       "Conversation",
     ]);
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Conversation" }));
@@ -347,6 +412,30 @@ describe("TracesComponent columns and cap notice", () => {
     expect(currentParams().get("columns")).toBe("");
     expect(currentParams().get("timeRange")).toBe("1h");
     expect(columnHeader("Conversation")).not.toBeInTheDocument();
+  });
+
+  it("hides the Trace ID column by default and shows it from the menu", () => {
+    renderPage("?timeRange=1h");
+
+    expect(columnHeader("Trace ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("t-err")).not.toBeInTheDocument();
+
+    openColumnsMenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Trace ID" }));
+
+    expect(currentParams().get("columns")).toBe("traceId,conversation");
+    expect(columnHeader("Trace ID")).toBeInTheDocument();
+    expect(screen.getByText("t-err")).toBeInTheDocument();
+    expect(screen.getByText("t-ok")).toBeInTheDocument();
+  });
+
+  it("copies the trace ID from its cell without opening the trace", async () => {
+    renderPage("?timeRange=1h&columns=traceId");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy trace ID t-ok" }));
+
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith("t-ok"));
+    expect(currentParams().get("selectedTrace")).toBeNull();
   });
 
   it("reads an older columns link that still lists model", () => {
