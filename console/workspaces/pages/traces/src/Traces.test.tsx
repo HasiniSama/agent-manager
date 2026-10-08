@@ -715,6 +715,11 @@ describe("TracesComponent infinite scroll", () => {
   // Lets a resolved loadMore result reach the table.
   const settleLoad = () => act(async () => {});
 
+  it("asks the hook to keep loaded pages through focus and reconnect", () => {
+    renderPage();
+    expect(mockUseTraceList.mock.lastCall?.[9]?.paged).toBe(true);
+  });
+
   it("loads the next page once when the sentinel comes into view", () => {
     hookOverrides = { hasMore: true };
     renderPage();

@@ -216,7 +216,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     customStartTime,
     customEndTime,
-    { filters },
+    { filters, paged: true },
   );
 
   // Resolved time range used by the TraceDetails drawer.

@@ -144,6 +144,8 @@ export interface TraceListOptions {
   filters?: TraceFilters;
   /** Fill models on every trace; costs the server one extra upstream call per trace. */
   includeModels?: boolean;
+  /** Turns off focus and reconnect refetches, which would drop pages loaded with loadMore. */
+  paged?: boolean;
 }
 
 /** Trace list for the window and filters, with cursor paging, newer-trace polling and scores. */
@@ -263,8 +265,8 @@ export function useTraceList(
       return { ...res, traces: applyScores(res.traces, scoreMap), fetchedRange: range };
     },
     enabled: (options?.enabled ?? true) && !!scopeParams && (hasCustomRange || !!timeRange),
-    // A refetch replaces the list, so a focus refetch would drop pages loaded with loadMore.
-    refetchOnWindowFocus: false,
+    // A focus or reconnect refetch replaces the list and drops pages loaded with loadMore.
+    ...(options?.paged && { refetchOnWindowFocus: false, refetchOnReconnect: false }),
   });
 
   useEffect(() => {

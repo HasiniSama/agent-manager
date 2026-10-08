@@ -18,7 +18,7 @@
 
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   TraceFilters,
@@ -182,23 +182,47 @@ describe("useTraceList cursor paging", () => {
     expect(result.current).not.toHaveProperty("isLoadingNewer");
   });
 
-  it("keeps loaded pages when the window loses and regains focus", async () => {
+  const blips: [string, () => void][] = [
+    ["the window loses and regains focus", () => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    }],
+    ["the network drops and reconnects", () => {
+      onlineManager.setOnline(false);
+      onlineManager.setOnline(true);
+    }],
+  ];
+
+  it.each(blips)("keeps loaded pages when %s", async (_, blip) => {
     mockList
       .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")], { nextCursor: "c1" }))
       .mockResolvedValueOnce(page([trace("t2", "2026-10-02T09:40:00Z")]));
 
-    const result = renderTraceList();
+    const result = renderTraceList({ paged: true });
     await waitFor(() => result.current.traceList?.traces.length === 1);
     await act(() => result.current.loadMore());
 
     await act(async () => {
-      focusManager.setFocused(false);
-      focusManager.setFocused(true);
+      blip();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     expect(mockList).toHaveBeenCalledTimes(2);
     expect(result.current.traceList?.traces.map((t) => t.traceId)).toEqual(["t1", "t2"]);
+  });
+
+  it.each(blips)("refetches when %s for a caller that doesn't page", async (_, blip) => {
+    mockList
+      .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")]))
+      .mockResolvedValueOnce(page([trace("t9", "2026-10-02T09:55:00Z")]));
+
+    const result = renderTraceList();
+    await waitFor(() => result.current.traceList?.traces.length === 1);
+
+    act(() => blip());
+
+    await waitFor(() => result.current.traceList?.traces[0]?.traceId === "t9");
+    expect(mockList).toHaveBeenCalledTimes(2);
   });
 
   it("reports hasMore false and skips loadMore when nextCursor is absent", async () => {
