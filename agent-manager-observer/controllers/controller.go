@@ -267,10 +267,7 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 	walkCtx, cancel := c.budget(ctx, budget)
 	defer cancel()
 
-	// A model filter needs Models filled.
-	if params.Filters.Model != "" {
-		params.Include.Models = true
-	}
+	params.Include = impliedInclude(params.Include, params.Filters)
 	cur := params.Cursor
 	asc := params.SortOrder == "asc"
 	summaryOnly := params.Filters.SummaryOnly()
@@ -503,13 +500,15 @@ const (
 
 // enrichTraces fetches root spans and enriches traces in parallel, returning
 // overviews in input order. Traces whose root fails matchesStatus, or whose
-// conversation ID or models fail their filter, are skipped before the rest of
-// the cascade.
+// conversation ID, tools or models fail their filter, are skipped before the
+// rest of the cascade.
 // Traces that couldn't be read are skipped too and returned as failed: no
-// root span ID, a failed root fetch, or a failed fetch a model, minTokens or
-// conversationId filter needs.
+// root span ID, a failed root fetch, or a failed fetch a model, tool, minTokens
+// or conversationId filter needs.
 // When listSpansFirst holds, the root comes from the trace's attribute span
-// list instead of its own fetch.
+// list instead of its own fetch. With a tool filter and no root filter, the
+// span list comes before the root and a trace whose tools fail the filter
+// never fetches its root.
 func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) (overviews []opensearch.TraceOverview, failed []string) {
 	log := logger.GetLogger(ctx)
 
@@ -549,8 +548,23 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 
 			var spans []observer.SpanInfo
 			var root *opensearch.Span
-			if c.listSpansFirst(params, t) {
+			toolsFirst := c.toolListFirst(params, t)
+			switch {
+			case c.listSpansFirst(params, t):
 				spans, root = c.rootFromSpanList(ctx, params, t, innerSem)
+			case toolsFirst:
+				spans = c.plainSpanList(ctx, params, t, innerSem)
+			}
+			if toolsFirst {
+				// A nil list is a failed fetch, already warned about.
+				if spans == nil {
+					results[idx] = result{verdict: enrichFailed}
+					return
+				}
+				if tools, failedTools := toolsFromSpanList(spans); !matchesTools(tools, failedTools, params.Filters) {
+					results[idx] = result{verdict: enrichRejected}
+					return
+				}
 			}
 			if root == nil {
 				innerSem <- struct{}{}
@@ -636,6 +650,34 @@ func (c *TracingController) listSpansFirst(params TraceQueryParams, t observer.T
 		params.Filters.Status == TraceStatusAny && params.Filters.ConversationID == ""
 }
 
+// toolListFirst reports whether a tool filter judges t on its span list before
+// its root is fetched. Root filters keep the root first, as for listSpansFirst,
+// and so does a model filter that rejects t at its root for its span count.
+func (c *TracingController) toolListFirst(params TraceQueryParams, t observer.TraceInfo) bool {
+	return params.Filters.hasToolFilter() &&
+		t.SpanCount <= maxToolListSpans &&
+		params.Filters.Status == TraceStatusAny && params.Filters.ConversationID == "" &&
+		(params.Filters.Model == "" || t.SpanCount <= skipLeafAggregationSpanCountThreshold)
+}
+
+// plainSpanList fetches t's span list without attributes. It is nil when the
+// fetch fails.
+func (c *TracingController) plainSpanList(
+	ctx context.Context,
+	params TraceQueryParams,
+	t observer.TraceInfo,
+	fetchSem chan struct{},
+) []observer.SpanInfo {
+	spans, ok := c.fetchTraceSpanSummaries(ctx, params, t, fetchSem, false)
+	switch {
+	case !ok:
+		return nil
+	case spans == nil:
+		return []observer.SpanInfo{}
+	}
+	return spans
+}
+
 // rootFromSpanList fetches t's attribute span list and builds the root from it.
 // root is nil when the root isn't in the list; spans is nil when the fetch fails.
 func (c *TracingController) rootFromSpanList(
@@ -707,7 +749,10 @@ func (c *TracingController) rootFromSpanList(
 // names and statuses (toolsFromSpanList), for traces of at most
 // maxToolListSpans spans. They reuse the list the cascade reads; a trace with
 // nothing left to fetch fetches it without attributes. A failed fetch leaves
-// them nil and keeps the row.
+// them nil and keeps the row, unless a tool filter is set: then the verdict is
+// enrichFailed. With a tool filter, the verdict is enrichRejected as soon as the
+// tools rule the trace out, right after the list and before the model check
+// and steps 2 and 3.
 //
 // Token usage from traceloop.entity.output is used only when no step finds a
 // gen_ai.usage.* report.
@@ -754,9 +799,15 @@ func (c *TracingController) enrichTraceOverview(
 	if rootComplete && !modelsFromList && !conversationPending(conversationID, params.Filters) {
 		if toolsFromList {
 			if spans == nil {
-				spans, _ = c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, false)
+				var ok bool
+				if spans, ok = c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, false); !ok && params.Filters.hasToolFilter() {
+					return nil, nil, nil, nil, "", nil, nil, enrichFailed
+				}
 			}
 			tools, failedTools = toolsFromSpanList(spans)
+			if !matchesTools(tools, failedTools, params.Filters) {
+				return nil, nil, nil, nil, "", nil, nil, enrichRejected
+			}
 		}
 		return input, output, tokenUsage, nil, conversationID, tools, failedTools, enrichKept
 	}
@@ -766,7 +817,7 @@ func (c *TracingController) enrichTraceOverview(
 		var ok bool
 		spans, ok = c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, modelsFromList)
 		if !ok {
-			if rejectOnModel || params.Filters.MinTokens != nil || conversationPending(conversationID, params.Filters) {
+			if rejectOnModel || params.Filters.hasToolFilter() || params.Filters.MinTokens != nil || conversationPending(conversationID, params.Filters) {
 				return nil, nil, nil, nil, "", nil, nil, enrichFailed
 			}
 			return input, output, cmp.Or(tokenUsage, entityTokens), nil, conversationID, nil, nil, enrichKept
@@ -774,6 +825,9 @@ func (c *TracingController) enrichTraceOverview(
 	}
 	if toolsFromList {
 		tools, failedTools = toolsFromSpanList(spans)
+		if !matchesTools(tools, failedTools, params.Filters) {
+			return nil, nil, nil, nil, "", nil, nil, enrichRejected
+		}
 	}
 	// The list carries attributes exactly when modelsFromList holds.
 	if modelsFromList {

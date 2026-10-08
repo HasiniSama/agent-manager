@@ -69,7 +69,7 @@ paths:
         Uses the Observer Service instead of OpenSearch. No offset; use `limit` for page size.
 
         The filter parameters (`status`, `minDurationMs`, `minTokens`, `minSpanCount`, `model`,
-        `conversationId`) are optional and combine with AND. With any filter set, the server walks
+        `conversationId`, `tool`, `toolError`) are optional and combine with AND. With any filter set, the server walks
         the window in sort order until it has `limit` matches, the window runs out, it has examined
         500 traces, or it has searched for 20 seconds (`truncated` is then true, and `nextCursor`
         continues the search).
@@ -132,6 +132,8 @@ paths:
         - $ref: "#/components/parameters/minSpanCountFilter"
         - $ref: "#/components/parameters/modelFilter"
         - $ref: "#/components/parameters/conversationIdFilter"
+        - $ref: "#/components/parameters/toolFilter"
+        - $ref: "#/components/parameters/toolErrorFilter"
         - name: cursor
           in: query
           required: false
@@ -207,6 +209,8 @@ paths:
         - $ref: "#/components/parameters/minSpanCountFilter"
         - $ref: "#/components/parameters/modelFilter"
         - $ref: "#/components/parameters/conversationIdFilter"
+        - $ref: "#/components/parameters/toolFilter"
+        - $ref: "#/components/parameters/toolErrorFilter"
       responses:
         "200":
           description: Export payload
@@ -599,6 +603,37 @@ components:
         type: string
         maxLength: 256
         example: conv-42
+    toolFilter:
+      name: tool
+      in: query
+      required: false
+      description: |
+        Keep traces where any entry of `tools` contains this value, ignoring case. With
+        `toolError=true`, a failed tool (an entry of `failedTools`) must contain it, so
+        `tool=search_web&toolError=true` means "search_web failed". Implies `include=tools`,
+        so the server fills `tools` and `failedTools` on every trace and the request carries
+        that cost: a trace is judged on its span list, fetched without attributes before its
+        root, so a rejected trace costs one list call. Tools are read from span names only
+        (`execute_tool {name}`, `{name}.tool`). Traces above 200 spans have no `tools` and
+        never match.
+      schema:
+        type: string
+        maxLength: 256
+        example: search_web
+    toolErrorFilter:
+      name: toolError
+      in: query
+      required: false
+      description: |
+        `true` keeps traces with at least one failed tool, that is, `failedTools` is not
+        empty; empty or `false` sets no filter, and any other value returns 400. A tool
+        fails when a span with its name has OTel status error. When an MCP call fails, the
+        outer `execute_tool` span stays unset and the inner `.tool` span carries the error,
+        so the tool is reported as failed. With `tool` also set, the failed tool must match
+        it. Implies `include=tools`, with the cost and the 200-span cap described for `tool`.
+      schema:
+        type: string
+        enum: ["true", "false"]
 
   responses:
     BadRequest:

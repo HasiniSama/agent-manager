@@ -644,7 +644,25 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 	if err := controllers.CheckFilterValue("conversationId", f.ConversationID); err != nil {
 		return controllers.TraceFilters{}, err
 	}
+	f.Tool = query.Get("tool")
+	if err := controllers.CheckFilterValue("tool", f.Tool); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.ToolError, err = parseToolError(query.Get("toolError")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
 	return f, nil
+}
+
+// parseToolError accepts an empty value or "false" (unset) and "true".
+func parseToolError(s string) (bool, error) {
+	switch s {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	}
+	return false, fmt.Errorf("toolError must be 'true'")
 }
 
 // parseMinThreshold parses an optional non-negative integer filter.

@@ -194,6 +194,54 @@ var costGoldens = map[string]costRow{
 		Order:  "trace-0000: root",
 		SHA256: "9243570a8b8ef69d4033514efeca0a4dc9d58117fc731bedfaa9955ea5a74340",
 	},
+	"list toolError=true (3.3%)": {
+		Calls:  kindCounts{Traces: 4, Root: 10, Detail: 30, Spans: 300, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 156182, Root: 2880, Detail: 9633, Spans: 241190, AttrSpans: 0},
+		Order:  "trace-0000: spans, root, detail×3",
+		SHA256: "ba9e979d02f4e7aacccf745392155e6d5e8c0b9329dd0d68c1fc312d6cd2dc80",
+	},
+	"list tool=search_issues (33%)": {
+		Calls:  kindCounts{Traces: 1, Root: 17, Detail: 51, Spans: 50, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 10583, Root: 4686, Detail: 16450, Spans: 40329, AttrSpans: 0},
+		Order:  "trace-0000: spans, root, detail×3",
+		SHA256: "54c774a173c39148d1b3b80a2b4a4b7550cc6bcb66baf0e61d85ef70a9e9fb33",
+	},
+	"list tool=search_issues toolError=true": {
+		Calls:  kindCounts{Traces: 4, Root: 10, Detail: 30, Spans: 300, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 156182, Root: 2880, Detail: 9633, Spans: 241190, AttrSpans: 0},
+		Order:  "trace-0000: spans, root, detail×3",
+		SHA256: "ba9e979d02f4e7aacccf745392155e6d5e8c0b9329dd0d68c1fc312d6cd2dc80",
+	},
+	"list toolError=true status=error": {
+		Calls:  kindCounts{Traces: 5, Root: 500, Detail: 27, Spans: 25, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 280417, Root: 137700, Detail: 8670, Spans: 20728, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×3",
+		SHA256: "585cb33ef8fe4c61565f763e9c02578196d0eb9ff18c13303080bf45b1049a7b",
+	},
+	"list toolError=true model=gpt-4o-mini": {
+		Calls:  kindCounts{Traces: 4, Root: 0, Detail: 0, Spans: 0, AttrSpans: 400},
+		Bytes:  kindCounts{Traces: 156182, Root: 0, Detail: 0, Spans: 0, AttrSpans: 545372},
+		Order:  "trace-0030: attrSpans",
+		SHA256: "2a27bdd68537d776285b7094ef81f9988bef8d08e974073cfb5fc0fa111d1e49",
+	},
+	"list toolError=true root-complete": {
+		Calls:  kindCounts{Traces: 4, Root: 10, Detail: 0, Spans: 300, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 156182, Root: 5030, Detail: 0, Spans: 241190, AttrSpans: 0},
+		Order:  "trace-0000: spans, root",
+		SHA256: "9aa387b71aa7d70ab863178217ab23950a10089b4fe980574eeb433ca9b64d9c",
+	},
+	"list toolError=true over cap": {
+		Calls:  kindCounts{Traces: 5, Root: 0, Detail: 0, Spans: 0, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 283125, Root: 0, Detail: 0, Spans: 0, AttrSpans: 0},
+		Order:  "trace-0000: none",
+		SHA256: "6c7bbb26b277bf83e6f0c5457c7b719d0d10b753c0f117064d18cdf13bf4d577",
+	},
+	"export toolError=true": {
+		Calls:  kindCounts{Traces: 4, Root: 10, Detail: 30, Spans: 300, AttrSpans: 10},
+		Bytes:  kindCounts{Traces: 156182, Root: 2880, Detail: 9633, Spans: 241190, AttrSpans: 18053},
+		Order:  "trace-0000: spans, root, detail×3, attrSpans",
+		SHA256: "468cdc1ba68cdd2c8ce59e58d2ab226b942beea35a23f4e762265153e0009b44",
+	},
 	// golden:end
 }
 
@@ -480,6 +528,14 @@ func costScenarios() []costScenario {
 		{name: "list root-complete include=tools", fixture: costRootCompleteFake, params: includeTools(false)},
 		{name: "list root-complete include=models,tools", fixture: costRootCompleteFake, params: includeTools(true)},
 		{name: "list root-complete over cap include=tools", fixture: costOverCapFake, params: includeTools(false)},
+		{name: "list toolError=true (3.3%)", params: withFilters(TraceFilters{ToolError: true})},
+		{name: "list tool=search_issues (33%)", params: withFilters(TraceFilters{Tool: "search_issues"})},
+		{name: "list tool=search_issues toolError=true", params: withFilters(TraceFilters{Tool: "search_issues", ToolError: true})},
+		{name: "list toolError=true status=error", params: withFilters(TraceFilters{ToolError: true, Status: TraceStatusError})},
+		{name: "list toolError=true model=gpt-4o-mini", params: withFilters(TraceFilters{ToolError: true, Model: "gpt-4o-mini"})},
+		{name: "list toolError=true root-complete", fixture: costRootCompleteFake, params: withFilters(TraceFilters{ToolError: true})},
+		{name: "list toolError=true over cap", fixture: costOverCapFake, params: withFilters(TraceFilters{ToolError: true})},
+		{name: "export toolError=true", export: true, params: withFilters(TraceFilters{ToolError: true})},
 	}
 }
 

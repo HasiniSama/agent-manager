@@ -126,6 +126,11 @@ Filters run as early as possible, so a rejected trace stays cheap:
 - **`status`** — `matchesStatus`, right after the root fetch. A rejected trace costs one call.
 - **`conversationId`** — the ID comes from the root, then the child and leaf spans (`ExtractConversationID`). Without the filter only spans enrichment reads anyway are checked, so it costs no extra call. With it, a root with another ID rejects the trace after one call. A root without one, even a complete one, leaves the trace open: another ID on the child rejects it before the leaf fetches, and a trace with no ID is read in full and left out. A failed read the ID depends on (the span list, the child, or a leaf ahead of the first ID) lists the trace as failed, not as having no ID.
 - **`model`** — `matchesModel`, as soon as the span list gives the models, before the child and leaf fetches. Traces over 100 spans have no models, so they're rejected after the root fetch.
+- **`tool`, `toolError`** — `matchesTools` on the tools from the span list's names and OTel statuses, never attributes. Both imply `include=tools`, and with both set, a failed tool must match `tool`.
+  - Traces over `maxToolListSpans` (200) have no tools, so `matchesSummary` rejects them before any fetch.
+  - With no `status` or `conversationId` filter, the span list is fetched before the root, without attributes unless `listSpansFirst` already wants them. A rejected trace costs one list call and no root fetch; only matches fetch the root and run the cascade.
+  - With `status` or `conversationId`, the root comes first, then the list.
+  - A failed list fetch lists the trace as failed.
 
 The walk stops at the 500-trace examine cap or after **20 s** (`listLookBackBudget`), returning `truncated` and a `nextCursor`. The budget doesn't cut the first chunk; only the **25 s** request deadline (`requestTimeout`) does, failing the request. After it, the walk's fetches run under the budget, which cancels those in flight without a warning; the walk then stops before the chunk they belong to.
 

@@ -78,6 +78,10 @@ export interface TraceFilters {
   /** Case-insensitive substring of any entry in TraceOverview.models. Implies includeModels. */
   model?: string;
   conversationId?: string;
+  /** Case-insensitive substring of any entry in TraceOverview.tools. */
+  tool?: string;
+  /** Only traces with a failed tool, that is, a non-empty TraceOverview.failedTools. */
+  toolError?: boolean;
 }
 
 // Keep Trace as an alias for backward compatibility
