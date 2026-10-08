@@ -25,7 +25,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/controllers"
 	"github.com/wso2/agent-manager/agent-manager-observer/middleware/logger"
@@ -621,14 +620,10 @@ func parseInclude(raw []string) (controllers.Include, error) {
 func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 	var f controllers.TraceFilters
 
-	switch status := controllers.TraceStatusFilter(query.Get("status")); status {
-	case controllers.TraceStatusAny, controllers.TraceStatusError, controllers.TraceStatusOK:
-		f.Status = status
-	default:
-		return controllers.TraceFilters{}, fmt.Errorf("status must be 'error' or 'ok'")
-	}
-
 	var err error
+	if f.Status, err = controllers.ParseTraceStatus(query.Get("status")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
 	if f.MinDurationMs, err = parseMinThreshold("minDurationMs", query.Get("minDurationMs")); err != nil {
 		return controllers.TraceFilters{}, err
 	}
@@ -639,21 +634,15 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 		return controllers.TraceFilters{}, err
 	}
 
-	if f.Model, err = parseFilterValue("model", query.Get("model")); err != nil {
+	f.Model = query.Get("model")
+	if err := controllers.CheckFilterValue("model", f.Model); err != nil {
 		return controllers.TraceFilters{}, err
 	}
-	if f.ConversationID, err = parseFilterValue("conversationId", query.Get("conversationId")); err != nil {
+	f.ConversationID = query.Get("conversationId")
+	if err := controllers.CheckFilterValue("conversationId", f.ConversationID); err != nil {
 		return controllers.TraceFilters{}, err
 	}
 	return f, nil
-}
-
-// parseFilterValue rejects a string filter longer than MaxFilterValueLen characters.
-func parseFilterValue(name, s string) (string, error) {
-	if utf8.RuneCountInString(s) > controllers.MaxFilterValueLen {
-		return "", fmt.Errorf("%s must be at most %d characters", name, controllers.MaxFilterValueLen)
-	}
-	return s, nil
 }
 
 // parseMinThreshold parses an optional non-negative integer filter.
@@ -662,8 +651,11 @@ func parseMinThreshold(name, s string) (*int64, error) {
 		return nil, nil
 	}
 	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || v < 0 {
+	if err != nil {
 		return nil, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	if err := controllers.CheckMinThreshold(name, v); err != nil {
+		return nil, err
 	}
 	return &v, nil
 }

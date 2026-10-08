@@ -17,10 +17,12 @@
 package controllers
 
 import (
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wso2/agent-manager/agent-manager-observer/observer"
 	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
@@ -47,6 +49,32 @@ type TraceFilters struct {
 	MinSpanCount   *int64
 	Model          string
 	ConversationID string
+}
+
+// ParseTraceStatus accepts an empty status, "error" or "ok".
+func ParseTraceStatus(s string) (TraceStatusFilter, error) {
+	switch status := TraceStatusFilter(s); status {
+	case TraceStatusAny, TraceStatusError, TraceStatusOK:
+		return status, nil
+	default:
+		return TraceStatusAny, fmt.Errorf("status must be 'error' or 'ok'")
+	}
+}
+
+// CheckMinThreshold rejects a negative threshold filter.
+func CheckMinThreshold(name string, v int64) error {
+	if v < 0 {
+		return fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return nil
+}
+
+// CheckFilterValue rejects a string filter longer than MaxFilterValueLen characters.
+func CheckFilterValue(name, s string) error {
+	if utf8.RuneCountInString(s) > MaxFilterValueLen {
+		return fmt.Errorf("%s must be at most %d characters", name, MaxFilterValueLen)
+	}
+	return nil
 }
 
 // IsZero reports whether no filter is set.
