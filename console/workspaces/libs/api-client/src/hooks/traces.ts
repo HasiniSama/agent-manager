@@ -199,6 +199,9 @@ export function useTraceList(
   // Server cursor for the next page in sort order; loadMore sends it with the unchanged window.
   const nextCursorRef = useRef<string | undefined>(undefined);
 
+  // Bumped on each reset and new first page; a loadMore from an earlier list leaves state alone.
+  const listGenerationRef = useRef(0);
+
   const queryResult = useApiQuery({
     queryKey: [
       "trace-list",
@@ -261,16 +264,20 @@ export function useTraceList(
   });
 
   useEffect(() => {
+    listGenerationRef.current += 1;
     setTraceList(null);
     setLoadError(null);
+    setIsLoadingMore(false);
     lastFetchedRangeRef.current = null;
     nextCursorRef.current = undefined;
   }, [scopeParams, timeRange, customStartTime, customEndTime]);
 
   useEffect(() => {
     if (!queryResult.data) return;
+    listGenerationRef.current += 1;
     setTraceList(queryResult.data);
     setLoadError(null);
+    setIsLoadingMore(false);
     nextCursorRef.current = queryResult.data.nextCursor;
     // Restore the range ref when React Query serves from cache without re-running
     // queryFn (which is where the ref is normally set after a live fetch).
@@ -342,14 +349,17 @@ export function useTraceList(
     const cursor = nextCursorRef.current;
     if (!cursor || isLoadingMore) return;
 
+    const generation = listGenerationRef.current;
     setLoadError(null);
     setIsLoadingMore(true);
     try {
       await fetchCursorPage(cursor);
     } catch (err) {
-      setLoadError(err instanceof Error ? err : new Error(String(err)));
+      if (generation === listGenerationRef.current) {
+        setLoadError(err instanceof Error ? err : new Error(String(err)));
+      }
     } finally {
-      setIsLoadingMore(false);
+      if (generation === listGenerationRef.current) setIsLoadingMore(false);
     }
   }, [isLoadingMore, fetchCursorPage]);
 

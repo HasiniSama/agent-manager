@@ -331,14 +331,16 @@ describe("useTraceList cursor paging", () => {
     expect(result.current.traceList?.traces.map((t) => t.traceId)).toEqual(["t1", "t2"]);
   });
 
-  it.each([
-    ["a filter change", (result: { setOptions: (o: TraceListOptions) => void }) => {
+  const listResets: [string, (result: ReturnType<typeof renderTraceList>) => unknown][] = [
+    ["a filter change", (result) => {
       act(() => result.setOptions({ filters: { status: "error" } }));
     }],
-    ["Refresh", async (result: { current: HookResult }) => {
+    ["Refresh", async (result) => {
       await act(() => result.current.refetch());
     }],
-  ])("clears loadError when %s resets the list", async (_, reset) => {
+  ];
+
+  it.each(listResets)("clears loadError when %s resets the list", async (_, reset) => {
     mockList
       .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")], { nextCursor: "c1" }))
       .mockRejectedValueOnce(new Error("upstream down"))
@@ -352,6 +354,46 @@ describe("useTraceList cursor paging", () => {
     await reset(result);
     await waitFor(() => result.current.traceList?.traces[0]?.traceId === "t9");
     expect(result.current.loadError).toBeNull();
+  });
+
+  it.each(listResets)("lets the new list page when %s lands mid-load", async (_, reset) => {
+    let rejectOld: (err: Error) => void = () => undefined;
+    let resolveNew: (res: TraceListResponse) => void = () => undefined;
+    mockList
+      .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")], { nextCursor: "c1" }))
+      .mockImplementationOnce(() => new Promise((_res, reject) => { rejectOld = reject; }))
+      .mockResolvedValueOnce(page([trace("t9", "2026-10-02T09:55:00Z")], { nextCursor: "c9" }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve; }));
+
+    const result = renderTraceList();
+    await waitFor(() => result.current.traceList?.traces.length === 1);
+    let oldLoad: Promise<unknown> = Promise.resolve();
+    act(() => { oldLoad = result.current.loadMore(); });
+    expect(result.current.isLoadingMore).toBe(true);
+
+    await reset(result);
+    await waitFor(() => result.current.traceList?.traces[0]?.traceId === "t9");
+    expect(result.current.isLoadingMore).toBe(false);
+
+    // The new list pages while the old request is still in flight.
+    let newLoad: Promise<unknown> = Promise.resolve();
+    act(() => { newLoad = result.current.loadMore(); });
+    expect(mockList.mock.calls[3][0].cursor).toBe("c9");
+
+    await act(async () => {
+      rejectOld(new Error("upstream down"));
+      await oldLoad;
+    });
+    expect(result.current.loadError).toBeNull();
+    expect(result.current.isLoadingMore).toBe(true);
+
+    await act(async () => {
+      resolveNew(page([trace("t8", "2026-10-02T09:45:00Z")]));
+      await newLoad;
+    });
+    expect(result.current.isLoadingMore).toBe(false);
+    expect(result.current.loadError).toBeNull();
+    expect(result.current.traceList?.traces.map((t) => t.traceId)).toEqual(["t9", "t8"]);
   });
 
   it("sends includeModels and filters on the first page", async () => {
