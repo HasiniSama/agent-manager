@@ -53,6 +53,8 @@ export interface TraceOverview {
   output?: string;
   models?: string[];
   conversationId?: string;
+  tools?: string[];
+  failedTools?: string[];
   score?: TraceScore | null;
 }
 

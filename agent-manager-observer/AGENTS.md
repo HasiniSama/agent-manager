@@ -114,6 +114,10 @@ All in `controllers/controller.go`.
   - Chain and leaf steps read their spans from it instead of calling `GetSpanDetails`.
   - The root comes from it too, unless a root filter is set — so a trace costs one span-list call.
   - The leaf cap still applies, so a row's tokens match with the flag on or off.
+- With `include=tools`, at most **200 spans** (`maxToolListSpans`), `tools` and `failedTools` come from the span list (`toolsFromSpanList`):
+  - It reuses the list the cascade reads. A root-complete trace fetches it without attributes, so it costs one call; other traces cost none.
+  - It reads only span names (`ToolNameFromSpanName`: `execute_tool {name}`, `{name}.tool`) and the OTel status, never attributes.
+  - Limitation: spans named only after the tool (OpenInference, Logfire) aren't recognised, and a bare `execute_tool` names no tool.
 
 ### Filtered list
 

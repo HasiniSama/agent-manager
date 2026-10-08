@@ -158,6 +158,42 @@ var costGoldens = map[string]costRow{
 		Order:  "trace-0003: attrSpans×2",
 		SHA256: "f05af5e03842eedec552c40725fd0546d18f6410ac96243af101d13ecd5c900b",
 	},
+	"list include=tools": {
+		Calls:  kindCounts{Traces: 1, Root: 10, Detail: 30, Spans: 10, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 2303, Root: 2768, Detail: 9658, Spans: 8301, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×3",
+		SHA256: "4b7a50d5cc450be2596216cf92f8b40c73c29d8e375d44acb75ee20b1c47ef33",
+	},
+	"list include=models,tools": {
+		Calls:  kindCounts{Traces: 1, Root: 0, Detail: 0, Spans: 0, AttrSpans: 10},
+		Bytes:  kindCounts{Traces: 2303, Root: 0, Detail: 0, Spans: 0, AttrSpans: 14009},
+		Order:  "trace-0000: attrSpans",
+		SHA256: "4b7a50d5cc450be2596216cf92f8b40c73c29d8e375d44acb75ee20b1c47ef33",
+	},
+	"list root-complete": {
+		Calls:  kindCounts{Traces: 1, Root: 10, Detail: 0, Spans: 0, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 2303, Root: 4918, Detail: 0, Spans: 0, AttrSpans: 0},
+		Order:  "trace-0000: root",
+		SHA256: "9c49c45cc97ab2e6821a325a963b74f118e6958312f408404a5250190fe5a23c",
+	},
+	"list root-complete include=tools": {
+		Calls:  kindCounts{Traces: 1, Root: 10, Detail: 0, Spans: 10, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 2303, Root: 4918, Detail: 0, Spans: 8301, AttrSpans: 0},
+		Order:  "trace-0000: root, spans",
+		SHA256: "0e4625783fd9c82a222d96d8520d951b7a59f8d405140e6bf040f44bf91ad7b1",
+	},
+	"list root-complete include=models,tools": {
+		Calls:  kindCounts{Traces: 1, Root: 0, Detail: 0, Spans: 0, AttrSpans: 10},
+		Bytes:  kindCounts{Traces: 2303, Root: 0, Detail: 0, Spans: 0, AttrSpans: 16159},
+		Order:  "trace-0000: attrSpans",
+		SHA256: "03ea4ea487736ecd1753489ab15cc370dcc35556620364699f9d012ae8cbcbd5",
+	},
+	"list root-complete over cap include=tools": {
+		Calls:  kindCounts{Traces: 1, Root: 10, Detail: 0, Spans: 0, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 2325, Root: 4918, Detail: 0, Spans: 0, AttrSpans: 0},
+		Order:  "trace-0000: root",
+		SHA256: "9243570a8b8ef69d4033514efeca0a4dc9d58117fc731bedfaa9955ea5a74340",
+	},
 	// golden:end
 }
 
@@ -438,6 +474,12 @@ func costScenarios() []costScenario {
 		{name: "export default limit=10", export: true},
 		{name: "export status=error", export: true, params: withFilters(TraceFilters{Status: TraceStatusError})},
 		{name: "export span fetch fails", export: true, fail: "trace-0003", orderTrace: "trace-0003"},
+		{name: "list include=tools", params: includeTools(false)},
+		{name: "list include=models,tools", params: includeTools(true)},
+		{name: "list root-complete", fixture: costRootCompleteFake},
+		{name: "list root-complete include=tools", fixture: costRootCompleteFake, params: includeTools(false)},
+		{name: "list root-complete include=models,tools", fixture: costRootCompleteFake, params: includeTools(true)},
+		{name: "list root-complete over cap include=tools", fixture: costOverCapFake, params: includeTools(false)},
 	}
 }
 

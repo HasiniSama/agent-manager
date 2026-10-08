@@ -184,6 +184,8 @@ type TraceOverview struct {
 	Output          interface{}  `json:"output,omitempty"`         // Output from root span (nil if not found)
 	Models          []string     `json:"models,omitempty"`         // Distinct model names across the trace's LLM spans, first-seen order
 	ConversationID  string       `json:"conversationId,omitempty"` // First conversation ID on the root or the spans enrichment read (ExtractConversationID)
+	Tools           []string     `json:"tools,omitempty"`          // Distinct tools named by the trace's tool spans, first-call order
+	FailedTools     []string     `json:"failedTools,omitempty"`    // The Tools with a span whose status is error
 }
 
 // TraceStatus represents the status of a trace

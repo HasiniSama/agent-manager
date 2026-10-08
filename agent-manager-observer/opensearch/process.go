@@ -2198,6 +2198,29 @@ func DetermineSpanKindFromName(name string) SpanType {
 	return SpanTypeUnknown
 }
 
+// ToolNameFromSpanName returns the tool a tool span's name carries: the text
+// after "execute_tool ", or the text before the last "."-segment. ok is true
+// when DetermineSpanKindFromName calls the span a tool; tool may be empty.
+func ToolNameFromSpanName(name string) (tool string, ok bool) {
+	if DetermineSpanKindFromName(name) != SpanTypeTool {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(name)
+	const prefix = "execute_tool"
+	if len(trimmed) >= len(prefix) && strings.EqualFold(trimmed[:len(prefix)], prefix) {
+		rest := trimmed[len(prefix):]
+		if !strings.HasPrefix(rest, " ") {
+			return "", true
+		}
+		return strings.TrimSpace(rest), true
+	}
+	i := strings.LastIndexByte(trimmed, '.')
+	if i < 0 {
+		return "", true
+	}
+	return strings.TrimSpace(trimmed[:i]), true
+}
+
 func hasLLMAttributes(attrs map[string]interface{}) bool {
 	// Check for gen_ai.operation.name (as requested)
 	if opName, ok := attrs["gen_ai.operation.name"].(string); ok {

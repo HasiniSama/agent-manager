@@ -608,8 +608,10 @@ func parseInclude(raw []string) (controllers.Include, error) {
 			case "":
 			case "models":
 				include.Models = true
+			case "tools":
+				include.Tools = true
 			default:
-				return controllers.Include{}, fmt.Errorf("invalid include value %q: must be one of 'models'", v)
+				return controllers.Include{}, fmt.Errorf("invalid include value %q: must be one of 'models', 'tools'", v)
 			}
 		}
 	}

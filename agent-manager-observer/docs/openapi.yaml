@@ -117,11 +117,15 @@ paths:
               inline attributes. It adds one span-list call for traces that otherwise
               need none, and makes the span-list call heavier for the rest. Traces
               above the span-count threshold return no `models` either way.
+            - `tools`: read tool names and failures from the trace's span list,
+              without attributes. Most traces list their spans anyway, so it adds a
+              call only for traces whose root fills input, output and token usage by
+              itself. Traces above 200 spans return no `tools`, at no extra cost.
           schema:
             type: array
             items:
               type: string
-              enum: [models]
+              enum: [models, tools]
         - $ref: "#/components/parameters/traceStatusFilter"
         - $ref: "#/components/parameters/minDurationMsFilter"
         - $ref: "#/components/parameters/minTokensFilter"
@@ -903,6 +907,30 @@ components:
             number is returned as its decimal string. Absent when none of those spans
             carries one.
           example: conv-42
+        tools:
+          type: array
+          description: |
+            Distinct tools the trace called, in first-call order. Only present with
+            `include=tools`, for traces of at most 200 spans, and when a tool span
+            names a tool.
+            Read from span names only: `execute_tool {name}` (OTel GenAI, Traceloop
+            LangGraph, Strands, Google ADK) and `{name}.tool` (Traceloop, its MCP
+            instrumentation and the OpenAI Agents SDK); also `.tools`, `.function` and
+            `.functions`. A span named only after the tool, as OpenInference and
+            Logfire name them, isn't recognised, and a bare `execute_tool` names no tool.
+          items:
+            type: string
+          example: ["search_issues", "check_system_status"]
+        failedTools:
+          type: array
+          description: |
+            The entries of `tools` with at least one span whose OTel status is error.
+            Failure attributes such as `error.type` aren't read, so a tool error that
+            leaves the status unset doesn't count. Present under the same conditions
+            as `tools`, and absent when no tool failed.
+          items:
+            type: string
+          example: ["search_issues"]
 
     TraceOverviewListResponse:
       type: object
