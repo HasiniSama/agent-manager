@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wso2/agent-manager/agent-manager-observer/observer"
 	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
 )
 
@@ -193,6 +194,90 @@ func TestExportTraces_SelectsSameTracesAsList(t *testing.T) {
 					resp.LookedBackTo, resp.Truncated, list.LookedBackTo, list.Truncated)
 			}
 		})
+	}
+}
+
+// withChildError adds a failed tool span under trace i's chain, below its unset root.
+func withChildError(fake *fakeObserverClient, i int) *fakeObserverClient {
+	traceID := fmt.Sprintf("trace-%04d", i)
+	tool := observer.SpanInfo{
+		SpanID: fmt.Sprintf("tool-%04d", i), SpanName: "search_issues.tool", ParentSpanID: fmt.Sprintf("chain-%04d", i),
+		StartTime:  fake.traces[i].StartTime,
+		Status:     &observer.SpanStatus{Code: "error", Message: "failed to search issues"},
+		Attributes: map[string]interface{}{"error.type": "tool_error"},
+	}
+	spans := fake.spansByTrace[traceID]
+	fake.spansByTrace[traceID] = slices.Insert(spans, len(spans)-1, tool) // the root stays last
+	fake.traces[i].SpanCount++
+	return fake
+}
+
+// withEntityOutputTokens leaves trace i's 500 tokens only in its chain's traceloop.entity.output.
+func withEntityOutputTokens(fake *fakeObserverClient, i int) *fakeObserverClient {
+	for _, s := range fake.spansByTrace[fmt.Sprintf("trace-%04d", i)] {
+		delete(s.Attributes, "gen_ai.usage.input_tokens")
+		delete(s.Attributes, "gen_ai.usage.output_tokens")
+		if s.SpanName == "LangGraph.workflow" {
+			s.Attributes["traceloop.entity.output"] = fmt.Sprintf(
+				`{"outputs":{"messages":[{"kwargs":{"content":"out %d","usage_metadata":{"input_tokens":480,"output_tokens":20}}}]}}`, i)
+		}
+	}
+	return fake
+}
+
+// The status filter reads the root span in list and export alike, so a failed
+// child under an ok root is ok to both. The exported status counts every span.
+func TestExportTraces_StatusFilterReadsRoot(t *testing.T) {
+	tests := []struct {
+		status TraceStatusFilter
+		want   []string
+	}{
+		{status: TraceStatusOK, want: []string{"trace-0001", "trace-0002", "trace-0003", "trace-0004",
+			"trace-0006", "trace-0007", "trace-0008", "trace-0009"}},
+		{status: TraceStatusError, want: []string{"trace-0000", "trace-0005"}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			c := NewTracingController(withChildError(langGraphFake(10, errorEvery(5)), 3))
+			params := exportParams(100, TraceFilters{Status: tt.status})
+
+			listed, _, _ := traceIDs(c, t, params)
+			resp := mustExport(t, c, params)
+
+			if !slices.Equal(listed, tt.want) {
+				t.Errorf("list returned %v, want %v", listed, tt.want)
+			}
+			if got := exportedIDs(resp); !slices.Equal(got, tt.want) {
+				t.Errorf("export selected %v, want %v", got, tt.want)
+			}
+			for _, tr := range resp.Traces {
+				if tr.TraceID == "trace-0003" && (tr.Status == nil || tr.Status.ErrorCount != 1) {
+					t.Errorf("exported trace-0003 status = %+v, want errorCount 1", tr.Status)
+				}
+			}
+		})
+	}
+}
+
+// minTokens reads the list's token count in list and export alike, so a trace
+// with tokens only in traceloop.entity.output matches both. The exported
+// tokenUsage reads gen_ai.usage.* alone, so it stays empty.
+func TestExportTraces_MinTokensReadsListCount(t *testing.T) {
+	c := NewTracingController(withEntityOutputTokens(langGraphFake(10, noRootAttrs), 3))
+	params := exportParams(100, TraceFilters{MinTokens: ptr(100)})
+
+	listed, _, _ := traceIDs(c, t, params)
+	resp := mustExport(t, c, params)
+
+	want := []string{"trace-0003"}
+	if !slices.Equal(listed, want) {
+		t.Errorf("list returned %v, want %v", listed, want)
+	}
+	if got := exportedIDs(resp); !slices.Equal(got, want) {
+		t.Fatalf("export selected %v, want %v", got, want)
+	}
+	if tu := resp.Traces[0].TokenUsage; tu != nil {
+		t.Errorf("exported tokenUsage = %+v, want none", *tu)
 	}
 }
 

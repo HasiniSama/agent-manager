@@ -538,8 +538,10 @@ components:
       in: query
       required: false
       description: |
-        `error` keeps traces whose status reports at least one error; `ok` keeps the rest,
-        including traces with no status.
+        Reads the root span's status, as the list's `status` field does. `error` keeps traces
+        whose root span failed; `ok` keeps the rest, including traces with no status, so a
+        trace whose only failed span is a child counts as `ok`. An export's `status` field
+        counts errors across all spans, so a trace `status=ok` selects can export errors.
       schema:
         type: string
         enum: [error, ok]
@@ -557,8 +559,11 @@ components:
       in: query
       required: false
       description: |
-        Keep traces whose `tokenUsage.totalTokens` is at least this value. Traces without
-        `tokenUsage` never match, even with `minTokens=0`.
+        Keep traces whose `tokenUsage.totalTokens` on the list is at least this value. Traces
+        without `tokenUsage` never match, even with `minTokens=0`. The list's count falls back
+        to the usage in `traceloop.entity.output` when no span it reads reports
+        `gen_ai.usage.*`. An export's `tokenUsage` field reads only `gen_ai.usage.*`, so it can
+        differ from the count this filter read, or be absent.
       schema:
         type: integer
         format: int64
