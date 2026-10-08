@@ -25,6 +25,7 @@ import (
 	"github.com/wso2/agent-manager/cli/pkg/render"
 )
 
+// NewTracesCmd creates the `agent traces` command.
 func NewTracesCmd(f *cmdutil.Factory) *cobra.Command {
 	opts := &ListTracesOptions{
 		IO:           f.IOStreams,

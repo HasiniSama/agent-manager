@@ -227,6 +227,7 @@ func (in tracesInput) filters() (controllers.TraceFilters, error) {
 	}, nil
 }
 
+// listTraces handles list_traces: one page of trace overviews, filtered and paged by cursor.
 func listTraces(tracing *controllers.TracingController, authorize func(*gomcp.CallToolRequest) error) func(context.Context, *gomcp.CallToolRequest, listTracesInput) (*gomcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *gomcp.CallToolRequest, input listTracesInput) (*gomcp.CallToolResult, any, error) {
 		if err := authorize(req); err != nil {
@@ -251,6 +252,7 @@ func listTraces(tracing *controllers.TracingController, authorize func(*gomcp.Ca
 	}
 }
 
+// getTraces handles get_traces: full traces with their spans, filtered.
 func getTraces(tracing *controllers.TracingController, authorize func(*gomcp.CallToolRequest) error) func(context.Context, *gomcp.CallToolRequest, tracesInput) (*gomcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *gomcp.CallToolRequest, input tracesInput) (*gomcp.CallToolResult, any, error) {
 		if err := authorize(req); err != nil {

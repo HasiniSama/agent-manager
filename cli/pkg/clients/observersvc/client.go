@@ -108,6 +108,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, out 
 	return nil
 }
 
+// setCommonParams sets the scope, paging and filter params ListTraces and ExportTraces share.
 func setCommonParams(q url.Values, p *ListTracesParams) {
 	if p.Organization != "" {
 		q.Set("organization", p.Organization)
@@ -142,6 +143,7 @@ func setCommonParams(q url.Values, p *ListTracesParams) {
 	}
 }
 
+// setOptionalInt64 sets key only when val is non-nil.
 func setOptionalInt64(q url.Values, key string, val *int64) {
 	if val != nil {
 		q.Set(key, strconv.FormatInt(*val, 10))

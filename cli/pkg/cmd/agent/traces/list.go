@@ -107,11 +107,13 @@ func listParams(o *ListTracesOptions) *observersvc.ListTracesParams {
 	}
 }
 
+// hasFilters reports whether any filter flag is set.
 func hasFilters(o *ListTracesOptions) bool {
 	return o.Status != "" || o.MinDurationMs != nil || o.MinTokens != nil || o.MinSpans != nil ||
 		o.Model != "" || o.ConversationID != ""
 }
 
+// runListTraces lists trace overviews, filtered server-side.
 func runListTraces(ctx context.Context, o *ListTracesOptions) error {
 	if err := cmdutil.ValidatePathParam("agent name", o.AgentName); err != nil {
 		return render.Error(o.IO, o.Scope, err)
@@ -158,6 +160,7 @@ func truncatedNotice(hasCursor bool) string {
 	return "The list stops here: the remaining traces are more than 1,000 traces into this time range; narrow the time range to see more."
 }
 
+// renderOverviewTable prints traces as a table, with optional conversation and model columns.
 func renderOverviewTable(o *ListTracesOptions, traces []observersvc.TraceOverview, showConversation, showModels bool) error {
 	headers := []string{"trace id", "status", "duration", "spans", "tokens", "root span"}
 	if showConversation {
@@ -303,6 +306,7 @@ func applyCondition(o *ListTracesOptions) error {
 	return nil
 }
 
+// int64Ptr returns a pointer to v.
 func int64Ptr(v int64) *int64 { return &v }
 
 func matchesFullCondition(tr observersvc.FullTrace) bool {
@@ -335,6 +339,7 @@ func tokenCount(usage *observersvc.TokenUsage) string {
 	return fmt.Sprintf("%d", usage.TotalTokens)
 }
 
+// orDash returns s, or "-" when s is empty.
 func orDash(s string) string {
 	if s == "" {
 		return "-"
