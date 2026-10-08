@@ -59,7 +59,8 @@ interface TracesTableProps {
   lookedBackTo?: string;
   // The last loadMore failed; auto-loading stops until Retry.
   loadError?: Error | null;
-  onLoadMore?: () => void;
+  // Resolves to whether the page added rows, or undefined if the list moved on.
+  onLoadMore?: () => Promise<boolean | undefined>;
   onConversationSelect?: (conversationId: string) => void;
 }
 
@@ -191,29 +192,27 @@ export function TracesTable({
   const [sentinel, setSentinel] = useState<HTMLElement | null>(null);
   // Set when a load added no rows; auto-loading waits for a click.
   const [paused, setPaused] = useState(false);
-  // traces.length when the pending load was requested; null when none is pending.
-  const loadStartRef = useRef<number | null>(null);
-  const wasLoadingRef = useRef(isLoadingMore);
+  // A new object per load result, so the render that brings the load's rows can be told apart.
+  const [loadResult, setLoadResult] = useState<{ added: boolean } | null>(null);
+  const prevResultRef = useRef(loadResult);
   const prevTracesRef = useRef(traces);
 
-  const loadMore = useCallback(() => {
-    if (!onLoadMore) return;
-    loadStartRef.current = traces.length;
-    onLoadMore();
-  }, [onLoadMore, traces.length]);
+  // A load from a list that has since been reset resolves undefined and is ignored.
+  const loadMore = useCallback(async () => {
+    const added = await onLoadMore?.();
+    if (added !== undefined) setLoadResult({ added });
+  }, [onLoadMore]);
 
   // Pause when a finished load added no rows, resume when one did, and reset on a new list.
   useEffect(() => {
-    const start = loadStartRef.current;
-    if (start !== null && wasLoadingRef.current && !isLoadingMore) {
-      setPaused(traces.length === start);
-      loadStartRef.current = null;
-    } else if (start === null && traces !== prevTracesRef.current) {
+    if (loadResult !== prevResultRef.current) {
+      setPaused(!loadResult?.added);
+    } else if (traces !== prevTracesRef.current && !isLoadingMore) {
       setPaused(false);
     }
-    wasLoadingRef.current = isLoadingMore;
+    prevResultRef.current = loadResult;
     prevTracesRef.current = traces;
-  }, [traces, isLoadingMore]);
+  }, [traces, isLoadingMore, loadResult]);
 
   const autoLoad = hasMore && !isLoadingMore && !paused && !loadError;
 

@@ -712,6 +712,8 @@ describe("TracesComponent export warning", () => {
 
 describe("TracesComponent infinite scroll", () => {
   const loadMoreButton = () => screen.queryByRole("button", { name: "Load More Traces" });
+  // Lets a resolved loadMore result reach the table.
+  const settleLoad = () => act(async () => {});
 
   it("loads the next page once when the sentinel comes into view", () => {
     hookOverrides = { hasMore: true };
@@ -738,21 +740,24 @@ describe("TracesComponent infinite scroll", () => {
     expect(loadMore).not.toHaveBeenCalled();
   });
 
-  it("pauses on a page that adds no rows and resumes when a click adds some", () => {
+  it("pauses on a page that adds no rows and resumes when a click adds some", async () => {
     hookOverrides = { hasMore: true };
     const { rerenderPage } = renderPage("?status=error");
+    loadMore.mockResolvedValueOnce(false);
     scrollToSentinel();
     expect(loadMore).toHaveBeenCalledTimes(1);
 
-    // The page lands with no new matches.
+    // The page lands with no new matches; the merge still hands over a new array.
     hookOverrides = { hasMore: true, isLoadingMore: true };
     rerenderPage();
-    hookOverrides = { hasMore: true };
+    hookOverrides = { hasMore: true, data: { traces: [ALL[0]], totalCount: 1 } };
     rerenderPage();
+    await settleLoad();
     expect(loadMoreButton()).toBeInTheDocument();
     scrollToSentinel();
     expect(loadMore).toHaveBeenCalledTimes(1);
 
+    loadMore.mockResolvedValueOnce(true);
     fireEvent.click(loadMoreButton()!);
     expect(loadMore).toHaveBeenCalledTimes(2);
 
@@ -762,9 +767,40 @@ describe("TracesComponent infinite scroll", () => {
     rerenderPage();
     hookOverrides = { hasMore: true, data: { traces: grown, totalCount: grown.length } };
     rerenderPage();
+    await settleLoad();
     expect(loadMoreButton()).not.toBeInTheDocument();
     scrollToSentinel();
     expect(loadMore).toHaveBeenCalledTimes(3);
+  });
+
+  it("doesn't pause a list that resets while a page is loading", async () => {
+    hookOverrides = { hasMore: true };
+    const { rerenderPage } = renderPage("?status=error");
+    scrollToSentinel();
+    hookOverrides = { hasMore: true, isLoadingMore: true };
+    rerenderPage();
+
+    // A new list of the same length lands, and the old load resolves undefined.
+    hookOverrides = { hasMore: true, data: { traces: [makeTrace("t-other")], totalCount: 1 } };
+    rerenderPage();
+    await settleLoad();
+
+    expect(loadMoreButton()).not.toBeInTheDocument();
+    scrollToSentinel();
+    expect(loadMore).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes auto-loading when a new list replaces a paused one", async () => {
+    hookOverrides = { hasMore: true };
+    const { rerenderPage } = renderPage("?status=error");
+    loadMore.mockResolvedValueOnce(false);
+    scrollToSentinel();
+    await settleLoad();
+    expect(loadMoreButton()).toBeInTheDocument();
+
+    hookOverrides = { hasMore: true, data: { traces: [makeTrace("t-other")], totalCount: 1 } };
+    rerenderPage();
+    expect(loadMoreButton()).not.toBeInTheDocument();
   });
 
   it("shows the button under an empty filtered page and doesn't auto-load", () => {

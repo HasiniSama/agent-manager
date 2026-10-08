@@ -84,7 +84,7 @@ function FilteredTraces({
         truncated={truncated}
         lookedBackTo={lookedBackTo}
         onTraceSelect={() => undefined}
-        onLoadMore={() => undefined}
+        onLoadMore={async () => undefined}
         onConversationSelect={(conversationId) => setFilters({ ...filters, conversationId })}
       />
     </>

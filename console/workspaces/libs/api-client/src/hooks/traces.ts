@@ -202,6 +202,10 @@ export function useTraceList(
   // Bumped on each reset and new first page; a loadMore from an earlier list leaves state alone.
   const listGenerationRef = useRef(0);
 
+  // Latest list, read by the auto-refresh interval and by loadMore to tell new rows.
+  const traceListRef = useRef(traceList);
+  useEffect(() => { traceListRef.current = traceList; }, [traceList]);
+
   const queryResult = useApiQuery({
     queryKey: [
       "trace-list",
@@ -320,7 +324,7 @@ export function useTraceList(
   );
 
   // Fetches the page after `cursor` over the first page's unchanged window and merges it in.
-  // Returns the next cursor, or undefined when the window ran out or the list was reset.
+  // Returns the next cursor and whether the page added rows, or undefined if the list moved on.
   const fetchCursorPage = useCallback(async (cursor: string) => {
     const range = lastFetchedRangeRef.current;
     if (!scopeParams || !range) return undefined;
@@ -332,6 +336,8 @@ export function useTraceList(
 
     nextCursorRef.current = response.nextCursor;
     const traces = applyScores(response.traces ?? [], scoreMap);
+    const shown = new Set(traceListRef.current?.traces.map((t) => t.traceId));
+    const added = traces.some((t) => !shown.has(t.traceId));
     setTraceList((prev) => {
       const merged = mergeTraces(prev, { ...response, traces });
       return merged && {
@@ -341,10 +347,10 @@ export function useTraceList(
         lookedBackTo: response.lookedBackTo,
       };
     });
-    return response.nextCursor;
+    return { nextCursor: response.nextCursor, added };
   }, [scopeParams, getToken, mergeTraces]);
 
-  /** Loads the next page in the current sort order. */
+  /** Loads the next page; resolves to whether it added rows, or undefined if the list moved on. */
   const loadMore = useCallback(async () => {
     const cursor = nextCursorRef.current;
     if (!cursor || isLoadingMore) return;
@@ -353,7 +359,8 @@ export function useTraceList(
     setLoadError(null);
     setIsLoadingMore(true);
     try {
-      await fetchCursorPage(cursor);
+      const page = await fetchCursorPage(cursor);
+      if (generation === listGenerationRef.current) return page?.added;
     } catch (err) {
       if (generation === listGenerationRef.current) {
         setLoadError(err instanceof Error ? err : new Error(String(err)));
@@ -415,7 +422,7 @@ export function useTraceList(
     let cursor = nextCursorRef.current;
     for (let i = 0; i < 50 && cursor; i += 1) {
       try {
-        cursor = await fetchCursorPage(cursor);
+        cursor = (await fetchCursorPage(cursor))?.nextCursor;
       } catch (err) {
         setLoadError(err instanceof Error ? err : new Error(String(err)));
         break;
@@ -430,9 +437,6 @@ export function useTraceList(
 
   const refetchRef = useRef(queryResult.refetch);
   useEffect(() => { refetchRef.current = queryResult.refetch; }, [queryResult.refetch]);
-
-  const traceListRef = useRef(traceList);
-  useEffect(() => { traceListRef.current = traceList; }, [traceList]);
 
   // Auto-refresh: incrementally load newer traces every 30 s instead of
   // replacing the whole list. Falls back to a full refetch when the list is

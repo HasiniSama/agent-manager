@@ -38,7 +38,7 @@ export interface TracesViewProps {
 
   // Handlers
   onTraceSelect: (traceId: string) => void;
-  onLoadMore?: () => void;
+  onLoadMore?: () => Promise<boolean | undefined>;
   onConversationSelect?: (conversationId: string) => void;
 }
 

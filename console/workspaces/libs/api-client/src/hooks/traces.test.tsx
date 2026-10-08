@@ -255,6 +255,37 @@ describe("useTraceList cursor paging", () => {
     expect(result.current.traceList?.traces.map((t) => t.traceId)).toEqual(["t1", "t2", "t3"]);
   });
 
+  it("resolves loadMore to whether the page added rows, and undefined after a reset", async () => {
+    let resolveOld: (res: TraceListResponse) => void = () => undefined;
+    mockList
+      .mockResolvedValueOnce(page(
+        [trace("t1", "2026-10-02T09:50:00Z"), trace("t2", "2026-10-02T09:40:00Z")],
+        { nextCursor: "c1" },
+      ))
+      .mockResolvedValueOnce(page([trace("t2", "2026-10-02T09:40:00Z")], { nextCursor: "c2" }))
+      .mockResolvedValueOnce(page([trace("t3", "2026-10-02T09:30:00Z")], { nextCursor: "c3" }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce(page([trace("t9", "2026-10-02T09:55:00Z")]));
+
+    const result = renderTraceList();
+    await waitFor(() => result.current.traceList?.traces.length === 2);
+    const added: unknown[] = [];
+    await act(async () => { added.push(await result.current.loadMore()); });
+    await act(async () => { added.push(await result.current.loadMore()); });
+
+    let oldLoad: Promise<unknown> = Promise.resolve();
+    act(() => { oldLoad = result.current.loadMore(); });
+    act(() => result.setOptions({ filters: { status: "error" } }));
+    await waitFor(() => result.current.traceList?.traces[0]?.traceId === "t9");
+    await act(async () => {
+      resolveOld(page([trace("t4", "2026-10-02T09:20:00Z")]));
+      added.push(await oldLoad);
+    });
+
+    expect(added).toEqual([false, true, undefined]);
+    expect(result.current.traceList?.traces.map((t) => t.traceId)).toEqual(["t9"]);
+  });
+
   it("fetches scores for the span of the returned page", async () => {
     mockList
       .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")], { nextCursor: "c1" }))
@@ -318,7 +349,7 @@ describe("useTraceList cursor paging", () => {
     expect(result.current.loadError?.message).toBe("upstream down");
     expect(result.current.hasMore).toBe(true);
 
-    let retry: Promise<void> = Promise.resolve();
+    let retry: Promise<unknown> = Promise.resolve();
     act(() => { retry = result.current.loadMore(); });
     expect(result.current.loadError).toBeNull();
     expect(mockList.mock.calls[2][0].cursor).toBe("c1");
