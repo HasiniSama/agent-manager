@@ -26,64 +26,58 @@ export interface TracesViewProps {
   // Data props
   traces: TraceOverview[];
   isLoading?: boolean;
-  sortOrder?: "asc" | "desc";
   selectedTrace: string | null;
-  isLoadingOlder?: boolean;
-  isLoadingNewer?: boolean;
-  hasOlder?: boolean;
+  isLoadingMore?: boolean;
+  hasMore?: boolean;
   hasActiveFilters?: boolean;
-  // The server stopped early: the examine cap with hasOlder, the cursor depth cap without.
+  // The server stopped early: the examine cap with hasMore, the cursor depth cap without.
   truncated?: boolean;
   lookedBackTo?: string;
+  loadError?: Error | null;
   visibleColumns?: TraceColumn[];
 
   // Handlers
   onTraceSelect: (traceId: string) => void;
-  onLoadOlder?: () => void;
-  onLoadNewer?: () => void;
+  onLoadMore?: () => Promise<boolean | undefined>;
   onConversationSelect?: (conversationId: string) => void;
 }
 
 export const TracesView: React.FC<TracesViewProps> = ({
   traces,
   isLoading = false,
-  sortOrder = "desc",
   selectedTrace,
-  isLoadingOlder = false,
-  isLoadingNewer = false,
-  hasOlder = false,
+  isLoadingMore = false,
+  hasMore = false,
   hasActiveFilters = false,
   truncated = false,
   lookedBackTo,
+  loadError,
   visibleColumns,
   onTraceSelect,
-  onLoadOlder,
-  onLoadNewer,
+  onLoadMore,
   onConversationSelect,
 }) => {
   return (
     <>
       {truncated && !isLoading && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          {hasOlder
+          {hasMore
             ? "Showing matches from the traces searched so far. Narrow the time range to see more."
-            : "The list stops here: older traces are more than 1,000 traces into this time range. Narrow the time range to see more."}
+            : "The list stops here: the remaining traces are more than 1,000 traces into this time range. Narrow the time range to see more."}
         </Alert>
       )}
       <TracesTable
         isLoading={isLoading}
-        sortOrder={sortOrder}
         traces={traces}
         onTraceSelect={onTraceSelect}
         selectedTrace={selectedTrace}
-        isLoadingOlder={isLoadingOlder}
-        isLoadingNewer={isLoadingNewer}
-        hasOlder={hasOlder}
+        isLoadingMore={isLoadingMore}
+        hasMore={hasMore}
         hasActiveFilters={hasActiveFilters}
         visibleColumns={visibleColumns}
         lookedBackTo={lookedBackTo}
-        onLoadOlder={onLoadOlder}
-        onLoadNewer={onLoadNewer}
+        loadError={loadError}
+        onLoadMore={onLoadMore}
         onConversationSelect={onConversationSelect}
       />
     </>

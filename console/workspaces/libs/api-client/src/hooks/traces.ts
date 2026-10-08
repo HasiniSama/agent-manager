@@ -144,6 +144,8 @@ export interface TraceListOptions {
   filters?: TraceFilters;
   /** Fill models on every trace; costs the server one extra upstream call per trace. */
   includeModels?: boolean;
+  /** Turns off focus and reconnect refetches, which would drop pages loaded with loadMore. */
+  paged?: boolean;
 }
 
 /** Trace list for the window and filters, with cursor paging, newer-trace polling and scores. */
@@ -163,8 +165,9 @@ export function useTraceList(
   const hasCustomRange = !!customStartTime && !!customEndTime;
   const pageSize = limit ?? 10;
   const [traceList, setTraceList] = useState<TraceListWithRange | null>(null);
-  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isLoadingNewer, setIsLoadingNewer] = useState(false);
+  const [loadError, setLoadError] = useState<Error | null>(null);
 
   // Keyed by value so a caller passing a fresh object each render doesn't reset the list.
   const filtersKey = JSON.stringify(normalizeTraceFilters(options?.filters));
@@ -189,14 +192,21 @@ export function useTraceList(
   }, [organization, project, component, environment, pageSize, sortOrder, filters, includeModels]);
 
   // Tracks the time range used in the most recent successful fetch so that
-  // loadOlder / loadNewer paginate against the same window.
+  // loadMore / loadNewer paginate against the same window.
   const lastFetchedRangeRef = useRef<{
     startTime: string;
     endTime: string;
   } | null>(null);
 
-  // Server cursor for the next older page; loadOlder sends it with the unchanged window.
+  // Server cursor for the next page in sort order; loadMore sends it with the unchanged window.
   const nextCursorRef = useRef<string | undefined>(undefined);
+
+  // Bumped on each reset and new first page; a loadMore from an earlier list leaves state alone.
+  const listGenerationRef = useRef(0);
+
+  // Latest list, read by the auto-refresh interval and by loadMore to tell new rows.
+  const traceListRef = useRef(traceList);
+  useEffect(() => { traceListRef.current = traceList; }, [traceList]);
 
   const queryResult = useApiQuery({
     queryKey: [
@@ -255,17 +265,25 @@ export function useTraceList(
       return { ...res, traces: applyScores(res.traces, scoreMap), fetchedRange: range };
     },
     enabled: (options?.enabled ?? true) && !!scopeParams && (hasCustomRange || !!timeRange),
+    // A focus or reconnect refetch replaces the list and drops pages loaded with loadMore.
+    ...(options?.paged && { refetchOnWindowFocus: false, refetchOnReconnect: false }),
   });
 
   useEffect(() => {
+    listGenerationRef.current += 1;
     setTraceList(null);
+    setLoadError(null);
+    setIsLoadingMore(false);
     lastFetchedRangeRef.current = null;
     nextCursorRef.current = undefined;
   }, [scopeParams, timeRange, customStartTime, customEndTime]);
 
   useEffect(() => {
     if (!queryResult.data) return;
+    listGenerationRef.current += 1;
     setTraceList(queryResult.data);
+    setLoadError(null);
+    setIsLoadingMore(false);
     nextCursorRef.current = queryResult.data.nextCursor;
     // Restore the range ref when React Query serves from cache without re-running
     // queryFn (which is where the ref is normally set after a live fetch).
@@ -307,11 +325,9 @@ export function useTraceList(
     [sortOrder],
   );
 
-  const [loadError, setLoadError] = useState<Error | null>(null);
-
   // Fetches the page after `cursor` over the first page's unchanged window and merges it in.
-  // Returns the next cursor, or undefined when the window ran out or the list was reset.
-  const fetchOlderPage = useCallback(async (cursor: string) => {
+  // Returns the next cursor and whether the page added rows, or undefined if the list moved on.
+  const fetchCursorPage = useCallback(async (cursor: string) => {
     const range = lastFetchedRangeRef.current;
     if (!scopeParams || !range) return undefined;
 
@@ -322,6 +338,8 @@ export function useTraceList(
 
     nextCursorRef.current = response.nextCursor;
     const traces = applyScores(response.traces ?? [], scoreMap);
+    const shown = new Set(traceListRef.current?.traces.map((t) => t.traceId));
+    const added = traces.some((t) => !shown.has(t.traceId));
     setTraceList((prev) => {
       const merged = mergeTraces(prev, { ...response, traces });
       return merged && {
@@ -331,24 +349,30 @@ export function useTraceList(
         lookedBackTo: response.lookedBackTo,
       };
     });
-    return response.nextCursor;
+    return { nextCursor: response.nextCursor, added };
   }, [scopeParams, getToken, mergeTraces]);
 
-  /** Loads the next older page from the cursor. */
-  const loadOlder = useCallback(async () => {
+  /** Loads the next page; resolves to whether it added rows, or undefined if the list moved on. */
+  const loadMore = useCallback(async () => {
     const cursor = nextCursorRef.current;
-    if (!cursor || isLoadingOlder) return;
+    if (!cursor || isLoadingMore) return;
 
-    setIsLoadingOlder(true);
+    const generation = listGenerationRef.current;
+    setLoadError(null);
+    setIsLoadingMore(true);
     try {
-      await fetchOlderPage(cursor);
+      const page = await fetchCursorPage(cursor);
+      if (generation === listGenerationRef.current) return page?.added;
     } catch (err) {
-      setLoadError(err instanceof Error ? err : new Error(String(err)));
+      if (generation === listGenerationRef.current) {
+        setLoadError(err instanceof Error ? err : new Error(String(err)));
+      }
     } finally {
-      setIsLoadingOlder(false);
+      if (generation === listGenerationRef.current) setIsLoadingMore(false);
     }
-  }, [isLoadingOlder, fetchOlderPage]);
+  }, [isLoadingMore, fetchCursorPage]);
 
+  // Used only by auto-refresh; Refresh is how the traces page shows new traces.
   const loadNewer = useCallback(async () => {
     const range = lastFetchedRangeRef.current;
     if (!scopeParams || !range || !traceList?.traces?.length || isLoadingNewer) return;
@@ -395,18 +419,18 @@ export function useTraceList(
     }
   }, [scopeParams, traceList, isLoadingNewer, hasCustomRange, getToken, mergeTraces]);
 
-  // Walks older pages by cursor until the window runs out, capped at 50 pages.
+  // Walks cursor pages until the window runs out, capped at 50 pages.
   const fullLoad = useCallback(async () => {
     let cursor = nextCursorRef.current;
     for (let i = 0; i < 50 && cursor; i += 1) {
       try {
-        cursor = await fetchOlderPage(cursor);
+        cursor = (await fetchCursorPage(cursor))?.nextCursor;
       } catch (err) {
         setLoadError(err instanceof Error ? err : new Error(String(err)));
         break;
       }
     }
-  }, [fetchOlderPage]);
+  }, [fetchCursorPage]);
 
   // Stable refs so the interval always calls the latest versions without
   // being torn down and recreated on every render.
@@ -415,9 +439,6 @@ export function useTraceList(
 
   const refetchRef = useRef(queryResult.refetch);
   useEffect(() => { refetchRef.current = queryResult.refetch; }, [queryResult.refetch]);
-
-  const traceListRef = useRef(traceList);
-  useEffect(() => { traceListRef.current = traceList; }, [traceList]);
 
   // Auto-refresh: incrementally load newer traces every 30 s instead of
   // replacing the whole list. Falls back to a full refetch when the list is
@@ -441,14 +462,12 @@ export function useTraceList(
     ...queryResult,
     data: current,
     traceList: current,
-    loadOlder,
-    loadNewer,
+    loadMore,
     fullLoad,
-    hasOlder: !!current?.nextCursor,
+    hasMore: !!current?.nextCursor,
     truncated: current?.truncated ?? false,
     lookedBackTo: current?.lookedBackTo,
-    isLoadingOlder,
-    isLoadingNewer,
+    isLoadingMore,
     loadError,
   };
 }

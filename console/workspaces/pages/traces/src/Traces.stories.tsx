@@ -53,7 +53,9 @@ const sampleTraces = [
 interface FilteredTracesProps {
   initialFilters: TraceFilters;
   traces: TraceOverview[];
-  hasOlder?: boolean;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  loadError?: Error | null;
   truncated?: boolean;
   lookedBackTo?: string;
 }
@@ -62,7 +64,9 @@ interface FilteredTracesProps {
 function FilteredTraces({
   initialFilters,
   traces,
-  hasOlder,
+  hasMore,
+  isLoadingMore,
+  loadError,
   truncated,
   lookedBackTo,
 }: FilteredTracesProps) {
@@ -73,13 +77,14 @@ function FilteredTraces({
       <TracesView
         traces={traces}
         selectedTrace={null}
-        hasOlder={hasOlder}
+        hasMore={hasMore}
+        isLoadingMore={isLoadingMore}
+        loadError={loadError}
         hasActiveFilters={Object.keys(filters).length > 0}
         truncated={truncated}
         lookedBackTo={lookedBackTo}
         onTraceSelect={() => undefined}
-        onLoadOlder={() => undefined}
-        onLoadNewer={() => undefined}
+        onLoadMore={async () => undefined}
         onConversationSelect={(conversationId) => setFilters({ ...filters, conversationId })}
       />
     </>
@@ -117,11 +122,32 @@ export const SeveralActiveFilters: Story = {
   },
 };
 
-export const EmptyFilteredPageWithOlder: Story = {
+// Scrolled to the end of the list while the next page loads.
+export const MidScroll: Story = {
+  args: {
+    initialFilters: {},
+    traces: sampleTraces,
+    hasMore: true,
+    isLoadingMore: true,
+  },
+};
+
+// A filtered page with no matches doesn't auto-load; the next page loads on click.
+export const PausedOnEmptyFilteredPage: Story = {
   args: {
     initialFilters: { status: 'error', minSpanCount: 50 },
     traces: [],
-    hasOlder: true,
+    hasMore: true,
+    lookedBackTo: '2026-10-01T08:14:00Z',
+  },
+};
+
+export const LoadError: Story = {
+  args: {
+    initialFilters: {},
+    traces: sampleTraces,
+    hasMore: true,
+    loadError: new Error('upstream timeout'),
   },
 };
 
@@ -129,7 +155,7 @@ export const CapNotice: Story = {
   args: {
     initialFilters: { status: 'error' },
     traces: sampleTraces,
-    hasOlder: true,
+    hasMore: true,
     truncated: true,
     lookedBackTo: '2026-10-01T08:14:00Z',
   },

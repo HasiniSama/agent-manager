@@ -499,11 +499,12 @@ const (
 )
 
 // enrichTraces fetches root spans and enriches traces in parallel, returning
-// overviews in input order. Traces whose root fails matchesRootFilters or whose
-// models fail the model filter are skipped before the rest of the cascade.
+// overviews in input order. Traces whose root fails matchesStatus, or whose
+// conversation ID or models fail their filter, are skipped before the rest of
+// the cascade.
 // Traces that couldn't be read are skipped too and returned as failed: no
-// root span ID, a failed root fetch, or a failed fetch a model or minTokens
-// filter needs.
+// root span ID, a failed root fetch, or a failed fetch a model, minTokens or
+// conversationId filter needs.
 // When listSpansFirst holds, the root comes from the trace's attribute span
 // list instead of its own fetch.
 func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryParams, traces []observer.TraceInfo) (overviews []opensearch.TraceOverview, failed []string) {
@@ -564,12 +565,11 @@ func (c *TracingController) enrichTraces(ctx context.Context, params TraceQueryP
 			}
 			// Status is root-only by design.
 			status := opensearch.ExtractTraceStatus([]opensearch.Span{*root})
-			conversationID := opensearch.ExtractConversationID(root)
-			if !matchesRootFilters(status, conversationID, params.Filters) {
+			if !matchesStatus(status, params.Filters) {
 				results[idx] = result{verdict: enrichRejected}
 				return
 			}
-			input, output, tokens, models, verdict := c.enrichTraceOverview(ctx, params, t, root, spans, innerSem)
+			input, output, tokens, models, conversationID, verdict := c.enrichTraceOverview(ctx, params, t, root, spans, innerSem)
 			if verdict != enrichKept {
 				results[idx] = result{verdict: verdict}
 				return
@@ -651,10 +651,10 @@ func (c *TracingController) rootFromSpanList(
 	return spans, nil
 }
 
-// enrichTraceOverview computes Input/Output/Tokens/Models for one trace-list
-// row, cascading through three sources in order of cost. enrichTraces calls it
-// only for traces whose root passes matchesRootFilters (status and
-// conversationId), so a rejected trace costs just its root fetch:
+// enrichTraceOverview computes Input/Output/Tokens/Models/ConversationID for
+// one trace-list row, cascading through three sources in order of cost.
+// enrichTraces calls it only for traces whose root passes matchesStatus, so a
+// rejected trace costs just its root fetch:
 //
 //  1. The root span's own attributes (older Traceloop entity.input/output
 //     and CrewAI roll-up). Free — root span is already fetched.
@@ -679,6 +679,17 @@ func (c *TracingController) rootFromSpanList(
 // and the span list can't be fetched, or when the token count falls short of
 // minTokens with leaves unread, since the filter can't judge the trace.
 //
+// The conversation ID is the first one found on the root, the step 2 child,
+// then the step 3 leaves in start order. Only spans a step reads anyway are
+// checked, so it costs no fetch. With a conversationId filter, a root without
+// an ID doesn't end the cascade, even a complete one: steps 2 and 3 run to
+// find it. The verdict is enrichRejected once an ID is found that doesn't
+// match: on the root before any fetch, or on the child before step 3. A trace
+// with no ID is kept here and ruled out by matchesFilters. It is enrichFailed
+// when a span the ID may sit on goes unread: a failed span list, child or leaf
+// ahead of the first ID, leaves skipped over the span threshold, or leaves cut
+// off by the cap.
+//
 // When the span list carries attributes, steps 2 and 3 read their spans from
 // it instead of fetching them. spans is the list when the caller already
 // fetched it with attributes, or nil.
@@ -696,8 +707,12 @@ func (c *TracingController) enrichTraceOverview(
 	rootSpan *opensearch.Span,
 	spans []observer.SpanInfo,
 	fetchSem chan struct{},
-) (input interface{}, output interface{}, tokenUsage *opensearch.TokenUsage, models []string, verdict enrichVerdict) {
+) (input interface{}, output interface{}, tokenUsage *opensearch.TokenUsage, models []string, conversationID string, verdict enrichVerdict) {
 	// Step 1: root span attributes.
+	conversationID = opensearch.ExtractConversationID(rootSpan)
+	if conversationRulesOut(conversationID, params.Filters) {
+		return nil, nil, nil, nil, "", enrichRejected
+	}
 	if opensearch.IsCrewAISpan(rootSpan.Attributes) {
 		input, output = opensearch.ExtractCrewAIRootSpanInputOutput(rootSpan)
 		tokenUsage = opensearch.ExtractCrewAITraceTokenUsage(rootSpan)
@@ -716,12 +731,12 @@ func (c *TracingController) enrichTraceOverview(
 
 	// Without leaf aggregation the trace has no models.
 	if rejectOnModel && !aggregateLeaves {
-		return nil, nil, nil, nil, enrichRejected
+		return nil, nil, nil, nil, "", enrichRejected
 	}
 
 	// Nothing left to fetch.
-	if rootComplete && !modelsFromList {
-		return input, output, tokenUsage, nil, enrichKept
+	if rootComplete && !modelsFromList && !conversationPending(conversationID, params.Filters) {
+		return input, output, tokenUsage, nil, conversationID, enrichKept
 	}
 
 	// Steps 2 and 3 and inline models all need the span list. Fetch it once.
@@ -729,23 +744,24 @@ func (c *TracingController) enrichTraceOverview(
 		var ok bool
 		spans, ok = c.fetchTraceSpanSummaries(ctx, params, traceInfo, fetchSem, modelsFromList)
 		if !ok {
-			if rejectOnModel || params.Filters.MinTokens != nil {
-				return nil, nil, nil, nil, enrichFailed
+			if rejectOnModel || params.Filters.MinTokens != nil || conversationPending(conversationID, params.Filters) {
+				return nil, nil, nil, nil, "", enrichFailed
 			}
-			return input, output, cmp.Or(tokenUsage, entityTokens), nil, enrichKept
+			return input, output, cmp.Or(tokenUsage, entityTokens), nil, conversationID, enrichKept
 		}
 	}
 	// The list carries attributes exactly when modelsFromList holds.
 	if modelsFromList {
 		models = modelsFromSpanList(traceInfo.TraceID, spans)
 		if rejectOnModel && !matchesModel(models, params.Filters) {
-			return nil, nil, nil, nil, enrichRejected
+			return nil, nil, nil, nil, "", enrichRejected
 		}
 	}
 
 	// Step 2: immediate child of the root (Traceloop chain span path).
-	if !rootComplete {
-		if childInput, childOutput, childTokens, childEntityTokens, ok := c.tryChildChainSpan(ctx, traceInfo.TraceID, rootSpan.SpanID, spans, modelsFromList, fetchSem); ok {
+	if !rootComplete || conversationPending(conversationID, params.Filters) {
+		childInput, childOutput, childTokens, childEntityTokens, childConversationID, ok, childUnread := c.tryChildChainSpan(ctx, traceInfo.TraceID, rootSpan.SpanID, spans, modelsFromList, fetchSem)
+		if ok {
 			if input == nil {
 				input = childInput
 			}
@@ -758,23 +774,40 @@ func (c *TracingController) enrichTraceOverview(
 			if entityTokens == nil {
 				entityTokens = childEntityTokens
 			}
+			conversationID = cmp.Or(conversationID, childConversationID)
+		}
+		if conversationRulesOut(conversationID, params.Filters) {
+			return nil, nil, nil, nil, "", enrichRejected
+		}
+		// The child that couldn't be read may hold the ID.
+		if childUnread && conversationPending(conversationID, params.Filters) {
+			return nil, nil, nil, nil, "", enrichFailed
 		}
 	}
 
 	// Step 3: leaf LLM aggregation (OpenAI Agents SDK / pure-OTel path).
 	stillMissing := input == nil || output == nil || tokenUsage == nil
 	tokensUnread := false
-	if stillMissing {
+	if stillMissing || conversationPending(conversationID, params.Filters) {
 		if !aggregateLeaves {
 			logger.GetLogger(ctx).Debug("skipping leaf-LLM aggregation: trace exceeds spanCount threshold",
 				"traceId", traceInfo.TraceID,
 				"spanCount", traceInfo.SpanCount,
 				"threshold", skipLeafAggregationSpanCountThreshold)
+			// The skipped leaves may hold the ID.
+			if conversationPending(conversationID, params.Filters) {
+				return nil, nil, nil, nil, "", enrichFailed
+			}
 		} else {
-			leafInput, leafOutput, leafTokens, leafModels, leavesUnread := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, modelsFromList, fetchSem)
+			leafInput, leafOutput, leafTokens, leafModels, leafConversationID, leavesUnread, leafIDUnread := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, modelsFromList, fetchSem)
 			if models == nil {
 				models = leafModels
 			}
+			// A leaf that couldn't be read ahead of the first ID may have held another.
+			if leafIDUnread && conversationPending(conversationID, params.Filters) {
+				return nil, nil, nil, nil, "", enrichFailed
+			}
+			conversationID = cmp.Or(conversationID, leafConversationID)
 			if input == nil {
 				input = leafInput
 			}
@@ -790,9 +823,9 @@ func (c *TracingController) enrichTraceOverview(
 
 	tokenUsage = cmp.Or(tokenUsage, entityTokens)
 	if tokensUnread && !matchesMinTokens(tokenUsage, params.Filters) {
-		return nil, nil, nil, nil, enrichFailed
+		return nil, nil, nil, nil, "", enrichFailed
 	}
-	return input, output, tokenUsage, models, enrichKept
+	return input, output, tokenUsage, models, conversationID, enrichKept
 }
 
 // fetchTraceSpanSummaries calls QueryTraceSpans for one trace and returns
@@ -862,10 +895,11 @@ func modelsFromSpanList(traceID string, spans []observer.SpanInfo) []string {
 // an attribute-empty `invoke_agent` root.
 //
 // tokens comes from the span's gen_ai.usage.* attributes; entityTokens from
-// its traceloop.entity.output. With inline set, the child comes from spans
-// instead of a fetch.
+// its traceloop.entity.output; conversationID from ExtractConversationID.
+// With inline set, the child comes from spans instead of a fetch.
 //
-// Returns ok=false when no immediate child is found or the fetch fails.
+// Returns ok=false when no immediate child is found or the fetch fails, and
+// unread=true when the fetch fails.
 func (c *TracingController) tryChildChainSpan(
 	ctx context.Context,
 	traceID string,
@@ -873,7 +907,7 @@ func (c *TracingController) tryChildChainSpan(
 	spans []observer.SpanInfo,
 	inline bool,
 	fetchSem chan struct{},
-) (input interface{}, output interface{}, tokens, entityTokens *opensearch.TokenUsage, ok bool) {
+) (input interface{}, output interface{}, tokens, entityTokens *opensearch.TokenUsage, conversationID string, ok, unread bool) {
 	log := logger.GetLogger(ctx)
 
 	// Pick the earliest-started direct child of the root, skipping leaf LLM
@@ -893,7 +927,7 @@ func (c *TracingController) tryChildChainSpan(
 		}
 	}
 	if child < 0 {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, "", false, false
 	}
 
 	var childSpan opensearch.Span
@@ -909,7 +943,7 @@ func (c *TracingController) tryChildChainSpan(
 				log.Warn("tryChildChainSpan: GetSpanDetails failed",
 					"traceId", traceID, "childSpanId", childID, "err", err)
 			}
-			return nil, nil, nil, nil, false
+			return nil, nil, nil, nil, "", false, true
 		}
 		childSpan = opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(traceID, details))
 	}
@@ -917,7 +951,7 @@ func (c *TracingController) tryChildChainSpan(
 	input, output = opensearch.ExtractRootSpanInputOutput(&childSpan)
 	tokens = opensearch.ExtractTokenUsage([]opensearch.Span{childSpan})
 	entityTokens = opensearch.ExtractTokenUsageFromEntityOutput(&childSpan)
-	return input, output, tokens, entityTokens, true
+	return input, output, tokens, entityTokens, opensearch.ExtractConversationID(&childSpan), true, false
 }
 
 // aggregateFromLeafLLMSpans fetches up to maxLLMLeavesPerTrace leaf LLM spans
@@ -934,13 +968,16 @@ func (c *TracingController) tryChildChainSpan(
 // If the trace has more LLM leaves than the cap, or any leaf fetch fails, the
 // returned TokenUsage has Partial=true so the UI can render an "approximate"
 // marker. unread reports leaves left out, by the cap or a failed fetch.
+// conversationID is the first one a leaf carries, in start order. idUnread
+// reports a leaf that failed to fetch ahead of it, or, when there is none, any
+// leaf that failed or was cut off by the cap.
 func (c *TracingController) aggregateFromLeafLLMSpans(
 	ctx context.Context,
 	traceID string,
 	spans []observer.SpanInfo,
 	inline bool,
 	fetchSem chan struct{},
-) (input interface{}, output interface{}, tokens *opensearch.TokenUsage, models []string, unread bool) {
+) (input interface{}, output interface{}, tokens *opensearch.TokenUsage, models []string, conversationID string, unread, idUnread bool) {
 	log := logger.GetLogger(ctx)
 
 	// Filter to leaf LLM spans, ordered by start time.
@@ -951,7 +988,7 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 		}
 	}
 	if len(leaves) == 0 {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, "", false, false
 	}
 	sort.Slice(leaves, func(i, j int) bool { return leaves[i].StartTime.Before(leaves[j].StartTime) })
 
@@ -998,8 +1035,21 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 		}
 	}
 	unread = len(validLeaves) < totalLeaves
+	for i := range fetched {
+		if fetched[i].SpanID == "" {
+			idUnread = true
+			continue
+		}
+		if conversationID = opensearch.ExtractConversationID(&fetched[i]); conversationID != "" {
+			break
+		}
+	}
+	// A leaf past the cap may hold the ID.
+	if partial && conversationID == "" {
+		idUnread = true
+	}
 	if len(validLeaves) == 0 {
-		return nil, nil, nil, nil, unread
+		return nil, nil, nil, nil, "", unread, idUnread
 	}
 
 	models = opensearch.ExtractModels(validLeaves)
@@ -1021,7 +1071,7 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 	// Output stays pinned to the last leaf: it is the turn's final model call,
 	// and walking backwards would surface an earlier turn's answer instead.
 	output = opensearch.ExtractOutputPreviewFromLeaf(&validLeaves[len(validLeaves)-1])
-	return input, output, tokens, models, unread
+	return input, output, tokens, models, conversationID, unread, idUnread
 }
 
 // GetTraceSpans fetches span summaries for a specific trace (no attributes).

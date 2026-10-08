@@ -52,7 +52,12 @@ import {
   ConsoleAction,
   useTrack,
 } from "@agent-management-platform/api-client";
-import { TraceColumnsMenu, TraceDetails, TraceFilterBar, TracesView } from "./subComponents";
+import {
+  TraceColumnsMenu,
+  TraceDetails,
+  TraceFilterBar,
+  TracesView,
+} from "./subComponents";
 import { parseTraceFilters, withTraceFilters } from "./traceFilters";
 import { type TraceColumn, parseTraceColumns, withTraceColumns } from "./traceColumns";
 import { formatStartTime } from "./traceTime";
@@ -195,13 +200,12 @@ export const TracesComponent: React.FC = () => {
     isLoading,
     refetch,
     isRefetching,
-    loadOlder,
-    loadNewer,
-    isLoadingOlder,
-    isLoadingNewer,
-    hasOlder,
+    loadMore,
+    isLoadingMore,
+    hasMore,
     truncated,
     lookedBackTo,
+    loadError,
   } = useTraceList(
     organization,
     projectId,
@@ -212,7 +216,7 @@ export const TracesComponent: React.FC = () => {
     sortOrder,
     customStartTime,
     customEndTime,
-    { filters },
+    { filters, paged: true },
   );
 
   // Resolved time range used by the TraceDetails drawer.
@@ -513,22 +517,24 @@ export const TracesComponent: React.FC = () => {
           </Stack>
         }
       >
-        <TraceFilterBar filters={filters} onChange={handleFiltersChange} />
+        <TraceFilterBar
+          filters={filters}
+          onChange={handleFiltersChange}
+          onTraceSearch={handleTraceSelect}
+        />
         <TracesView
           traces={traceData?.traces ?? []}
           isLoading={prereqsPending || isLoading}
           selectedTrace={selectedTrace}
-          sortOrder={sortOrder}
-          isLoadingOlder={isLoadingOlder}
-          isLoadingNewer={isLoadingNewer}
-          hasOlder={hasOlder}
+          isLoadingMore={isLoadingMore}
+          hasMore={hasMore}
           hasActiveFilters={hasActiveFilters}
           truncated={truncated}
           lookedBackTo={lookedBackTo}
+          loadError={loadError}
           visibleColumns={visibleColumns}
           onTraceSelect={handleTraceSelect}
-          onLoadOlder={loadOlder}
-          onLoadNewer={loadNewer}
+          onLoadMore={loadMore}
           onConversationSelect={handleConversationSelect}
         />
         <DrawerWrapper

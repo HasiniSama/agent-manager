@@ -39,12 +39,15 @@ import {
   formatTokens,
   traceFilterChips,
 } from "../traceFilters";
+import { TraceIdSearch } from "./TraceIdSearch";
 
 const ANY = "";
 
 export interface TraceFilterBarProps {
   filters: TraceFilters;
   onChange: (filters: TraceFilters) => void;
+  /** Opens one trace by ID; the field shows only when this is set. */
+  onTraceSearch?: (traceId: string) => void;
 }
 
 interface ThresholdSelectProps {
@@ -114,7 +117,11 @@ function CommitTextField({ label, value, onCommit }: CommitTextFieldProps) {
 }
 
 /** Filter controls plus one removable chip per set filter. */
-export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({ filters, onChange }) => {
+export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({
+  filters,
+  onChange,
+  onTraceSearch,
+}) => {
   const set = <K extends TraceFilterKey>(key: K, value: TraceFilters[K]) =>
     onChange({ ...filters, [key]: value });
   /** Clears one filter. */
@@ -179,6 +186,7 @@ export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({ filters, onChang
           value={filters.conversationId}
           onCommit={(v) => set("conversationId", v)}
         />
+        {onTraceSearch && <TraceIdSearch onSearch={onTraceSearch} />}
       </Stack>
       {chips.length > 0 && (
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">

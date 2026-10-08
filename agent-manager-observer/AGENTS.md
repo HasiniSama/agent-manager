@@ -119,7 +119,8 @@ All in `controllers/controller.go`.
 
 Filters run as early as possible, so a rejected trace stays cheap:
 
-- **Root-only filters** (`status`, `conversationId`) — `matchesRootFilters`, right after the root fetch. A rejected trace costs one call.
+- **`status`** — `matchesStatus`, right after the root fetch. A rejected trace costs one call.
+- **`conversationId`** — the ID comes from the root, then the child and leaf spans (`ExtractConversationID`). Without the filter only spans enrichment reads anyway are checked, so it costs no extra call. With it, a root with another ID rejects the trace after one call. A root without one, even a complete one, leaves the trace open: another ID on the child rejects it before the leaf fetches, and a trace with no ID is read in full and left out. A failed read the ID depends on (the span list, the child, or a leaf ahead of the first ID) lists the trace as failed, not as having no ID.
 - **`model`** — `matchesModel`, as soon as the span list gives the models, before the child and leaf fetches. Traces over 100 spans have no models, so they're rejected after the root fetch.
 
 The walk stops at the 500-trace examine cap or after **20 s** (`listLookBackBudget`), returning `truncated` and a `nextCursor`. The budget doesn't cut the first chunk; only the **25 s** request deadline (`requestTimeout`) does, failing the request. After it, the walk's fetches run under the budget, which cancels those in flight without a warning; the walk then stops before the chunk they belong to.
