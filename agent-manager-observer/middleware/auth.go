@@ -95,6 +95,19 @@ func ContextWithTokenClaims(ctx context.Context, claims *TokenClaims) context.Co
 	return context.WithValue(ctx, tokenClaimsCtxKey{}, claims)
 }
 
+type bearerTokenCtxKey struct{}
+
+// BearerTokenFromContext returns the raw bearer token validated by JWTAuth, or "".
+func BearerTokenFromContext(ctx context.Context) string {
+	token, _ := ctx.Value(bearerTokenCtxKey{}).(string)
+	return token
+}
+
+// ContextWithBearerToken returns ctx carrying token as if JWTAuth had validated it.
+func ContextWithBearerToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, bearerTokenCtxKey{}, token)
+}
+
 var (
 	jwksCache      *JWKS
 	jwksCacheMutex sync.RWMutex
@@ -174,7 +187,8 @@ func jwtAuth(cfg config.AuthConfig, mcpResource bool) func(http.Handler) http.Ha
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(ContextWithTokenClaims(r.Context(), claims)))
+			ctx := ContextWithBearerToken(r.Context(), tokenString)
+			next.ServeHTTP(w, r.WithContext(ContextWithTokenClaims(ctx, claims)))
 		})
 	}
 }

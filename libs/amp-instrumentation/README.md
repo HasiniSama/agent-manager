@@ -100,6 +100,6 @@ with tracer.start_as_current_span("chat") as span:
     span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
 ```
 
-Spans that follow AMP's instrumentation contract — the OpenTelemetry GenAI semantic conventions — render with the full trace view in the Agent Manager and run through evaluators; spans that don't still appear, just without the rich view. The contract and the full supported-attribute reference are published in the WSO2 Agent Manager documentation: see [Manual instrumentation](https://wso2.github.io/agent-manager/docs/latest/guides/amp-instrumentation/#manual-instrumentation) on the WSO2 Agent Manager Instrumentation page.
+Spans that follow AMP's instrumentation contract — the OpenTelemetry GenAI semantic conventions — render with the full trace view in the Agent Manager and run through evaluators; spans that don't still appear, just without the rich view. The contract and the full supported-attribute reference are published in the WSO2 Agent Manager documentation: see [Manual instrumentation](https://wso2.com/agent-platform/docs/latest/guides/amp-instrumentation/#manual-instrumentation) on the WSO2 Agent Manager Instrumentation page.
 
 `init_otel()` is idempotent and is roughly ten lines of vanilla OpenTelemetry SDK setup (`TracerProvider` + `BatchSpanProcessor` + an OTLP/HTTP exporter to `<AMP_OTEL_ENDPOINT>/v1/traces` with the `x-amp-api-key` header) — use it so you don't have to write that yourself.

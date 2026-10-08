@@ -92,9 +92,11 @@ if docker cp "${SERVER_CONTAINER}:/etc/rancher/k3s/registries.yaml" /tmp/k3d-reg
     echo "   ✅ Registry mirror config copied from server node"
 fi
 
-# --- 3. Install the runsc binary (skip if already present) ---
-if docker exec "${NODE_CONTAINER}" test -f /usr/local/bin/runsc 2>/dev/null; then
-    echo "✅ runsc binary already present on ${NODE_NAME}"
+# --- 3. Install the runsc binaries (skip if already present) ---
+# runsc needs its sidecar binaries in /usr/local/bin/gvisor-bin/ 
+if docker exec "${NODE_CONTAINER}" test -f /usr/local/bin/runsc 2>/dev/null \
+    && docker exec "${NODE_CONTAINER}" test -x /usr/local/bin/gvisor-bin/gvisor_sentry 2>/dev/null; then
+    echo "✅ runsc binaries already present on ${NODE_NAME}"
 else
     ARCH="$(uname -m)"
     case "$ARCH" in
@@ -103,17 +105,39 @@ else
         *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
     esac
 
-    echo "📥 Downloading gVisor binaries (${GVISOR_ARCH})..."
+    if command -v zstd &>/dev/null; then
+        TARBALL="gvisor.tar.zstd"; DECOMPRESS=(zstd -dc)
+    elif command -v bzip2 &>/dev/null; then
+        TARBALL="gvisor.tar.bz2"; DECOMPRESS=(bzip2 -dc)
+    else
+        echo "❌ zstd or bzip2 is required to unpack the gVisor release."
+        exit 1
+    fi
+    # macOS has shasum but not sha512sum.
+    if command -v sha512sum &>/dev/null; then SHA512=(sha512sum); else SHA512=(shasum -a 512); fi
+
+    echo "📥 Downloading gVisor release (${GVISOR_ARCH})..."
     BASE="https://storage.googleapis.com/gvisor/releases/release/latest/${GVISOR_ARCH}"
-    curl -fsSL "${BASE}/runsc" -o /tmp/runsc
-    curl -fsSL "${BASE}/containerd-shim-runsc-v1" -o /tmp/containerd-shim-runsc-v1
-    chmod +x /tmp/runsc /tmp/containerd-shim-runsc-v1
+    GVISOR_TMP="$(mktemp -d)"
+    trap 'rm -rf "${GVISOR_TMP}"' EXIT
+    curl -fsSL --retry 3 "${BASE}/${TARBALL}" -o "${GVISOR_TMP}/${TARBALL}"
+    curl -fsSL --retry 3 "${BASE}/${TARBALL}.sha512" -o "${GVISOR_TMP}/${TARBALL}.sha512"
+    ( cd "${GVISOR_TMP}" && "${SHA512[@]}" -c "${TARBALL}.sha512" >/dev/null ) || {
+        echo "❌ gVisor release checksum verification failed — aborting."
+        exit 1
+    }
+    "${DECOMPRESS[@]}" "${GVISOR_TMP}/${TARBALL}" \
+        | tar -xf - -C "${GVISOR_TMP}" runsc containerd-shim-runsc-v1 gvisor-bin
 
     echo "📦 Installing runsc into ${NODE_NAME}..."
     docker exec "${NODE_CONTAINER}" mkdir -p /usr/local/bin
-    docker cp /tmp/runsc "${NODE_CONTAINER}:/usr/local/bin/runsc"
-    docker cp /tmp/containerd-shim-runsc-v1 "${NODE_CONTAINER}:/usr/local/bin/containerd-shim-runsc-v1"
-    rm -f /tmp/runsc /tmp/containerd-shim-runsc-v1
+    docker cp "${GVISOR_TMP}/runsc" "${NODE_CONTAINER}:/usr/local/bin/runsc"
+    docker cp "${GVISOR_TMP}/containerd-shim-runsc-v1" "${NODE_CONTAINER}:/usr/local/bin/containerd-shim-runsc-v1"
+    # runsc looks for its sidecars in gvisor-bin/ next to itself
+    docker exec "${NODE_CONTAINER}" rm -rf /usr/local/bin/gvisor-bin
+    docker cp "${GVISOR_TMP}/gvisor-bin" "${NODE_CONTAINER}:/usr/local/bin/gvisor-bin"
+    rm -rf "${GVISOR_TMP}"
+    trap - EXIT
 fi
 
 # --- 3b. Configure containerd's runsc runtime + network mode (IDEMPOTENT, every run) ---
@@ -210,13 +234,70 @@ kubectl taint --context "$CLUSTER_CONTEXT" node "${NODE_NAME}" \
 # --- 6. Ensure the Fluent Bit log collector tolerates the gVisor taint ---
 # Fluent Bit is a DaemonSet (one pod per node) that tails each node's container
 # logs. The gVisor taint repels it, so without a toleration agents on the gVisor
-# node produce NO runtime logs. setup-openchoreo.sh installs it with
-# tolerations[operator=Exists]; patch the running DaemonSet here too so an
-# already-installed collector starts covering the new node immediately.
-if kubectl get daemonset fluent-bit -n openchoreo-observability-plane --context "$CLUSTER_CONTEXT" &>/dev/null; then
+# node produce NO runtime logs. setup-openchoreo.sh installs it with the chart value
+# fluent-bit.tolerations[operator=Exists]; a log module installed without it gets the
+# same value here through Helm rather than a patch on the Helm-owned DaemonSet, which
+# would be lost whenever the DaemonSet is recreated. The upgrade pins the release's
+# own installed chart version so --reuse-values never crosses a chart version change.
+FB_NAMESPACE="openchoreo-observability-plane"
+FB_RELEASE="observability-logs-opensearch"
+FB_CHART="oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch"
+# Tolerations as operator/key/effect lines. `Exists//` tolerates every taint and
+# `Exists//NoSchedule` every NoSchedule taint, which covers the gVisor taint. The value set
+# below is `Exists//`, so it may replace other entries without losing any node.
+FB_TOLERATIONS_JSONPATH='{range .spec.template.spec.tolerations[*]}{.operator}/{.key}/{.effect}{"\n"}{end}'
+fb_tolerates_all() { grep -qxE 'Exists//(NoSchedule)?' <<<"$1"; }
+fb_print_helm_command() {
+    echo "         helm upgrade ${FB_RELEASE} ${FB_CHART} \\"
+    echo "           --kube-context ${CLUSTER_CONTEXT} --namespace ${FB_NAMESPACE} \\"
+    echo "           --version <installed chart version, from: helm list -n ${FB_NAMESPACE}> \\"
+    echo "           --reuse-values \\"
+    echo "           --set \"fluent-bit.tolerations[0].operator=Exists\""
+}
+if kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" --context "$CLUSTER_CONTEXT" &>/dev/null; then
     echo "🪵 Ensuring Fluent Bit tolerates the gVisor taint (so logs are collected here)..."
-    kubectl patch daemonset fluent-bit -n openchoreo-observability-plane --context "$CLUSTER_CONTEXT" --type=json \
-        -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"operator":"Exists"}]}]' >/dev/null 2>&1 || true
+    # `|| true`: under pipefail a missing or failing helm would otherwise abort the
+    # script here instead of reaching the patch fallback below.
+    FB_CHART_VERSION=""
+    FB_RELEASE_TOLERATIONS=""
+    if command -v helm &>/dev/null; then
+        FB_CHART_VERSION="$(helm list -n "$FB_NAMESPACE" --kube-context "$CLUSTER_CONTEXT" \
+            --filter "^${FB_RELEASE}\$" -o yaml 2>/dev/null | sed -n "s/^[- ]*chart: ${FB_RELEASE}-//p" || true)"
+    fi
+    if [ -n "$FB_CHART_VERSION" ]; then
+        # Read the toleration from the release's stored manifest, not the live DaemonSet: a
+        # toleration patched onto the live object (as earlier versions of this script did)
+        # passes a live check but is gone once Helm recreates the DaemonSet.
+        FB_RELEASE_TOLERATIONS="$(helm get manifest "$FB_RELEASE" -n "$FB_NAMESPACE" --kube-context "$CLUSTER_CONTEXT" 2>/dev/null \
+            | awk '/^---/{if(ds)printf "%s",buf; buf="";ds=0;next} {buf=buf $0 "\n"} /^kind: DaemonSet$/{ds=1} END{if(ds)printf "%s",buf}' \
+            | kubectl create --context "$CLUSTER_CONTEXT" --dry-run=client -f - -o jsonpath="$FB_TOLERATIONS_JSONPATH" 2>/dev/null || true)"
+    fi
+    if [ -n "$FB_CHART_VERSION" ] && fb_tolerates_all "$FB_RELEASE_TOLERATIONS"; then
+        echo "   ✅ fluent-bit.tolerations is already set on the ${FB_RELEASE} release"
+    elif [ -n "$FB_CHART_VERSION" ] && helm upgrade "$FB_RELEASE" "$FB_CHART" \
+            --kube-context "$CLUSTER_CONTEXT" \
+            --namespace "$FB_NAMESPACE" \
+            --version "$FB_CHART_VERSION" \
+            --reuse-values \
+            --set "fluent-bit.tolerations[0].operator=Exists" >/dev/null; then
+        echo "   ✅ Set fluent-bit.tolerations on the ${FB_RELEASE} release (chart ${FB_CHART_VERSION})"
+    elif fb_tolerates_all "$(kubectl get daemonset fluent-bit -n "$FB_NAMESPACE" --context "$CLUSTER_CONTEXT" \
+            -o jsonpath="$FB_TOLERATIONS_JSONPATH")"; then
+        echo "   ⚠️  Fluent Bit tolerates the taint only through a patch on the DaemonSet, which is"
+        echo "       lost if the DaemonSet is recreated. Make it durable with:"
+        fb_print_helm_command
+    # Fallback for a log module that is not a Helm release we can upgrade from here. The
+    # patch works now but does not survive the DaemonSet being recreated.
+    elif kubectl patch daemonset fluent-bit -n "$FB_NAMESPACE" --context "$CLUSTER_CONTEXT" --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"operator":"Exists"}]}]' >/dev/null; then
+        echo "   ⚠️  Could not set the toleration through Helm; patched the DaemonSet instead."
+        echo "       The patch is lost if the DaemonSet is recreated. Make it durable with:"
+        fb_print_helm_command
+    else
+        echo "   ❌ Could not set the Fluent Bit toleration through Helm or patch the DaemonSet."
+        echo "       Agents on this node produce no runtime logs until it is set with:"
+        fb_print_helm_command
+    fi
 fi
 
 # --- Status + networking sanity check ---

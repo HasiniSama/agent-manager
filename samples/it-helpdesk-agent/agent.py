@@ -7,18 +7,24 @@ provider (which applies guardrails). Otherwise calls OpenAI directly.
 
 When ``USE_MCP=true``, tools discovered from an AM MCP proxy are merged with
 the in-process tools. When it is off, the agent is exactly the v1 agent.
+``MCP_OAUTH=true`` authenticates to that proxy with the agent's AgentID
+(OAuth 2.0 bearer token) instead of an API key.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
+from agent_identity import AgentIdentityAuth
 from config import Config
 from tools import build_tools
+
+log = logging.getLogger("it-helpdesk")
 
 MODEL = "gpt-4o-mini"
 
@@ -84,10 +90,16 @@ MCP_RULES = (
 async def load_mcp_tools(cfg: Config) -> list[Any]:
     """Discover tools from the AM MCP proxy.
 
-    The proxy is reached with the platform-issued key in an ``X-API-Key`` header —
-    the default for MCP proxies, and *not* the ``API-Key`` the LLM provider uses.
-    Each proxy's header name is a Security setting, so check yours if the gateway
-    answers 401. The agent never holds the upstream GitHub credential; the gateway
+    By default the proxy is reached with the platform-issued key in an
+    ``X-API-Key`` header — the default for MCP proxies, and *not* the ``API-Key``
+    the LLM provider uses. Each proxy's header name is a Security setting, so
+    check yours if the gateway answers 401.
+
+    With ``MCP_OAUTH=true`` (the proxy's Security tab set to OAuth) no API key is
+    sent. Instead the agent's AgentID credentials mint a bearer token scoped to
+    the proxy URL, refreshed as it nears expiry.
+
+    Either way the agent never holds the upstream GitHub credential; the gateway
     attaches it on the way out.
     """
     if not cfg.use_mcp:
@@ -95,15 +107,25 @@ async def load_mcp_tools(cfg: Config) -> list[Any]:
 
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    client = MultiServerMCPClient(
-        {
-            "github": {
-                "url": cfg.mcp_url,
-                "transport": "streamable_http",
-                "headers": {"X-API-Key": cfg.mcp_api_key},
-            }
-        }
-    )
+    connection: dict[str, Any] = {
+        "url": cfg.mcp_url,
+        "transport": "streamable_http",
+    }
+    if cfg.mcp_oauth:
+        if not cfg.agentid_ready:
+            # AgentID provisioning finishes shortly after deploy, and injecting
+            # the credential rolls the pod — so start without MCP tools rather
+            # than crash-looping until it lands.
+            log.warning(
+                "MCP_OAUTH is true but AgentID is not provisioned yet "
+                "(AMP_AGENTID_* unset); starting without MCP tools"
+            )
+            return []
+        connection["auth"] = AgentIdentityAuth(cfg, resource=cfg.mcp_url)
+    else:
+        connection["headers"] = {"X-API-Key": cfg.mcp_api_key}
+
+    client = MultiServerMCPClient({"github": connection})
     return list(await client.get_tools())
 
 
