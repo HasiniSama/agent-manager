@@ -111,12 +111,12 @@ export const Protected = ({ children }: { children: React.ReactNode }) => {
 
     // Organizations loaded but the user belongs to none (e.g. their org was
     // deleted while the session is still live). Rendering children would crash
-    // on routes that require an orgId, so offer a logout instead.
+    // on routes that require an orgId, so offer a sign-out instead.
     if (!organizations?.organizations?.length) {
         return (
             <ErrorPages.CustomError
                 title="No Organization Found"
-                message="You are not a member of any organization. Log out and sign in with an account that belongs to an organization."
+                message="You are not a member of any organization. Sign out and sign in with an account that belongs to an organization."
                 onLogout={logout}
             />
         );
