@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wso2/agent-manager/agent-manager-observer/observer"
 	"github.com/wso2/agent-manager/agent-manager-observer/opensearch"
 )
 
@@ -280,6 +281,65 @@ func TestGetTraceOverviews_ConversationIDFilterUnreadSpans(t *testing.T) {
 			}
 			if got := logField(t, logs, "Retrieved trace overviews", "failed"); got != wantFailed {
 				t.Errorf("failed logged as %v, want %v", got, wantFailed)
+			}
+		})
+	}
+}
+
+// Under a conversationId filter, a trace whose ID can only sit on leaves it
+// didn't read is listed as failed: leaves skipped over the span threshold, or
+// cut off by the cap.
+func TestGetTraceOverviews_ConversationIDFilterUnreadLeaves(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(fake *fakeObserverClient)
+	}{
+		{name: "over the span threshold", setup: func(fake *fakeObserverClient) {
+			fake.traces[3].SpanCount = skipLeafAggregationSpanCountThreshold + 1
+		}},
+		{name: "over the leaf cap", setup: func(fake *fakeObserverClient) {
+			// Leaves without the ID start first and fill the cap.
+			info := &fake.traces[3]
+			extra := make([]observer.SpanInfo, maxLLMLeavesPerTrace)
+			for j := range extra {
+				extra[j] = observer.SpanInfo{SpanID: fmt.Sprintf("leaf-x%02d-0003", j), SpanName: "ChatOpenAI.chat",
+					ParentSpanID: "chain-0003", StartTime: info.StartTime.Add(-time.Duration(len(extra)-j) * time.Millisecond),
+					Attributes: map[string]interface{}{}}
+				fake.spanDetails[extra[j].SpanID] = &observer.SpanDetailsResponse{
+					SpanID: extra[j].SpanID, SpanName: extra[j].SpanName, ParentSpanID: extra[j].ParentSpanID, Attributes: extra[j].Attributes,
+				}
+			}
+			spans := append(extra, fake.spansByTrace[info.TraceID]...)
+			fake.spansByTrace[info.TraceID] = spans
+			info.SpanCount = len(spans)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := langGraphFake(20, noRootAttrs)
+			setThreads(fake, false, func(int) string { return "thread-match" })
+			tt.setup(fake)
+			params := lookBackParams(20)
+			params.Filters.ConversationID = "thread-match"
+			c := NewTracingController(fake)
+			ctx, logs := logContext()
+
+			resp, err := c.GetTraceOverviews(ctx, params)
+			if err != nil {
+				t.Fatalf("GetTraceOverviews returned error: %v", err)
+			}
+
+			if len(resp.Traces) != 19 || slices.ContainsFunc(resp.Traces, func(ov opensearch.TraceOverview) bool {
+				return ov.TraceID == "trace-0003"
+			}) {
+				t.Errorf("got %d traces, want the 19 besides trace-0003", len(resp.Traces))
+			}
+			if got := logField(t, logs, "Retrieved trace overviews", "failed"); got != float64(1) {
+				t.Errorf("failed logged as %v, want 1", got)
+			}
+			export := mustExport(t, c, params)
+			if want := []string{"trace-0003"}; !slices.Equal(export.FailedTraceIDs, want) {
+				t.Errorf("failedTraceIds = %v, want %v", export.FailedTraceIDs, want)
 			}
 		})
 	}

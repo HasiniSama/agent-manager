@@ -29,9 +29,10 @@ the trace's local root is still open, sets ``gen_ai.conversation.id`` on it:
 - Keys are read in the observer's order (``CONVERSATION_ID_KEYS``). The first
   non-empty string, or int as its decimal string, is the ID; bools and floats
   are ignored.
-- A root that already has any of the keys is left alone, and the first ID copied
-  is never overwritten. The observer reads ``gen_ai.conversation.id`` before
-  ``session.id``, so adding it to such a root could change the answer.
+- A root the observer already reads an ID from, a whole-number float included,
+  is left alone, and the first ID copied is never overwritten. The observer reads
+  ``gen_ai.conversation.id`` before ``session.id``, so adding it to such a root
+  could change the answer.
 - The root ends after its children, so the attribute is in place when it is
   exported. A child that ends after the root changes nothing.
 
@@ -80,8 +81,14 @@ def _conversation_id(attributes: Mapping) -> Optional[str]:
     return None
 
 
-def _has_conversation_key(attributes: Mapping) -> bool:
-    return any(key in attributes for key in CONVERSATION_ID_KEYS)
+def _root_has_id(attributes: Mapping) -> bool:
+    """Whether the observer reads an ID from the root; it also takes whole-number floats."""
+    if _conversation_id(attributes) is not None:
+        return True
+    return any(
+        isinstance(value, float) and value.is_integer()
+        for value in (attributes.get(key) for key in CONVERSATION_ID_KEYS)
+    )
 
 
 class ConversationIdSpanProcessor(SpanProcessor):
@@ -118,7 +125,7 @@ class ConversationIdSpanProcessor(SpanProcessor):
             if root.get_span_context().span_id == context.span_id:
                 self._roots.pop(context.trace_id, None)
                 return
-            if not root.is_recording() or _has_conversation_key(root.attributes or {}):
+            if not root.is_recording() or _root_has_id(root.attributes or {}):
                 return
             conversation_id = _conversation_id(span.attributes or {})
             if conversation_id is not None:

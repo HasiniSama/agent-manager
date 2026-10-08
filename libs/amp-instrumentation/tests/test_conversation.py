@@ -219,6 +219,24 @@ class TestRootLeftAlone:
         assert attributes[key] == "root-id"
         assert KEY not in attributes
 
+    def test_empty_root_key_does_not_block_the_copy(self, tracer, span_exporter):
+        root = tracer.start_span("root")
+        root.set_attribute("session.id", "")
+        finish_child(tracer, root, {THREAD_ID: "child-id"})
+        root.end()
+
+        assert exported(span_exporter, "root")[KEY] == "child-id"
+
+    def test_whole_float_root_key_blocks_the_copy(self, tracer, span_exporter):
+        root = tracer.start_span("root")
+        root.set_attribute("session.id", 556.0)
+        finish_child(tracer, root, {THREAD_ID: "child-id"})
+        root.end()
+
+        attributes = exported(span_exporter, "root")
+        assert attributes["session.id"] == 556.0
+        assert KEY not in attributes
+
     def test_root_that_is_no_longer_recording_is_skipped(
         self, tracer, processor, monkeypatch
     ):

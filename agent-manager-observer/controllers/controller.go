@@ -686,8 +686,9 @@ func (c *TracingController) rootFromSpanList(
 // find it. The verdict is enrichRejected once an ID is found that doesn't
 // match: on the root before any fetch, or on the child before step 3. A trace
 // with no ID is kept here and ruled out by matchesFilters. It is enrichFailed
-// when a read the ID depends on fails: the span list, the child, or a leaf
-// ahead of the first ID.
+// when a span the ID may sit on goes unread: a failed span list, child or leaf
+// ahead of the first ID, leaves skipped over the span threshold, or leaves cut
+// off by the cap.
 //
 // When the span list carries attributes, steps 2 and 3 read their spans from
 // it instead of fetching them. spans is the list when the caller already
@@ -793,6 +794,10 @@ func (c *TracingController) enrichTraceOverview(
 				"traceId", traceInfo.TraceID,
 				"spanCount", traceInfo.SpanCount,
 				"threshold", skipLeafAggregationSpanCountThreshold)
+			// The skipped leaves may hold the ID.
+			if conversationPending(conversationID, params.Filters) {
+				return nil, nil, nil, nil, "", enrichFailed
+			}
 		} else {
 			leafInput, leafOutput, leafTokens, leafModels, leafConversationID, leavesUnread, leafIDUnread := c.aggregateFromLeafLLMSpans(ctx, traceInfo.TraceID, spans, modelsFromList, fetchSem)
 			if models == nil {
@@ -964,7 +969,8 @@ func (c *TracingController) tryChildChainSpan(
 // returned TokenUsage has Partial=true so the UI can render an "approximate"
 // marker. unread reports leaves left out, by the cap or a failed fetch.
 // conversationID is the first one a leaf carries, in start order. idUnread
-// reports a leaf that failed to fetch ahead of it, or any when there is none.
+// reports a leaf that failed to fetch ahead of it, or, when there is none, any
+// leaf that failed or was cut off by the cap.
 func (c *TracingController) aggregateFromLeafLLMSpans(
 	ctx context.Context,
 	traceID string,
@@ -1037,6 +1043,10 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 		if conversationID = opensearch.ExtractConversationID(&fetched[i]); conversationID != "" {
 			break
 		}
+	}
+	// A leaf past the cap may hold the ID.
+	if partial && conversationID == "" {
+		idUnread = true
 	}
 	if len(validLeaves) == 0 {
 		return nil, nil, nil, nil, "", unread, idUnread
