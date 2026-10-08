@@ -137,6 +137,9 @@ func TestTracesCmd_RejectsInvalidFilterFlags(t *testing.T) {
 		{"--min-tokens", "-1"},
 		{"--min-tokens", "many"},
 		{"--min-spans", "-1"},
+		{"--condition", "high_latency", "--max-latency", "-100"},
+		{"--condition", "high_token_usage", "--max-tokens", "-1"},
+		{"--condition", "excessive_steps", "--max-spans", "-1"},
 		{"--condition", "tool_call_fails", "--show-models"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

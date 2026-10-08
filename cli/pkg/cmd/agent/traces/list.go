@@ -171,7 +171,7 @@ func renderOverviewTable(o *ListTracesOptions, traces []observersvc.TraceOvervie
 	}
 	tp := tableprinter.New(o.IO, append(headers, "started")...)
 	for _, tr := range traces {
-		tp.AddField(truncate(tr.TraceID, 16))
+		tp.AddField(tr.TraceID)
 		tp.AddField(traceStatus(tr.Status))
 		tp.AddField(formatDuration(tr.DurationInNanos))
 		tp.AddField(fmt.Sprintf("%d", tr.SpanCount))
@@ -262,10 +262,17 @@ func resolveFilters(o *ListTracesOptions) error {
 		return cmdutil.FlagErrorf("--status: %q is not valid; must be error or ok", o.Status)
 	}
 	for _, m := range []struct {
-		flag string
-		val  *int64
-	}{{"--min-duration", o.MinDurationMs}, {"--min-tokens", o.MinTokens}, {"--min-spans", o.MinSpans}} {
-		if m.val != nil && *m.val < 0 {
+		flag     string
+		negative bool
+	}{
+		{"--min-duration", o.MinDurationMs != nil && *o.MinDurationMs < 0},
+		{"--min-tokens", o.MinTokens != nil && *o.MinTokens < 0},
+		{"--min-spans", o.MinSpans != nil && *o.MinSpans < 0},
+		{"--max-latency", o.MaxLatency < 0},
+		{"--max-tokens", o.MaxTokens < 0},
+		{"--max-spans", o.MaxSpans < 0},
+	} {
+		if m.negative {
 			return cmdutil.FlagErrorf("%s must not be negative", m.flag)
 		}
 	}
