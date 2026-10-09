@@ -22,6 +22,7 @@ import type { TraceFilters, TraceOverview } from '@agent-management-platform/typ
 // Direct file imports: the subComponents index pulls in api-client via TraceDetails.
 import { TraceFilterBar } from './subComponents/TraceFilterBar';
 import { TracesView } from './subComponents/TracesView';
+import { hasScoreBound } from './traceFilters';
 
 const sampleTraces = [
   {
@@ -50,6 +51,8 @@ const sampleTraces = [
   },
 ] as TraceOverview[];
 
+const sampleEvaluators = ['Accuracy', 'Helpfulness', 'Tool Use'];
+
 interface FilteredTracesProps {
   initialFilters: TraceFilters;
   traces: TraceOverview[];
@@ -73,7 +76,7 @@ function FilteredTraces({
   const [filters, setFilters] = useState(initialFilters);
   return (
     <>
-      <TraceFilterBar filters={filters} onChange={setFilters} />
+      <TraceFilterBar filters={filters} onChange={setFilters} evaluators={sampleEvaluators} />
       <TracesView
         traces={traces}
         selectedTrace={null}
@@ -81,6 +84,8 @@ function FilteredTraces({
         isLoadingMore={isLoadingMore}
         loadError={loadError}
         hasActiveFilters={Object.keys(filters).length > 0}
+        hasScoreFilter={hasScoreBound(filters)}
+        scoreEvaluator={filters.evaluator}
         truncated={truncated}
         lookedBackTo={lookedBackTo}
         onTraceSelect={() => undefined}
@@ -119,6 +124,21 @@ export const SeveralActiveFilters: Story = {
       conversationId: 'conv-7f3a',
     },
     traces: sampleTraces,
+  },
+};
+
+// The second row's filters, with the paired tool chip and the Score column labelled by evaluator.
+export const ToolMcpAndScoreFilters: Story = {
+  args: {
+    initialFilters: {
+      tool: 'search_web',
+      toolError: true,
+      mcpServer: 'github',
+      evaluator: 'Accuracy',
+      minScore: 0.1,
+      maxScore: 0.5,
+    },
+    traces: [{ ...sampleTraces[1], score: { score: 0.2, totalCount: 1, skippedCount: 0 } }],
   },
 };
 

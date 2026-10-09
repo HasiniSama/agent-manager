@@ -20,7 +20,8 @@ import type { TraceFilters } from "@agent-management-platform/types";
 
 export type TraceFilterKey = keyof TraceFilters;
 type NumericFilterKey = "minDurationMs" | "minTokens" | "minSpanCount";
-type TextFilterKey = "model" | "conversationId";
+type TextFilterKey = "model" | "conversationId" | "tool" | "mcpServer" | "evaluator";
+type ScoreFilterKey = "minScore" | "maxScore";
 
 // URL param names match the API query params; this is also the chip order.
 export const TRACE_FILTER_KEYS: TraceFilterKey[] = [
@@ -30,17 +31,25 @@ export const TRACE_FILTER_KEYS: TraceFilterKey[] = [
   "minSpanCount",
   "model",
   "conversationId",
+  "tool",
+  "toolError",
+  "mcpServer",
+  "evaluator",
+  "minScore",
+  "maxScore",
 ];
 
 const NUMERIC_KEYS: NumericFilterKey[] = ["minDurationMs", "minTokens", "minSpanCount"];
-const TEXT_KEYS: TextFilterKey[] = ["model", "conversationId"];
+const TEXT_KEYS: TextFilterKey[] = ["model", "conversationId", "tool", "mcpServer", "evaluator"];
+const SCORE_KEYS: ScoreFilterKey[] = ["minScore", "maxScore"];
 
-// The API rejects longer model and conversationId values.
+// The API rejects longer text filter values.
 export const MAX_TEXT_FILTER_LENGTH = 256;
 
 export const LATENCY_PRESETS_MS = [1000, 5000, 10000, 30000];
 export const TOKEN_PRESETS = [1000, 5000, 10000, 50000];
 export const STEP_PRESETS = [10, 20, 50];
+export const SCORE_PRESETS = [0.25, 0.5, 0.75];
 
 /** Formats ms as seconds when whole, e.g. 5s or 1500ms. */
 export const formatLatency = (ms: number) =>
@@ -49,6 +58,13 @@ export const formatLatency = (ms: number) =>
 /** Formats whole thousands as k, e.g. 5k. */
 export const formatTokens = (n: number) =>
   n >= 1000 && n % 1000 === 0 ? `${n / 1000}k` : `${n}`;
+
+/** Formats a 0–1 score as a percentage, e.g. 50% or 33.33%. */
+export const formatScore = (score: number) => `${Number((score * 100).toFixed(2))}%`;
+
+/** Whether a score bound is set; evaluator needs one. */
+export const hasScoreBound = (filters: TraceFilters) =>
+  filters.minScore !== undefined || filters.maxScore !== undefined;
 
 // Reads filters from the URL, dropping anything the API would reject.
 export function parseTraceFilters(searchParams: URLSearchParams): TraceFilters {
@@ -67,6 +83,21 @@ export function parseTraceFilters(searchParams: URLSearchParams): TraceFilters {
     const raw = searchParams.get(key)?.trim();
     if (raw && raw.length <= MAX_TEXT_FILTER_LENGTH) filters[key] = raw;
   }
+  if (searchParams.get("toolError") === "true") filters.toolError = true;
+  for (const key of SCORE_KEYS) {
+    const raw = searchParams.get(key) ?? "";
+    // Plain decimals in [0, 1], as the API validates.
+    if (/^(\d+\.?\d*|\.\d+)$/.test(raw) && Number(raw) <= 1) filters[key] = Number(raw);
+  }
+  // The API rejects minScore above maxScore; maxScore has the control, so it wins.
+  if (
+    filters.minScore !== undefined &&
+    filters.maxScore !== undefined &&
+    filters.minScore > filters.maxScore
+  ) {
+    delete filters.minScore;
+  }
+  if (filters.evaluator && !hasScoreBound(filters)) delete filters.evaluator;
   return filters;
 }
 
@@ -77,8 +108,9 @@ export function withTraceFilters(
 ): URLSearchParams {
   const next = new URLSearchParams(searchParams);
   for (const key of TRACE_FILTER_KEYS) {
-    const value = filters[key];
-    if (value === undefined || value === "") next.delete(key);
+    // evaluator goes with the last score bound.
+    const value = key === "evaluator" && !hasScoreBound(filters) ? undefined : filters[key];
+    if (value === undefined || value === "" || value === false) next.delete(key);
     else next.set(key, String(value));
   }
   return next;
@@ -87,6 +119,8 @@ export function withTraceFilters(
 export interface TraceFilterChip {
   key: TraceFilterKey;
   label: string;
+  // Other filters the chip's × clears with key.
+  alsoClears?: TraceFilterKey[];
 }
 
 // One human-readable chip per set filter, in TRACE_FILTER_KEYS order.
@@ -107,6 +141,22 @@ export function traceFilterChips(filters: TraceFilters): TraceFilterChip[] {
   if (filters.model) chips.push({ key: "model", label: `Model: ${filters.model}` });
   if (filters.conversationId) {
     chips.push({ key: "conversationId", label: `Conversation: ${filters.conversationId}` });
+  }
+  // tool with toolError means that tool failed, so they share one chip.
+  if (filters.tool && filters.toolError) {
+    chips.push({ key: "tool", label: `${filters.tool} failed`, alsoClears: ["toolError"] });
+  } else if (filters.tool) {
+    chips.push({ key: "tool", label: `Tool: ${filters.tool}` });
+  } else if (filters.toolError) {
+    chips.push({ key: "toolError", label: "Tool failed" });
+  }
+  if (filters.mcpServer) chips.push({ key: "mcpServer", label: `MCP server: ${filters.mcpServer}` });
+  if (filters.evaluator) chips.push({ key: "evaluator", label: `Evaluator: ${filters.evaluator}` });
+  if (filters.minScore !== undefined) {
+    chips.push({ key: "minScore", label: `Score ≥ ${formatScore(filters.minScore)}` });
+  }
+  if (filters.maxScore !== undefined) {
+    chips.push({ key: "maxScore", label: `Score ≤ ${formatScore(filters.maxScore)}` });
   }
   return chips;
 }

@@ -67,12 +67,13 @@ async function fetchScoreMap(
   getToken: (() => Promise<string>) | undefined,
   offset = 0,
   traceIds?: string[],
+  evaluator?: string,
 ): Promise<Map<string, { score?: number | null; totalCount: number; skippedCount: number }>> {
   try {
     const res = await getAgentTraceScores(
       {
         orgName, projName, agentName, startTime, endTime, limit, offset,
-        sortOrder: sortOrder as "asc" | "desc", traceIds,
+        sortOrder: sortOrder as "asc" | "desc", traceIds, evaluator,
       },
       getToken,
     );
@@ -101,9 +102,15 @@ const MAX_SCORES_PER_REQUEST = 100;
 /** Widens a page's score window to absorb timestamp precision differences. */
 const SCORE_WINDOW_PAD_MS = 1000;
 
-/** Fetch scores for one page of traces by trace ID, one call per MAX_SCORES_PER_REQUEST traces. */
+/** Fetch a page's scores by trace ID, 100 per call; with filters.evaluator, that evaluator's. */
 async function fetchTraceIdScoreMap(
-  scope: { organization: string; project: string; component: string; sortOrder?: string },
+  scope: {
+    organization: string;
+    project: string;
+    component: string;
+    sortOrder?: string;
+    filters?: TraceFilters;
+  },
   traces: TraceListResponse["traces"] | undefined,
   getToken: (() => Promise<string>) | undefined,
 ): ReturnType<typeof fetchScoreMap> {
@@ -126,6 +133,7 @@ async function fetchTraceIdScoreMap(
       getToken,
       0,
       chunk.map((t) => t.traceId),
+      scope.filters?.evaluator,
     );
   }));
   return new Map(maps.flatMap((map) => [...map]));

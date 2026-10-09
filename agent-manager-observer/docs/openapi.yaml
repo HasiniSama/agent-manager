@@ -89,8 +89,10 @@ paths:
         Score filters (`minScore`, `maxScore`, `evaluator`) read scores from agent-manager-service
         with the caller's token. Such a request returns 503 when the server has no
         agent-manager-service URL, 403 when the service rejects the token, and 502 when a lookup
-        fails, times out or can't reach the service, never a partial page. A request without a
-        score filter never calls the service.
+        fails, times out or can't reach the service, never a partial page. The exception is a
+        lookup the 20-second search budget cuts off after earlier batches: the search stops there
+        and returns the matches so far, with `truncated` true and a `nextCursor`. A request
+        without a score filter never calls the service.
       operationId: listTraces
       security:
         - bearerAuth: []

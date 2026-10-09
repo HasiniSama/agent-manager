@@ -47,6 +47,7 @@ import {
   useGetAgent,
   useGetOrganization,
   useListEnvironments,
+  useListMonitors,
   isObserverConfigured,
   type TraceListWithRange,
   ConsoleAction,
@@ -58,7 +59,7 @@ import {
   TraceFilterBar,
   TracesView,
 } from "./subComponents";
-import { parseTraceFilters, withTraceFilters } from "./traceFilters";
+import { hasScoreBound, parseTraceFilters, withTraceFilters } from "./traceFilters";
 import { type TraceColumn, parseTraceColumns, withTraceColumns } from "./traceColumns";
 import { formatStartTime } from "./traceTime";
 import {
@@ -192,6 +193,22 @@ export const TracesComponent: React.FC = () => {
 
   const filters = useMemo(() => parseTraceFilters(searchParams), [searchParams]);
   const hasActiveFilters = Object.keys(filters).length > 0;
+
+  // Set when the Evaluator select first opens, so the default page sends no monitors request.
+  const [evaluatorsRequested, setEvaluatorsRequested] = useState(false);
+  const { data: monitorsData, isLoading: isMonitorsLoading } = useListMonitors(
+    { orgName: orgId ?? "", projName: projectId ?? "", agentName: agentId ?? "" },
+    undefined,
+    { enabled: evaluatorsRequested },
+  );
+  // The score filter's evaluator matches display names across all the agent's monitors.
+  const evaluatorNames = useMemo(
+    () =>
+      monitorsData &&
+      [...new Set(monitorsData.monitors.flatMap((m) => m.evaluators.map((e) => e.displayName)))]
+        .sort((a, b) => a.localeCompare(b)),
+    [monitorsData],
+  );
 
   const visibleColumns = useMemo(() => parseTraceColumns(searchParams), [searchParams]);
 
@@ -521,6 +538,9 @@ export const TracesComponent: React.FC = () => {
           filters={filters}
           onChange={handleFiltersChange}
           onTraceSearch={handleTraceSelect}
+          evaluators={evaluatorNames}
+          evaluatorsLoading={isMonitorsLoading}
+          onEvaluatorsOpen={() => setEvaluatorsRequested(true)}
         />
         <TracesView
           traces={traceData?.traces ?? []}
@@ -529,6 +549,8 @@ export const TracesComponent: React.FC = () => {
           isLoadingMore={isLoadingMore}
           hasMore={hasMore}
           hasActiveFilters={hasActiveFilters}
+          hasScoreFilter={hasScoreBound(filters)}
+          scoreEvaluator={filters.evaluator}
           truncated={truncated}
           lookedBackTo={lookedBackTo}
           loadError={loadError}

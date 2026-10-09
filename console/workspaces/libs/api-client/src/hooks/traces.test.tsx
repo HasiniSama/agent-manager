@@ -595,6 +595,53 @@ describe("useTraceList scores", () => {
   });
 });
 
+describe("useTraceList evaluator scores", () => {
+  const filters: TraceFilters = { maxScore: 0.5, evaluator: "Accuracy" };
+
+  it("scores the filtered first page and loadMore by the evaluator", async () => {
+    mockList
+      .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")], { nextCursor: "c1" }))
+      .mockResolvedValueOnce(page([trace("t2", "2026-10-02T09:40:00Z")]));
+    mockScores.mockImplementation((params) => scoreEach(params, 0.4));
+
+    const result = renderTraceList({ filters });
+    await waitFor(() => result.current.traceList?.traces.length === 1);
+    await act(() => result.current.loadMore());
+
+    expect(mockScores).toHaveBeenCalledTimes(2);
+    expect(mockScores.mock.calls[0][0]).toMatchObject({ traceIds: ["t1"], evaluator: "Accuracy" });
+    expect(mockScores.mock.calls[1][0]).toMatchObject({ traceIds: ["t2"], evaluator: "Accuracy" });
+    expect(result.current.traceList?.traces.map((t) => t.score?.score)).toEqual([0.4, 0.4]);
+  });
+
+  it("keeps loadNewer's window score call without the evaluator", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    mockList
+      .mockResolvedValueOnce(page([trace("t1", "2026-10-02T09:50:00Z")]))
+      .mockResolvedValueOnce(page([trace("t2", "2026-10-02T09:55:00Z")]));
+
+    const result = renderTraceList({ filters, enableAutoRefresh: true }, "desc", "1h");
+    await waitFor(() => result.current.traceList?.traces.length === 1);
+    mockScores.mockClear();
+
+    act(() => { vi.advanceTimersByTime(30000); });
+    await waitFor(() => result.current.traceList?.traces.length === 2);
+
+    expect(mockScores).toHaveBeenCalledTimes(1);
+    expect(mockScores.mock.calls[0][0]).toEqual({
+      orgName: "org",
+      projName: "proj",
+      agentName: "agent",
+      startTime: "2026-10-02T09:50:00Z",
+      endTime: mockList.mock.calls[1][0].endTime,
+      limit: 10,
+      offset: 0,
+      sortOrder: "desc",
+    });
+    expect(mockScores.mock.calls[0][0].evaluator).toBeUndefined();
+  });
+});
+
 describe("useTraceList include", () => {
   it("sends include on the first page and loadMore, keyed by value", async () => {
     mockList

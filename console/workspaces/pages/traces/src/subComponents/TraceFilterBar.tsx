@@ -32,14 +32,19 @@ import { X as RemoveIcon } from "@wso2/oxygen-ui-icons-react";
 import {
   LATENCY_PRESETS_MS,
   MAX_TEXT_FILTER_LENGTH,
+  SCORE_PRESETS,
   STEP_PRESETS,
   TOKEN_PRESETS,
+  type TraceFilterChip,
   type TraceFilterKey,
   formatLatency,
+  formatScore,
   formatTokens,
+  hasScoreBound,
   traceFilterChips,
 } from "../traceFilters";
 import { TraceIdSearch } from "./TraceIdSearch";
+import { EvaluatorSelect, ToolFailedSelect } from "./TraceFilterSelects";
 
 const ANY = "";
 
@@ -48,6 +53,11 @@ export interface TraceFilterBarProps {
   onChange: (filters: TraceFilters) => void;
   /** Opens one trace by ID; the field shows only when this is set. */
   onTraceSearch?: (traceId: string) => void;
+  /** Evaluator names for the Evaluator select; undefined until loaded. */
+  evaluators?: string[];
+  evaluatorsLoading?: boolean;
+  /** Called when the Evaluator select opens, so its options load only once someone looks. */
+  onEvaluatorsOpen?: () => void;
 }
 
 interface ThresholdSelectProps {
@@ -121,13 +131,16 @@ export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({
   filters,
   onChange,
   onTraceSearch,
+  evaluators,
+  evaluatorsLoading,
+  onEvaluatorsOpen,
 }) => {
   const set = <K extends TraceFilterKey>(key: K, value: TraceFilters[K]) =>
     onChange({ ...filters, [key]: value });
-  /** Clears one filter. */
-  const remove = (key: TraceFilterKey) => {
+  /** Clears the chip's filters. */
+  const remove = (chip: TraceFilterChip) => {
     const next = { ...filters };
-    delete next[key];
+    for (const key of [chip.key, ...(chip.alsoClears ?? [])]) delete next[key];
     onChange(next);
   };
   const chips = traceFilterChips(filters);
@@ -188,6 +201,36 @@ export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({
         />
         {onTraceSearch && <TraceIdSearch onSearch={onTraceSearch} />}
       </Stack>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+        <CommitTextField
+          key={`tool:${filters.tool ?? ""}`}
+          label="Tool"
+          value={filters.tool}
+          onCommit={(v) => set("tool", v)}
+        />
+        <ToolFailedSelect value={filters.toolError} onChange={(v) => set("toolError", v)} />
+        <CommitTextField
+          key={`mcpServer:${filters.mcpServer ?? ""}`}
+          label="MCP server"
+          value={filters.mcpServer}
+          onCommit={(v) => set("mcpServer", v)}
+        />
+        <EvaluatorSelect
+          value={filters.evaluator}
+          options={evaluators}
+          loading={evaluatorsLoading}
+          disabled={!hasScoreBound(filters)}
+          onOpen={onEvaluatorsOpen}
+          onChange={(v) => set("evaluator", v)}
+        />
+        <ThresholdSelect
+          label="Score ≤"
+          value={filters.maxScore}
+          presets={SCORE_PRESETS}
+          format={formatScore}
+          onChange={(v) => set("maxScore", v)}
+        />
+      </Stack>
       {chips.length > 0 && (
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
           <Typography variant="body2" color="text.secondary">
@@ -200,7 +243,7 @@ export const TraceFilterBar: React.FC<TraceFilterBarProps> = ({
               title={chip.label}
               size="small"
               variant="outlined"
-              onDelete={() => remove(chip.key)}
+              onDelete={() => remove(chip)}
               deleteIcon={<RemoveIcon size={14} aria-label={`Remove ${chip.label}`} />}
               sx={{ maxWidth: 320 }}
             />

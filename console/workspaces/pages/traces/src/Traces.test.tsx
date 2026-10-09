@@ -48,16 +48,22 @@ vi.mock("@agent-management-platform/api-client", () => ({
   useTrace: vi.fn(() => ({ data: undefined, isLoading: true, isTruncated: false })),
   useTraceScores: vi.fn(() => ({ data: undefined, isLoading: true })),
   useSpanDetail: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useListMonitors: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 vi.mock("@agent-management-platform/shared-component", () => ({
   EnvironmentSelector: () => null,
   copyToClipboard: vi.fn(() => Promise.resolve(true)),
 }));
 
-import { useExportTraces, useTrace, useTraceList } from "@agent-management-platform/api-client";
+import {
+  useExportTraces,
+  useListMonitors,
+  useTrace,
+  useTraceList,
+} from "@agent-management-platform/api-client";
 import { copyToClipboard } from "@agent-management-platform/shared-component";
 import { TracesComponent } from "./Traces.Component";
-import { parseTraceFilters, traceFilterChips } from "./traceFilters";
+import { parseTraceFilters, traceFilterChips, withTraceFilters } from "./traceFilters";
 import { parseTraceColumns } from "./traceColumns";
 import { formatStartTime } from "./traceTime";
 
@@ -304,6 +310,290 @@ describe("TracesComponent filters", () => {
     renderPage("?selectedTrace=t-ok");
     pickOption("Status", "Error");
     expect(currentParams().get("status")).toBe("error");
+    expect(currentParams().get("selectedTrace")).toBeNull();
+  });
+});
+
+describe("tool, MCP server and score filter URL parsing", () => {
+  it("round-trips each new filter through the URL", () => {
+    const filters: TraceFilters = {
+      tool: "search_web",
+      toolError: true,
+      mcpServer: "github",
+      evaluator: "Accuracy",
+      minScore: 0.25,
+      maxScore: 0.5,
+    };
+    const params = withTraceFilters(new URLSearchParams("timeRange=1h"), filters);
+    expect(params.toString()).toBe(
+      "timeRange=1h&tool=search_web&toolError=true&mcpServer=github&evaluator=Accuracy" +
+        "&minScore=0.25&maxScore=0.5",
+    );
+    expect(parseTraceFilters(params)).toEqual(filters);
+  });
+
+  it("drops invalid scores, toolError other than true, and a lone evaluator", () => {
+    expect(
+      parseTraceFilters(
+        new URLSearchParams("minScore=1.5&maxScore=abc&toolError=yes&evaluator=Accuracy"),
+      ),
+    ).toEqual({});
+    expect(parseTraceFilters(new URLSearchParams("minScore=-0.1&maxScore=1e-1"))).toEqual({});
+    expect(parseTraceFilters(new URLSearchParams("minScore=0&maxScore=1"))).toEqual({
+      minScore: 0,
+      maxScore: 1,
+    });
+    // The API rejects minScore above maxScore.
+    expect(parseTraceFilters(new URLSearchParams("minScore=0.8&maxScore=0.2"))).toEqual({
+      maxScore: 0.2,
+    });
+    expect(parseTraceFilters(new URLSearchParams("toolError=false"))).toEqual({});
+  });
+
+  it("writes evaluator only with a score bound, and toolError only when true", () => {
+    const params = withTraceFilters(new URLSearchParams("evaluator=Accuracy&toolError=true"), {
+      evaluator: "Accuracy",
+      toolError: false,
+    });
+    expect(params.toString()).toBe("");
+  });
+
+  it("labels the new chips, pairing tool with toolError", () => {
+    expect(
+      traceFilterChips({ tool: "search_web", mcpServer: "github", minScore: 0.25, maxScore: 0.5 })
+        .map((c) => c.label),
+    ).toEqual(["Tool: search_web", "MCP server: github", "Score ≥ 25%", "Score ≤ 50%"]);
+    expect(traceFilterChips({ toolError: true }).map((c) => c.label)).toEqual(["Tool failed"]);
+    expect(traceFilterChips({ tool: "search_web", toolError: true })).toEqual([
+      { key: "tool", label: "search_web failed", alsoClears: ["toolError"] },
+    ]);
+    expect(
+      traceFilterChips({ evaluator: "Accuracy", maxScore: 0.333 }).map((c) => c.label),
+    ).toEqual(["Evaluator: Accuracy", "Score ≤ 33.3%"]);
+  });
+});
+
+describe("TracesComponent tool, MCP server and score filters", () => {
+  // Two monitors sharing Helpfulness; the select lists each name once, sorted.
+  const MONITORS = {
+    monitors: [
+      {
+        evaluators: [
+          { identifier: "tool-use", displayName: "Tool Use" },
+          { identifier: "helpfulness", displayName: "Helpfulness" },
+        ],
+      },
+      {
+        evaluators: [
+          { identifier: "accuracy", displayName: "Accuracy" },
+          { identifier: "helpfulness", displayName: "Helpfulness" },
+        ],
+      },
+    ],
+    total: 2,
+  };
+  const mockMonitors = vi.mocked(useListMonitors);
+  const monitorsEnabled = () => mockMonitors.mock.calls.some((call) => call[2]?.enabled);
+
+  beforeEach(() => {
+    mockMonitors.mockImplementation((_params, _query, options) => ({
+      data: options?.enabled ? MONITORS : undefined,
+      isLoading: false,
+    }) as unknown as ReturnType<typeof useListMonitors>);
+  });
+
+  it("sends today's request from the default page, and no monitors request", () => {
+    renderPage("?timeRange=1h");
+
+    expect(mockUseTraceList.mock.lastCall).toEqual([
+      "ns", "p", "a", "dev", "1h", 10, "desc", undefined, undefined, { filters: {}, paged: true },
+    ]);
+    expect(currentParams().toString()).toBe("timeRange=1h");
+    expect(mockMonitors).toHaveBeenCalled();
+    expect(monitorsEnabled()).toBe(false);
+  });
+
+  it("reproduces a pasted URL's new filters in the request, the controls and the chips", () => {
+    renderPage(
+      "?timeRange=1h&tool=search_web&mcpServer=github&evaluator=Accuracy&minScore=0.25&maxScore=0.5",
+    );
+
+    expect(lastFilters()).toEqual({
+      tool: "search_web",
+      mcpServer: "github",
+      evaluator: "Accuracy",
+      minScore: 0.25,
+      maxScore: 0.5,
+    });
+    expect(screen.getByRole("textbox", { name: "Tool" })).toHaveValue("search_web");
+    expect(screen.getByRole("textbox", { name: "MCP server" })).toHaveValue("github");
+    expect(screen.getByRole("combobox", { name: "Evaluator" })).toHaveTextContent(
+      "Evaluator: Accuracy",
+    );
+    expect(screen.getByRole("combobox", { name: "Score ≤" })).toHaveTextContent("Score ≤ 50%");
+    for (const label of [
+      "Tool: search_web",
+      "MCP server: github",
+      "Evaluator: Accuracy",
+      "Score ≥ 25%",
+      "Score ≤ 50%",
+    ]) {
+      expect(screen.getByText(label, { selector: ".MuiChip-label" })).toBeInTheDocument();
+    }
+    expect(monitorsEnabled()).toBe(false);
+  });
+
+  it("writes Tool, Tool failed and MCP server to the URL", () => {
+    renderPage("?timeRange=1h");
+
+    const tool = screen.getByRole("textbox", { name: "Tool" });
+    fireEvent.change(tool, { target: { value: " search_web " } });
+    expect(currentParams().get("tool")).toBeNull();
+    fireEvent.keyDown(tool, { key: "Enter" });
+    pickOption("Tool failed", "Yes");
+    const mcp = screen.getByRole("textbox", { name: "MCP server" });
+    fireEvent.change(mcp, { target: { value: "github" } });
+    fireEvent.blur(mcp);
+
+    const params = currentParams();
+    expect(params.get("tool")).toBe("search_web");
+    expect(params.get("toolError")).toBe("true");
+    expect(params.get("mcpServer")).toBe("github");
+    expect(lastFilters()).toEqual({ tool: "search_web", toolError: true, mcpServer: "github" });
+
+    pickOption("Tool failed", "Any");
+    expect(currentParams().get("toolError")).toBeNull();
+  });
+
+  it("shows tool with toolError as one chip whose × clears both", () => {
+    renderPage("?timeRange=1h&status=error&tool=search_web&toolError=true");
+
+    expect(screen.getByText("search_web failed", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.queryByText("Tool: search_web", { selector: ".MuiChip-label" })).toBeNull();
+    expect(screen.queryByText("Tool failed", { selector: ".MuiChip-label" })).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Remove search_web failed"));
+    const params = currentParams();
+    expect(params.get("tool")).toBeNull();
+    expect(params.get("toolError")).toBeNull();
+    expect(params.get("status")).toBe("error");
+    expect(lastFilters()).toEqual({ status: "error" });
+  });
+
+  it("writes Score presets as decimals and lists a non-preset value from the URL", () => {
+    const { unmount } = renderPage("?timeRange=1h");
+    pickOption("Score ≤", "50%");
+    expect(currentParams().get("maxScore")).toBe("0.5");
+    expect(lastFilters()).toEqual({ maxScore: 0.5 });
+    expect(screen.getByText("Score ≤ 50%", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    pickOption("Score ≤", "25%");
+    expect(currentParams().get("maxScore")).toBe("0.25");
+    unmount();
+
+    renderPage("?maxScore=0.33");
+    expect(screen.getByRole("combobox", { name: "Score ≤" })).toHaveTextContent("Score ≤ 33%");
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Score ≤" }));
+    expect(
+      within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent),
+    ).toEqual(["Any", "25%", "33%", "50%", "75%"]);
+  });
+
+  it("keeps Evaluator disabled without a score bound, with no monitors request", () => {
+    renderPage("?timeRange=1h&tool=search_web");
+
+    const evaluator = screen.getByRole("combobox", { name: "Evaluator" });
+    expect(evaluator).toHaveAttribute("aria-disabled", "true");
+    fireEvent.mouseDown(evaluator);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(monitorsEnabled()).toBe(false);
+  });
+
+  it("loads evaluators only once the select opens, then filters and labels the Score column", () => {
+    renderPage("?timeRange=1h&maxScore=0.5");
+    expect(monitorsEnabled()).toBe(false);
+    expect(screen.queryByRole("columnheader", { name: "Score" })).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Evaluator" }));
+    expect(monitorsEnabled()).toBe(true);
+    expect(mockMonitors.mock.lastCall?.[0]).toEqual({ orgName: "o", projName: "p", agentName: "a" });
+    expect(
+      within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent),
+    ).toEqual(["Any", "Accuracy", "Helpfulness", "Tool Use"]);
+    fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "Accuracy" }));
+
+    expect(currentParams().get("evaluator")).toBe("Accuracy");
+    expect(lastFilters()).toEqual({ maxScore: 0.5, evaluator: "Accuracy" });
+    expect(screen.getByText("Evaluator: Accuracy", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Score" })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Accuracy" })).toBeInTheDocument();
+  });
+
+  it("clears the evaluator alone from its chip, and with the last score bound", () => {
+    renderPage("?timeRange=1h&evaluator=Accuracy&maxScore=0.5");
+
+    fireEvent.click(screen.getByLabelText("Remove Evaluator: Accuracy"));
+    expect(currentParams().get("evaluator")).toBeNull();
+    expect(currentParams().get("maxScore")).toBe("0.5");
+
+    pickOption("Evaluator", "Accuracy");
+    expect(currentParams().get("evaluator")).toBe("Accuracy");
+    fireEvent.click(screen.getByLabelText("Remove Score ≤ 50%"));
+    expect(currentParams().get("maxScore")).toBeNull();
+    expect(currentParams().get("evaluator")).toBeNull();
+    expect(lastFilters()).toEqual({});
+  });
+
+  it("drops an invalid score and a lone evaluator from a pasted URL", () => {
+    renderPage("?timeRange=1h&evaluator=Accuracy&maxScore=2&minScore=abc&toolError=1");
+
+    expect(lastFilters()).toEqual({});
+    expect(screen.queryByText(/^Evaluator:/, { selector: ".MuiChip-label" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Evaluator" })).toHaveTextContent("Evaluator: Any");
+    expect(screen.getByRole("combobox", { name: "Score ≤" })).toHaveTextContent("Score ≤ Any");
+  });
+
+  it("clears the new filters with Clear all", () => {
+    renderPage("?timeRange=1h&tool=search_web&toolError=true&mcpServer=github&maxScore=0.5");
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(currentParams().toString()).toBe("timeRange=1h");
+    expect(lastFilters()).toEqual({});
+  });
+
+  it("says recent traces may have no scores when a score filter empties the list", () => {
+    hookOverrides = { data: { traces: [], totalCount: 0 } };
+    const { unmount } = renderPage("?status=error");
+    expect(screen.queryByText(/Monitors score traces when they run/)).not.toBeInTheDocument();
+    unmount();
+
+    renderPage("?minScore=0.9");
+    expect(
+      screen.getByText(
+        "Try changing the filters or the time range. Monitors score traces when they run, so recent traces may not have scores yet.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("closes the drawer only when a new filter drops its trace", () => {
+    // Tool failed keeps only t-err; a stable object, as the hook returns.
+    const toolErrorList = { ...(listFor() as object), traces: [ALL[0]], totalCount: 1 };
+    const impl = mockUseTraceList.getMockImplementation()!;
+    mockUseTraceList.mockImplementation((...args) => {
+      const result = impl(...args);
+      return args[9]?.filters?.toolError
+        ? ({ ...result, data: toolErrorList } as unknown as typeof result)
+        : result;
+    });
+
+    const { unmount } = renderPage("?selectedTrace=t-err");
+    pickOption("Tool failed", "Yes");
+    expect(currentParams().get("toolError")).toBe("true");
+    expect(currentParams().get("selectedTrace")).toBe("t-err");
+    unmount();
+
+    renderPage("?selectedTrace=t-ok");
+    pickOption("Tool failed", "Yes");
+    expect(currentParams().get("toolError")).toBe("true");
     expect(currentParams().get("selectedTrace")).toBeNull();
   });
 });
