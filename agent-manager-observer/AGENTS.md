@@ -9,6 +9,7 @@ HTTP → RequestLogger → CORS → mux ┬→ /health                          
                                    ├→ /.well-known/oauth-protected-resource (no auth)
                                    ├→ JWTAuth → /api/v1/*  → handlers/ → controllers/ → observer/ (HTTP client) → Observer service
                                    │                                                 ↘ opensearch/ (span parsing / enrichment)
+                                   │                                                 ↘ agentmanager/ (score filters only) → agent-manager-service
                                    └→ JWTAuth → /mcp, /mcp/ → mcp/tools/ → controllers/ (same as above, no HTTP hop)
 ```
 
@@ -17,6 +18,7 @@ HTTP → RequestLogger → CORS → mux ┬→ /health                          
 - **`handlers/`** — parse/validate the request, extract path params, call the controller, write the response. Client-facing errors are generic (`"Failed to retrieve …"`); real detail is logged server-side.
 - **`controllers/`** — orchestration + enrichment. Fetches trace overviews, then fans out to fetch span details and aggregates input/output/token usage.
 - **`observer/`** — the typed HTTP client to the upstream Observer (`QueryTraces`, `QueryTraceSpans`, `GetSpanDetails`), plus auth token management and response→`opensearch.Span` conversion.
+- **`agentmanager/`** — the optional HTTP client to agent-manager-service (`TraceScores`). Only score filters use it, with the caller's bearer token.
 - **`opensearch/`** — pure span-parsing logic. Extracts input/output from spans; branches by vendor (CrewAI via `crewai.*` attributes vs LangChain/Traceloop via `traceloop.entity.*`).
 - **`config/`** — env-var config loading + startup validation.
 - **`mcp/`** — the `am-obs-mcp` streamable-HTTP MCP server (`mcp/setup.go`) and its seven tools (`mcp/tools/`): `get_runtime_logs`, `get_build_logs`, `get_metrics`, `list_traces`, `get_traces`, `get_trace_details`, `get_span_details`. Tool handlers call `controllers.TracingController`/`controllers.ObservabilityController` directly — no HTTP hop, no claims parsing. Every tool takes an explicit, required `organization` input except `get_span_details` (its controller call is scoped by trace/span ID alone). `list_traces` and `get_traces` take the list filters as snake_case inputs (`status`, `min_duration_ms`, `min_tokens`, `min_span_count`, `model`, `conversation_id`), checked by the same `controllers` validators as the HTTP handler; `list_traces` also takes `include_models` and `cursor`.
@@ -31,6 +33,8 @@ HTTP → RequestLogger → CORS → mux ┬→ /health                          
 | Orchestration + enrichment | `controllers/controller.go` |
 | Observer client (interface + impl) | `observer/client.go`, `observer/types.go` |
 | Observer auth (token cache + retry) | `observer/auth.go` |
+| agent-manager-service score client | `agentmanager/client.go` |
+| Score filter lookup (`ScoreClient`, `filterByScore`) | `controllers/trace_scores.go` |
 | Response conversion | `observer/convert.go` |
 | Span parsing / vendor branches | `opensearch/process.go`, `opensearch/crewai_process.go` |
 | JWT / CORS / request logging | `middleware/` |
@@ -72,13 +76,14 @@ make mock-traces  # generate OTLP traces via telemetrygen (for local testing)
 | `IDP_CLIENT_ID` | `cfg.Observer.ClientID` | Observer OAuth2 client id |
 | `IDP_CLIENT_SECRET` | `cfg.Observer.ClientSecret` | Observer OAuth2 client secret |
 | `OBSERVER_DEFAULT_NAMESPACE` | `cfg.Observer.DefaultNamespace` | namespace all trace queries are scoped to (default `default`) |
+| `AGENT_MANAGER_SERVICE_URL` | `cfg.AgentManager.BaseURL` | optional agent-manager-service base URL for score filters; unset, they return 503 |
 | `KEY_MANAGER_JWKS_URL` | `cfg.Auth.JWKSUrl` | JWKS endpoint for JWT validation |
 | `KEY_MANAGER_ISSUER` | `cfg.Auth.Issuer` (list) | accepted token issuers (comma-separated) |
 | `KEY_MANAGER_AUDIENCE` | `cfg.Auth.Audience` (list) | accepted audiences (comma-separated) |
 | `IS_LOCAL_DEV_ENV` | `cfg.Auth.IsLocalDevEnv` | `true` skips JWT signature validation (checks expiry only) |
 | `LOG_LEVEL` | `cfg.LogLevel` | DEBUG/INFO/WARN/ERROR |
 
-The four `cfg.Observer.*` fields are required together once `OPENCHOREO_OBSERVER_URL` is set; the `cfg.Auth.*` fields are required unless `IsLocalDevEnv` is true.
+The four `cfg.Observer.*` fields are required together once `OPENCHOREO_OBSERVER_URL` is set; the `cfg.Auth.*` fields are required unless `IsLocalDevEnv` is true. `AGENT_MANAGER_SERVICE_URL` is optional, but when set it must be an absolute http(s) URL. The Helm chart sets it from `amObserver.agentManagerService.url`, which defaults to the in-cluster `amp-api` service.
 
 Co-dependent values are checked together — a partially-set Observer or Auth config fails at startup, not first request. `getEnvAsList` parses comma-separated issuer/audience lists.
 
@@ -87,6 +92,8 @@ Co-dependent values are checked together — a partially-set Observer or Auth co
 `middleware.JWTAuth` validates `Authorization: Bearer` against JWKS (RSA), caching keys in-memory with a 1-hour TTL and force-refreshing on `kid` mismatch. It checks issuer, audience, and a publisher-audience regex (`amp-publisher-[a-zA-Z0-9][a-zA-Z0-9._-]*`). In `IS_LOCAL_DEV_ENV=true` mode signature checks are skipped.
 
 The **observer client** holds its own OAuth2 client-credentials token (cached with a 30s expiry buffer). On a `401` it invalidates the token and retries once, falling back from Basic-auth to POST-form auth for Keycloak compatibility.
+
+The **agent-manager-service client** has no credentials of its own. It forwards the caller's bearer token (`middleware.BearerTokenFromContext`), so the service checks `amp:monitor:score-read` and scopes scores to the token's org. MCP tools take no score filters, since their tokens can't be forwarded.
 
 ### ⚠️ Known gap: no caller-org authorization
 
@@ -138,6 +145,11 @@ Filters run as early as possible, so a rejected trace stays cheap:
   - With `status` or `conversationId`, the root comes first, then the list.
   - A failed list fetch lists the trace as failed.
 - **`mcpServer`** — `matchesMCPServer` on `mcpServers`; implies `include=mcpServers`. It shares the tool filters' span cap and list-before-root order, and its handshake fetches come last, before the child and leaf steps. A trace with no handshake span is rejected after the list, at no extra call. A failed handshake fetch lists the trace as failed.
+- **`minScore`, `maxScore`, `evaluator`** — `matchesScore` on the trace's mean non-skipped score (with `evaluator`, that evaluator's), read from agent-manager-service.
+  - `filterByScore` makes one `TraceScores` call per chunk of up to 50 summary survivors, after `filterTraceInfos` and before `enrichTraces`, so an out-of-range trace costs no upstream call. It counts as examined, not as read or failed. A request makes at most 10 lookups, each bounded by 3 s (`scoreLookupTimeout`).
+  - A trace with no score never matches.
+  - Without a score client the walk fails before its first fetch (`ErrScoresNotConfigured`, 503). A failed lookup fails the request (`ErrScoreLookup`, 502; 403 when the service rejects the token), with no retry and no partial page, unless the budget cut it: then the walk stops as truncated.
+  - Requests without a score filter never call the client; the cost baseline (`trace_cost_baseline_test.go`) asserts zero lookups for them.
 
 The walk stops at the 500-trace examine cap or after **20 s** (`listLookBackBudget`), returning `truncated` and a `nextCursor`. The budget doesn't cut the first chunk; only the **25 s** request deadline (`requestTimeout`) does, failing the request. After it, the walk's fetches run under the budget, which cancels those in flight without a warning; the walk then stops before the chunk they belong to.
 

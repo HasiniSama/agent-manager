@@ -55,6 +55,11 @@ type TraceFilters struct {
 	ToolError bool
 	// MCPServer matches an MCP server name.
 	MCPServer string
+	// MinScore and MaxScore bound the trace's mean evaluation score, inclusive.
+	MinScore *float64
+	MaxScore *float64
+	// Evaluator scores the trace on one evaluator's rows only.
+	Evaluator string
 }
 
 // ParseTraceStatus accepts an empty status, "error" or "ok".
@@ -91,6 +96,11 @@ func (f TraceFilters) IsZero() bool {
 // SummaryOnly reports whether only filters the trace list answers are set.
 func (f TraceFilters) SummaryOnly() bool {
 	return !f.IsZero() && f == TraceFilters{MinDurationMs: f.MinDurationMs, MinSpanCount: f.MinSpanCount}
+}
+
+// HasScoreFilter reports whether a score filter is set.
+func (f TraceFilters) HasScoreFilter() bool {
+	return f.MinScore != nil || f.MaxScore != nil || f.Evaluator != ""
 }
 
 // hasToolFilter reports whether a tool filter is set.
@@ -140,6 +150,15 @@ func (f TraceFilters) LogValue() slog.Value {
 	if f.MCPServer != "" {
 		attrs = append(attrs, slog.String("mcpServer", f.MCPServer))
 	}
+	if f.MinScore != nil {
+		attrs = append(attrs, slog.Float64("minScore", *f.MinScore))
+	}
+	if f.MaxScore != nil {
+		attrs = append(attrs, slog.Float64("maxScore", *f.MaxScore))
+	}
+	if f.Evaluator != "" {
+		attrs = append(attrs, slog.String("evaluator", f.Evaluator))
+	}
 	return slog.GroupValue(attrs...)
 }
 
@@ -161,6 +180,14 @@ func matchesFilters(overview opensearch.TraceOverview, f TraceFilters) bool {
 // matchesMCPServer checks the mcpServer filter; a trace with no MCP servers fails it.
 func matchesMCPServer(servers []string, f TraceFilters) bool {
 	return f.MCPServer == "" || slices.ContainsFunc(servers, containsFold(f.MCPServer))
+}
+
+// matchesScore checks the minScore and maxScore filters; a trace with no score fails them.
+func matchesScore(score *float64, f TraceFilters) bool {
+	if !f.HasScoreFilter() {
+		return true
+	}
+	return score != nil && (f.MinScore == nil || *score >= *f.MinScore) && (f.MaxScore == nil || *score <= *f.MaxScore)
 }
 
 // matchesMinTokens checks the minTokens filter; a trace with no token usage fails it.

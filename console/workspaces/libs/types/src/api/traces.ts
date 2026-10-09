@@ -85,6 +85,14 @@ export interface TraceFilters {
   toolError?: boolean;
   /** Case-insensitive substring of any entry in TraceOverview.mcpServers. */
   mcpServer?: string;
+  /**
+   * Inclusive bounds in [0, 1] on the trace's mean non-skipped evaluation score,
+   * the Score column's value. A trace with no score never matches.
+   */
+  minScore?: number;
+  maxScore?: number;
+  /** Evaluator display name; scores only its rows. Requires minScore or maxScore. */
+  evaluator?: string;
 }
 
 // Keep Trace as an alias for backward compatibility

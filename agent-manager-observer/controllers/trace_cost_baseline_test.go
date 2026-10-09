@@ -16,8 +16,8 @@
 
 // Cost and behaviour baseline for the trace list and export. Each scenario
 // records its upstream calls and response bytes by kind, the call order for
-// one trace, and a SHA-256 of its response, and checks them against
-// costGoldens. A golden change needs a reason in the PR. Regenerate the
+// one trace, a SHA-256 of its response, and its score lookups, and checks
+// them against costGoldens. A golden change needs a reason in the PR. Regenerate the
 // goldens only with -update:
 //
 //	go test ./controllers -run TestTraceCostBaseline -update
@@ -314,6 +314,48 @@ var costGoldens = map[string]costRow{
 		Order:  "trace-0000: spans, detail",
 		SHA256: "8fb26729def57f0c231da7ac2595fd35655e41b6384cac1dc1a77e4087a5782f",
 	},
+	"list maxScore=0.5 (5%)": {
+		Calls:  kindCounts{Traces: 3, Root: 10, Detail: 30, Spans: 10, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 73149, Root: 3020, Detail: 9629, Spans: 8448, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×3",
+		SHA256: "41a2ca201e3a9142c0afe5c72cde9420cb52c9648d4de0f7156cc29b4e2e4e4a",
+		Scores: scoreCounts{Calls: 4, IDs: 200},
+	},
+	"list maxScore=0.5 status=error": {
+		Calls:  kindCounts{Traces: 3, Root: 10, Detail: 30, Spans: 10, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 73149, Root: 3020, Detail: 9629, Spans: 8448, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×3",
+		SHA256: "41a2ca201e3a9142c0afe5c72cde9420cb52c9648d4de0f7156cc29b4e2e4e4a",
+		Scores: scoreCounts{Calls: 4, IDs: 200},
+	},
+	"list maxScore=0.5 minDurationMs=800": {
+		Calls:  kindCounts{Traces: 5, Root: 0, Detail: 0, Spans: 0, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 280417, Root: 0, Detail: 0, Spans: 0, AttrSpans: 0},
+		Order:  "trace-0000: none",
+		SHA256: "6c7bbb26b277bf83e6f0c5457c7b719d0d10b753c0f117064d18cdf13bf4d577",
+		Scores: scoreCounts{Calls: 10, IDs: 100},
+	},
+	"list maxScore=0.5 toolError=true": {
+		Calls:  kindCounts{Traces: 5, Root: 9, Detail: 27, Spans: 25, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 280417, Root: 2718, Detail: 8670, Spans: 20728, AttrSpans: 0},
+		Order:  "trace-0000: spans, root, detail×3",
+		SHA256: "585cb33ef8fe4c61565f763e9c02578196d0eb9ff18c13303080bf45b1049a7b",
+		Scores: scoreCounts{Calls: 10, IDs: 500},
+	},
+	"list maxScore=0.5 evaluator=Helpfulness (33%)": {
+		Calls:  kindCounts{Traces: 1, Root: 17, Detail: 51, Spans: 17, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 10583, Root: 4686, Detail: 16450, Spans: 17625, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×3",
+		SHA256: "400e4f3ecf35894359b9df506431810b8a41ee82b7de8c3237f733be0a3a8a99",
+		Scores: scoreCounts{Calls: 1, IDs: 50},
+	},
+	"export maxScore=0.5": {
+		Calls:  kindCounts{Traces: 3, Root: 10, Detail: 30, Spans: 10, AttrSpans: 10},
+		Bytes:  kindCounts{Traces: 73149, Root: 3020, Detail: 9629, Spans: 8448, AttrSpans: 14457},
+		Order:  "trace-0000: root, spans, detail×3, attrSpans",
+		SHA256: "f14177e54ded6b251aa635db10c2814b37a0113f34343b62a4a5f8f09630dd66",
+		Scores: scoreCounts{Calls: 4, IDs: 200},
+	},
 	// golden:end
 }
 
@@ -365,6 +407,11 @@ func (c kindCounts) literal() string {
 		c.Traces, c.Root, c.Detail, c.Spans, c.AttrSpans)
 }
 
+// scoreCounts is a scenario's agent-manager-service score lookups and the trace IDs they sent.
+type scoreCounts struct {
+	Calls, IDs int
+}
+
 // costRow is one scenario's measured cost and response.
 type costRow struct {
 	Calls kindCounts
@@ -374,6 +421,8 @@ type costRow struct {
 	Order string
 	// SHA256 hashes the response JSON.
 	SHA256 string
+	// Scores is zero for every scenario without a score filter.
+	Scores scoreCounts
 }
 
 // meteredCall is one upstream call and its response's JSON size.
@@ -623,6 +672,12 @@ func costScenarios() []costScenario {
 			params: withFilters(TraceFilters{MCPServer: "github"})},
 		{name: "list mcpServer=github handshake cap (no match)", fixture: func() *fakeObserverClient { return mcpEveryTraceFake(1, atlassianOnly) },
 			params: withFilters(TraceFilters{MCPServer: "github"})},
+		{name: "list maxScore=0.5 (5%)", params: withFilters(TraceFilters{MaxScore: f64(0.5)})},
+		{name: "list maxScore=0.5 status=error", params: withFilters(TraceFilters{MaxScore: f64(0.5), Status: TraceStatusError})},
+		{name: "list maxScore=0.5 minDurationMs=800", params: withFilters(TraceFilters{MaxScore: f64(0.5), MinDurationMs: ptr(800)})},
+		{name: "list maxScore=0.5 toolError=true", params: withFilters(TraceFilters{MaxScore: f64(0.5), ToolError: true})},
+		{name: "list maxScore=0.5 evaluator=Helpfulness (33%)", params: withFilters(TraceFilters{MaxScore: f64(0.5), Evaluator: "Helpfulness"})},
+		{name: "export maxScore=0.5", export: true, params: withFilters(TraceFilters{MaxScore: f64(0.5)})},
 	}
 }
 
@@ -659,7 +714,8 @@ func runCostScenario(t *testing.T, sc costScenario) costRow {
 		}
 	}
 	client := meter(t, fake)
-	c := NewTracingController(client)
+	scores := &fakeScoreClient{}
+	c := NewTracingController(client).WithScoreClient(scores)
 	var resp any
 	first := "trace-0000"
 	if sc.export {
@@ -689,6 +745,7 @@ func runCostScenario(t *testing.T, sc costScenario) costRow {
 
 	row := client.row(cmp.Or(sc.orderTrace, first))
 	row.SHA256 = hex.EncodeToString(sum[:])
+	row.Scores = scores.counts()
 	return row
 }
 
@@ -724,6 +781,9 @@ func TestTraceCostBaseline(t *testing.T) {
 		if got.SHA256 != want.SHA256 {
 			t.Errorf("%s: response sha256 = %s, want %s", sc.name, got.SHA256, want.SHA256)
 		}
+		if got.Scores != want.Scores {
+			t.Errorf("%s: score lookups = %+v, want %+v", sc.name, got.Scores, want.Scores)
+		}
 	}
 	if !*updateCostGoldens {
 		for name := range costGoldens {
@@ -756,8 +816,13 @@ func writeCostGoldens(t *testing.T, names []string, rows map[string]costRow) {
 	b.Write(src[:i+len(begin)])
 	for _, name := range names {
 		r := rows[name]
-		fmt.Fprintf(&b, "%q: {\nCalls: %s,\nBytes: %s,\nOrder: %q,\nSHA256: %q,\n},\n",
+		fmt.Fprintf(&b, "%q: {\nCalls: %s,\nBytes: %s,\nOrder: %q,\nSHA256: %q,\n",
 			name, r.Calls.literal(), r.Bytes.literal(), r.Order, r.SHA256)
+		// Rows without score lookups keep their text.
+		if r.Scores != (scoreCounts{}) {
+			fmt.Fprintf(&b, "Scores: scoreCounts{Calls: %d, IDs: %d},\n", r.Scores.Calls, r.Scores.IDs)
+		}
+		b.WriteString("},\n")
 	}
 	b.Write(src[j:])
 	out, err := format.Source(b.Bytes())
@@ -778,18 +843,24 @@ func costTable(names []string, rows map[string]costRow) string {
 		return fmt.Sprintf("%d / %d B", calls, n)
 	}
 	var b strings.Builder
-	b.WriteString("\n| Scenario | QueryTraces | Root details | Other details | Span lists | Attribute span lists | Total | Call order, one trace | Response SHA-256 |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
+	scoreCell := func(c scoreCounts) string {
+		if c.Calls == 0 {
+			return "0"
+		}
+		return fmt.Sprintf("%d / %d IDs", c.Calls, c.IDs)
+	}
+	b.WriteString("\n| Scenario | QueryTraces | Root details | Other details | Span lists | Attribute span lists | Total | Call order, one trace | Response SHA-256 | Score lookups |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, name := range names {
 		r := rows[name]
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | `%s` |\n", name,
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | `%s` | %s |\n", name,
 			cell(r.Calls.Traces, r.Bytes.Traces),
 			cell(r.Calls.Root, r.Bytes.Root),
 			cell(r.Calls.Detail, r.Bytes.Detail),
 			cell(r.Calls.Spans, r.Bytes.Spans),
 			cell(r.Calls.AttrSpans, r.Bytes.AttrSpans),
 			cell(r.Calls.total(), r.Bytes.total()),
-			r.Order, r.SHA256[:12])
+			r.Order, r.SHA256[:12], scoreCell(r.Scores))
 	}
 	return b.String()
 }

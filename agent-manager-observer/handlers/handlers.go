@@ -18,6 +18,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wso2/agent-manager/agent-manager-observer/agentmanager"
 	"github.com/wso2/agent-manager/agent-manager-observer/controllers"
 	"github.com/wso2/agent-manager/agent-manager-observer/middleware/logger"
 )
@@ -160,7 +162,8 @@ func (h *Handler) GetTraceOverviews(w http.ResponseWriter, r *http.Request) {
 	result, err := h.controller.GetTraceOverviews(r.Context(), params)
 	if err != nil {
 		log.Error("Failed to get trace overviews", "error", err)
-		writeError(w, http.StatusInternalServerError, "Failed to retrieve trace overviews")
+		status, message := traceErrorStatus(err, "Failed to retrieve trace overviews")
+		writeError(w, status, message)
 		return
 	}
 
@@ -307,7 +310,8 @@ func (h *Handler) ExportTraces(w http.ResponseWriter, r *http.Request) {
 	result, err := h.controller.ExportTraces(r.Context(), params)
 	if err != nil {
 		log.Error("Failed to export v1 traces", "error", err)
-		writeError(w, http.StatusInternalServerError, "Failed to export traces")
+		status, message := traceErrorStatus(err, "Failed to export traces")
+		writeError(w, status, message)
 		return
 	}
 
@@ -657,7 +661,49 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 	if err := controllers.CheckFilterValue("mcpServer", f.MCPServer); err != nil {
 		return controllers.TraceFilters{}, err
 	}
+	if f.MinScore, err = parseScoreBound("minScore", query.Get("minScore")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.MaxScore, err = parseScoreBound("maxScore", query.Get("maxScore")); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.MinScore != nil && f.MaxScore != nil && *f.MinScore > *f.MaxScore {
+		return controllers.TraceFilters{}, fmt.Errorf("minScore must not be greater than maxScore")
+	}
+	f.Evaluator = query.Get("evaluator")
+	if err := controllers.CheckFilterValue("evaluator", f.Evaluator); err != nil {
+		return controllers.TraceFilters{}, err
+	}
+	if f.Evaluator != "" && f.MinScore == nil && f.MaxScore == nil {
+		return controllers.TraceFilters{}, fmt.Errorf("evaluator requires minScore or maxScore")
+	}
 	return f, nil
+}
+
+// parseScoreBound parses an optional score bound in [0, 1].
+func parseScoreBound(name, s string) (*float64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	// The negated range check also rejects NaN.
+	if err != nil || !(v >= 0 && v <= 1) {
+		return nil, fmt.Errorf("%s must be a number between 0 and 1", name)
+	}
+	return &v, nil
+}
+
+// traceErrorStatus maps a trace list or export error to a status and a generic message.
+func traceErrorStatus(err error, fallback string) (int, string) {
+	switch {
+	case errors.Is(err, controllers.ErrScoresNotConfigured):
+		return http.StatusServiceUnavailable, "Score filters are not available"
+	case errors.Is(err, agentmanager.ErrForbidden):
+		return http.StatusForbidden, "Not permitted to read evaluation scores"
+	case errors.Is(err, controllers.ErrScoreLookup):
+		return http.StatusBadGateway, "Failed to read evaluation scores"
+	}
+	return http.StatusInternalServerError, fallback
 }
 
 // parseToolError accepts an empty value or "false" (unset) and "true".

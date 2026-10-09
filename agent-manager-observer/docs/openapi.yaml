@@ -69,7 +69,7 @@ paths:
         Uses the Observer Service instead of OpenSearch. No offset; use `limit` for page size.
 
         The filter parameters (`status`, `minDurationMs`, `minTokens`, `minSpanCount`, `model`,
-        `conversationId`, `tool`, `toolError`, `mcpServer`) are optional and combine with AND. With any filter set, the server walks
+        `conversationId`, `tool`, `toolError`, `mcpServer`, `minScore`, `maxScore`, `evaluator`) are optional and combine with AND. With any filter set, the server walks
         the window in sort order until it has `limit` matches, the window runs out, it has examined
         500 traces, it has fetched 100 MCP handshakes (only with `mcpServer` or `include=mcpServers`),
         or it has searched for 20 seconds (`truncated` is then true, and `nextCursor` continues the
@@ -85,6 +85,12 @@ paths:
 
         A trace that can't be read is left out of the page; with a filter set it is retried once
         first. The request fails only when it could read none of the traces it examined.
+
+        Score filters (`minScore`, `maxScore`, `evaluator`) read scores from agent-manager-service
+        with the caller's token. Such a request returns 503 when the server has no
+        agent-manager-service URL, 403 when the service rejects the token, and 502 when a lookup
+        fails, times out or can't reach the service, never a partial page. A request without a
+        score filter never calls the service.
       operationId: listTraces
       security:
         - bearerAuth: []
@@ -144,6 +150,9 @@ paths:
         - $ref: "#/components/parameters/toolFilter"
         - $ref: "#/components/parameters/toolErrorFilter"
         - $ref: "#/components/parameters/mcpServerFilter"
+        - $ref: "#/components/parameters/minScoreFilter"
+        - $ref: "#/components/parameters/maxScoreFilter"
+        - $ref: "#/components/parameters/evaluatorFilter"
         - name: cursor
           in: query
           required: false
@@ -164,8 +173,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/TraceForbidden"
+        "502":
+          $ref: "#/components/responses/ScoreLookupFailed"
         "503":
-          $ref: "#/components/responses/ObserverUnavailable"
+          $ref: "#/components/responses/TraceServiceUnavailable"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -194,6 +207,9 @@ paths:
         A trace that can't be read, while selecting with a filter or while fetching its spans, is
         retried once, then left out and listed in `failedTraceIds`. The export fails only when it
         could read none of the traces it selected.
+
+        Score filters fail the export as they fail the list: 503 without an agent-manager-service
+        URL, 403 when the service rejects the token, and 502 when a lookup fails.
       operationId: exportTraces
       security:
         - bearerAuth: []
@@ -223,6 +239,9 @@ paths:
         - $ref: "#/components/parameters/toolFilter"
         - $ref: "#/components/parameters/toolErrorFilter"
         - $ref: "#/components/parameters/mcpServerFilter"
+        - $ref: "#/components/parameters/minScoreFilter"
+        - $ref: "#/components/parameters/maxScoreFilter"
+        - $ref: "#/components/parameters/evaluatorFilter"
       responses:
         "200":
           description: Export payload
@@ -240,8 +259,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/TraceForbidden"
+        "502":
+          $ref: "#/components/responses/ScoreLookupFailed"
         "503":
-          $ref: "#/components/responses/ObserverUnavailable"
+          $ref: "#/components/responses/TraceServiceUnavailable"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -662,6 +685,53 @@ components:
         type: string
         maxLength: 256
         example: github-mcp-server
+    minScoreFilter:
+      name: minScore
+      in: query
+      required: false
+      description: |
+        Keep traces whose score is at least this value, inclusive. The score is the mean of the
+        trace's non-skipped evaluation scores across every monitor, evaluator and level: the
+        console's Score column. With `evaluator`, it is the mean of that evaluator's non-skipped
+        scores. A trace with no such score never matches. Monitors write scores when they run,
+        so recent traces may have none yet.
+
+        The server reads scores from agent-manager-service with the caller's token, which needs
+        `amp:monitor:score-read`. It makes one lookup per batch of up to 50 traces that pass
+        `minDurationMs`, `minSpanCount` and the tool and MCP span cap, before any other call for
+        them, so at most 10 per request, each bounded by 3 s. A trace out of range costs nothing
+        more and counts toward the 500 examined.
+      schema:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 1
+        example: 0.5
+    maxScoreFilter:
+      name: maxScore
+      in: query
+      required: false
+      description: |
+        Keep traces whose score is at most this value, inclusive. See `minScore` for the score,
+        its cost, and traces with no score. With both set, `minScore` must not be greater than
+        `maxScore`.
+      schema:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 1
+        example: 0.5
+    evaluatorFilter:
+      name: evaluator
+      in: query
+      required: false
+      description: |
+        Score each trace on this evaluator's rows only, matched by exact display name across all
+        the agent's monitors. Requires `minScore` or `maxScore`; alone it returns 400.
+      schema:
+        type: string
+        maxLength: 256
+        example: Answer Relevancy
 
   responses:
     BadRequest:
@@ -690,6 +760,30 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     Forbidden:
       description: Publisher-audience (`amp-publisher-*`) tokens are not permitted on this endpoint
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TraceForbidden:
+      description: |
+        The token lacks the trace-read scope, or a score filter is set and agent-manager-service
+        rejected the caller's token (it needs `amp:monitor:score-read`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ScoreLookupFailed:
+      description: |
+        A score filter is set and a score lookup failed: agent-manager-service was unreachable,
+        took longer than 3 s, or returned an error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TraceServiceUnavailable:
+      description: |
+        The Observer Service is not configured (OPENCHOREO_OBSERVER_URL unset), or a score filter
+        is set and agent-manager-service is not (AGENT_MANAGER_SERVICE_URL unset).
       content:
         application/json:
           schema:

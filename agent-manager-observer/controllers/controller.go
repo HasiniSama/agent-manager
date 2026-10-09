@@ -78,6 +78,8 @@ type TracingController struct {
 	observerClient observer.Client
 	// budget bounds a look-back walk's context.
 	budget func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	// scores serves score filters; nil turns them off.
+	scores ScoreClient
 }
 
 // NewTracingController creates a new tracing controller.
@@ -274,7 +276,15 @@ func (c *TracingController) traceOverviewPage(ctx context.Context, params TraceQ
 // the chunk they belong to.
 //
 // Past maxMCPHandshakesPerRequest handshake fetches it stops the same way, before the next chunk and without a retry.
+//
+// With a score filter, each chunk's summary survivors are scored in one
+// lookup before any upstream call, and those out of range are walked past
+// like summary rejections. A failed lookup fails the walk, unless the budget
+// cut it. Without a score client the walk fails before it starts.
 func (c *TracingController) lookBackForMatches(ctx context.Context, params TraceQueryParams, budget time.Duration) (*opensearch.TraceOverviewResponse, walkStats, error) {
+	if params.Filters.HasScoreFilter() && c.scores == nil {
+		return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", ErrScoresNotConfigured)
+	}
 	walkCtx, cancel := c.budget(ctx, budget)
 	defer cancel()
 
@@ -402,6 +412,19 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 			fresh = fresh[len(chunk):]
 			survivors := filterTraceInfos(chunk, params.Filters)
 			chunkCtx := fetchCtx()
+			var outOfRange map[string]bool
+			if params.Filters.HasScoreFilter() {
+				survivors, outOfRange, err = c.filterByScore(chunkCtx, params, survivors)
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", ctx.Err())
+					}
+					if pastBudget() {
+						return stopAtBudget()
+					}
+					return nil, walkStats{}, fmt.Errorf("controllers.GetTraceOverviews: %w", err)
+				}
+			}
 			overviews, chunkFailed := c.enrichTraces(chunkCtx, params, survivors, handshakes)
 			if len(chunkFailed) > 0 && !pastBudget() && !pastHandshakeCap() {
 				var retried []opensearch.TraceOverview
@@ -429,6 +452,8 @@ func (c *TracingController) lookBackForMatches(ctx context.Context, params Trace
 					read++
 				case slices.Contains(chunkFailed, t.TraceID):
 					failed = append(failed, t.TraceID)
+				case outOfRange[t.TraceID]:
+					// Ruled out by score before any read.
 				case matchesSummary(t.DurationNs, t.SpanCount, params.Filters):
 					// Enrichment read it and ruled it out.
 					read++
