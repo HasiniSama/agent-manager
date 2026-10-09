@@ -81,7 +81,7 @@ export interface TraceFilters {
   conversationId?: string;
   /** Case-insensitive substring of any entry in TraceOverview.tools. */
   tool?: string;
-  /** Only traces with a failed tool, that is, a non-empty TraceOverview.failedTools. */
+  /** Only traces with a failed tool; with tool set, the failed tool must be one tool matches. */
   toolError?: boolean;
   /** Case-insensitive substring of any entry in TraceOverview.mcpServers. */
   mcpServer?: string;
@@ -94,6 +94,9 @@ export interface TraceFilters {
   /** Evaluator display name; scores only its rows. Requires minScore or maxScore. */
   evaluator?: string;
 }
+
+/** Optional TraceOverview fields the list fills on request (`?include=`). */
+export type TraceInclude = 'models' | 'tools' | 'mcpServers';
 
 // Keep Trace as an alias for backward compatibility
 export type Trace = TraceOverview;
