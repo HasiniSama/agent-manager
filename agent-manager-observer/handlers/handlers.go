@@ -674,9 +674,6 @@ func parseTraceFilters(query url.Values) (controllers.TraceFilters, error) {
 	if err := controllers.CheckFilterValue("evaluator", f.Evaluator); err != nil {
 		return controllers.TraceFilters{}, err
 	}
-	if f.Evaluator != "" && f.MinScore == nil && f.MaxScore == nil {
-		return controllers.TraceFilters{}, fmt.Errorf("evaluator requires minScore or maxScore")
-	}
 	return f, nil
 }
 

@@ -91,7 +91,7 @@ export interface TraceFilters {
    */
   minScore?: number;
   maxScore?: number;
-  /** Evaluator display name; scores only its rows. Requires minScore or maxScore. */
+  /** Evaluator display name; scores only its rows. Alone, keeps traces it scored. */
   evaluator?: string;
 }
 

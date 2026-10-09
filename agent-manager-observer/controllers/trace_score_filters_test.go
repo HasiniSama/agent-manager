@@ -179,6 +179,8 @@ func TestMatchesScore(t *testing.T) {
 		{name: "minScore 0 and no score", f: TraceFilters{MinScore: f64(0)}, want: false},
 		{name: "maxScore 1 and no score", f: TraceFilters{MaxScore: f64(1)}, want: false},
 		{name: "evaluator with a bound and no score", f: TraceFilters{MaxScore: f64(1), Evaluator: "Helpfulness"}, want: false},
+		{name: "evaluator alone and a score", f: TraceFilters{Evaluator: "Helpfulness"}, score: f64(0), want: true},
+		{name: "evaluator alone and no score", f: TraceFilters{Evaluator: "Helpfulness"}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -312,6 +314,44 @@ func TestGetTraceOverviews_ScoreNoSurvivorsNoLookup(t *testing.T) {
 	}
 }
 
+// evaluatorScores answers each evaluator's lookups from its own scores by trace ID.
+type evaluatorScores map[string]map[string]*float64
+
+// TraceScores returns evaluator's scores for ids; a trace it never scored is absent.
+func (e evaluatorScores) TraceScores(_ context.Context, _, _, _ string, _, _ time.Time, ids []string, evaluator string) (map[string]*float64, error) {
+	scores := map[string]*float64{}
+	for _, id := range ids {
+		if score, ok := e[evaluator][id]; ok {
+			scores[id] = score
+		}
+	}
+	return scores, nil
+}
+
+// A lone evaluator keeps traces with a non-skipped score from it, whatever the
+// score, and drops traces it never scored or only skipped, before fetching them.
+func TestGetTraceOverviews_LoneEvaluator(t *testing.T) {
+	fake := costFake(true)
+	c := NewTracingController(fake).WithScoreClient(evaluatorScores{
+		"Helpfulness": {"trace-0000": f64(0), "trace-0002": f64(0.9), "trace-0003": nil},
+		"Toxicity":    {"trace-0001": f64(0.5)},
+	})
+	params := lookBackParams(10)
+	params.Filters = TraceFilters{Evaluator: "Helpfulness"}
+
+	ids, _, truncated := traceIDs(c, t, params)
+
+	if want := []string{"trace-0000", "trace-0002"}; !slices.Equal(ids, want) || !truncated {
+		t.Fatalf("traces = %v, truncated %v; want %v, true", ids, truncated, want)
+	}
+	lists, roots, others := fetchedTraces(t, fake)
+	for _, i := range slices.Concat(lists, roots, others) {
+		if i != 0 && i != 2 {
+			t.Errorf("trace-%04d has no Helpfulness score but was fetched", i)
+		}
+	}
+}
+
 // A score filter returns what the filter keeps of the fully enriched traces:
 // the same pages, cursors, lookedBackTo and truncated, and the same rows, as if
 // scores were checked last. A trace out of score range is never fetched.
@@ -327,6 +367,8 @@ func TestGetTraceOverviews_ScoreFiltersMatchFullEnrichment(t *testing.T) {
 		{name: "a bound nothing meets", filters: TraceFilters{MinScore: f64(0.95)}},
 		{name: "evaluator", filters: TraceFilters{MaxScore: f64(0.5), Evaluator: "Helpfulness"}},
 		{name: "evaluator nobody runs", filters: TraceFilters{MinScore: f64(0), Evaluator: "Toxicity"}},
+		{name: "evaluator alone", filters: TraceFilters{Evaluator: "Helpfulness"}},
+		{name: "evaluator alone nobody runs", filters: TraceFilters{Evaluator: "Toxicity"}},
 		{name: "maxScore and status", filters: TraceFilters{MaxScore: f64(0.5), Status: TraceStatusError}},
 		{name: "minScore and status ok", filters: TraceFilters{MinScore: f64(0.5), Status: TraceStatusOK}},
 		{name: "maxScore and toolError", filters: TraceFilters{MaxScore: f64(0.5), ToolError: true}},

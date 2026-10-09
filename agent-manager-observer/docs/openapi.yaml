@@ -729,7 +729,9 @@ components:
       required: false
       description: |
         Score each trace on this evaluator's rows only, matched by exact display name across all
-        the agent's monitors. Requires `minScore` or `maxScore`; alone it returns 400.
+        the agent's monitors. With `minScore` or `maxScore`, that score must be in range. Alone, it
+        keeps traces with a non-skipped score from this evaluator. It costs the same lookups as a
+        score bound.
       schema:
         type: string
         maxLength: 256

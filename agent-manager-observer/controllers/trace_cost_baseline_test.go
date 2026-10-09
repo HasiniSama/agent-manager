@@ -356,6 +356,13 @@ var costGoldens = map[string]costRow{
 		SHA256: "f14177e54ded6b251aa635db10c2814b37a0113f34343b62a4a5f8f09630dd66",
 		Scores: scoreCounts{Calls: 4, IDs: 200},
 	},
+	"list evaluator=Helpfulness (100%)": {
+		Calls:  kindCounts{Traces: 1, Root: 50, Detail: 150, Spans: 50, AttrSpans: 0},
+		Bytes:  kindCounts{Traces: 10583, Root: 13784, Detail: 48408, Spans: 40329, AttrSpans: 0},
+		Order:  "trace-0000: root, spans, detail×3",
+		SHA256: "f8b6df365ce85afa46d8c168de1f4b06166356f38b53ed1510c2438f98da5105",
+		Scores: scoreCounts{Calls: 1, IDs: 50},
+	},
 	// golden:end
 }
 
@@ -678,6 +685,7 @@ func costScenarios() []costScenario {
 		{name: "list maxScore=0.5 toolError=true", params: withFilters(TraceFilters{MaxScore: f64(0.5), ToolError: true})},
 		{name: "list maxScore=0.5 evaluator=Helpfulness (33%)", params: withFilters(TraceFilters{MaxScore: f64(0.5), Evaluator: "Helpfulness"})},
 		{name: "export maxScore=0.5", export: true, params: withFilters(TraceFilters{MaxScore: f64(0.5)})},
+		{name: "list evaluator=Helpfulness (100%)", params: withFilters(TraceFilters{Evaluator: "Helpfulness"})},
 	}
 }
 

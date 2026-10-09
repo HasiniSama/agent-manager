@@ -70,7 +70,7 @@ var traceEndpoints = map[string]func(*Handler) http.HandlerFunc{
 func f64(v float64) *float64 { return &v }
 
 // minScore, maxScore and evaluator parse; bounds are in [0, 1], minScore is at
-// most maxScore, and evaluator needs a bound.
+// most maxScore, and evaluator works alone.
 func TestParseTraceFilters_Score(t *testing.T) {
 	tests := []struct {
 		query   string
@@ -90,7 +90,7 @@ func TestParseTraceFilters_Score(t *testing.T) {
 		{query: "maxScore=NaN", wantErr: "maxScore must be a number between 0 and 1"},
 		{query: "minScore=Inf", wantErr: "minScore must be a number between 0 and 1"},
 		{query: "minScore=0.8&maxScore=0.2", wantErr: "minScore must not be greater than maxScore"},
-		{query: "evaluator=Helpfulness", wantErr: "evaluator requires minScore or maxScore"},
+		{query: "evaluator=Helpfulness", want: controllers.TraceFilters{Evaluator: "Helpfulness"}},
 		{query: "maxScore=0.5&evaluator=" + strings.Repeat("a", 257), wantErr: "evaluator must be at most 256 characters"},
 	}
 	for _, tt := range tests {
@@ -118,7 +118,7 @@ func TestParseTraceFilters_Score(t *testing.T) {
 
 // An invalid score filter is a 400 on the list and the export, before any call.
 func TestTraceEndpoints_ScoreFiltersBadRequest(t *testing.T) {
-	for _, query := range []string{"&maxScore=2", "&minScore=x", "&minScore=0.9&maxScore=0.1", "&evaluator=Helpfulness"} {
+	for _, query := range []string{"&maxScore=2", "&minScore=x", "&minScore=0.9&maxScore=0.1"} {
 		for path, handler := range traceEndpoints {
 			t.Run(path+query, func(t *testing.T) {
 				scores := &fakeScoreClient{}
