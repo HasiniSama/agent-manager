@@ -377,6 +377,212 @@
       "required": [],
       "title": "otelCollector",
       "type": "object"
+    },
+    "scoreStore": {
+      "additionalProperties": false,
+      "description": "Score store: the Postgres that holds per-trace evaluation scores. The score writer is its only writer; the observer reads it with a read-only login pinned to the caller's org. With enabled false nothing below is rendered.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Install the score store.",
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "postgresql": {
+          "additionalProperties": false,
+          "description": "Bundled Postgres, configured under scoreStorePostgresql. Left unset, enabled follows scoreStore.enabled; set it to false to use `external`.",
+          "properties": {
+            "enabled": {
+              "description": "Install the bundled Postgres. Unset means the same as scoreStore.enabled.",
+              "title": "enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "title": "postgresql",
+          "type": "object"
+        },
+        "tls": {
+          "additionalProperties": false,
+          "description": "The chart's own cert-manager CA. It signs the bundled Postgres server certificate. Clients mount only its ca.crt key: the Secret also holds the CA's private key.",
+          "properties": {
+            "caSecret": {
+              "default": "amp-score-store-ca",
+              "description": "Secret the chart's CA certificate is written to.",
+              "title": "caSecret",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [],
+          "title": "tls",
+          "type": "object"
+        },
+        "external": {
+          "additionalProperties": false,
+          "description": "An existing Postgres (managed, or a separate database on another server), used when scoreStore.postgresql.enabled is false.",
+          "properties": {
+            "host": {
+              "default": "",
+              "description": "Hostname of the Postgres server. Must match its certificate.",
+              "title": "host",
+              "type": "string"
+            },
+            "port": {
+              "default": 5432,
+              "description": "Port of the Postgres server.",
+              "title": "port",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "database": {
+              "default": "amp_scores",
+              "description": "Database that holds the score tables.",
+              "title": "database",
+              "type": "string",
+              "minLength": 1
+            },
+            "sslMode": {
+              "default": "verify-full",
+              "description": "Clients verify the server certificate and hostname; nothing else is allowed.",
+              "title": "sslMode",
+              "type": "string",
+              "enum": [
+                "verify-full"
+              ]
+            },
+            "caSecret": {
+              "default": "",
+              "description": "Secret with key ca.crt: the CA that signed the server certificate.",
+              "title": "caSecret",
+              "type": "string"
+            },
+            "adminSecret": {
+              "default": "",
+              "description": "Secret with keys username and password: a login that owns the database and can create roles. Empty skips the migration Job; apply files/score-store/migrations in order yourself.",
+              "title": "adminSecret",
+              "type": "string"
+            },
+            "writerSecret": {
+              "default": "",
+              "description": "Secret with key password for the amp_scores_writer login. The migration Job sets it on the role.",
+              "title": "writerSecret",
+              "type": "string"
+            },
+            "readerSecret": {
+              "default": "",
+              "description": "Secret with key password for the amp_scores_reader login. The migration Job sets it on the role.",
+              "title": "readerSecret",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "external",
+          "type": "object"
+        },
+        "retentionDays": {
+          "default": 30,
+          "description": "Days a score is kept. Must equal the tracing module's retention.",
+          "title": "retentionDays",
+          "type": "integer",
+          "minimum": 1
+        },
+        "migration": {
+          "additionalProperties": false,
+          "description": "The hook Job that applies the score store's SQL migrations with the admin login.",
+          "properties": {
+            "image": {
+              "default": "postgres:18-alpine",
+              "description": "Image that provides psql 15 or later.",
+              "title": "image",
+              "type": "string",
+              "minLength": 1
+            },
+            "backoffLimit": {
+              "default": 3,
+              "description": "Retries before the Job fails.",
+              "title": "backoffLimit",
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [],
+          "title": "migration",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "scoreStore",
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "postgresql": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "postgresql": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            },
+            "required": [
+              "enabled",
+              "postgresql"
+            ]
+          },
+          "then": {
+            "properties": {
+              "external": {
+                "properties": {
+                  "host": {
+                    "minLength": 1
+                  },
+                  "caSecret": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "host",
+                  "caSecret"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "scoreStorePostgresql": {
+      "description": "Bitnami postgresql values for the bundled score store, used with scoreStore.enabled. The chart's own templates read fullnameOverride, auth.database, auth.existingSecret and tls.certificatesSecret; the Bitnami chart's own schema checks the rest.",
+      "title": "scoreStorePostgresql",
+      "type": "object"
     }
   }
 }

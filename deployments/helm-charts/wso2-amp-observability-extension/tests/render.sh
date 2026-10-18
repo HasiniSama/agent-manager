@@ -155,6 +155,118 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- scoreStore ---------------------------------------------------------------
+# Off by default, so a default render cannot show that the bundled and external
+# modes render the right objects, or that the schema refuses an unsafe mode.
+
+# rendered_objects [helm --set args...] -> one "Kind/name" line per rendered object
+rendered_objects() {
+  local rendered
+  if ! rendered="$(helm template test-release "$CHART_DIR" "$@" 2>&1)"; then
+    printf 'helm template failed: %s\n' "$rendered" >&2
+    return 1
+  fi
+  awk '/^kind: / { kind = $2 } /^  name: / && kind != "" { print kind "/" $2; kind = "" }' <<<"$rendered"
+}
+
+# assert_objects <label> <present|absent> <objects> <Kind/name>...
+assert_objects() {
+  local label="$1" want="$2" objects="$3" object missing=""
+  shift 3
+  for object in "$@"; do
+    if grep -qxF "$object" <<<"$objects"; then
+      [[ "$want" == absent ]] && missing+=" $object"
+    else
+      [[ "$want" == present ]] && missing+=" $object"
+    fi
+  done
+  if [[ -z "$missing" ]]; then
+    printf 'ok   - %s\n' "$label"
+  else
+    printf 'FAIL - %s\n      unexpectedly %s:%s\n' "$label" "$([[ "$want" == present ]] && echo missing || echo present)" "$missing"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# assert_schema_rejects <label> [helm --set args...]
+assert_schema_rejects() {
+  local label="$1" out
+  shift
+  if out="$(helm template test-release "$CHART_DIR" "$@" 2>&1)"; then
+    printf 'FAIL - %s\n      the render succeeded\n' "$label"
+    FAILURES=$((FAILURES + 1))
+  elif grep -q "values don't meet the specifications of the schema" <<<"$out"; then
+    printf 'ok   - %s\n' "$label"
+  else
+    printf 'FAIL - %s\n      failed for another reason: %s\n' "$label" "$out"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+SCORE_STORE_OBJECTS=(
+  StatefulSet/amp-score-store-postgresql
+  Certificate/amp-score-store-postgresql-tls
+  Secret/amp-score-store-admin
+  Secret/amp-score-store-writer
+  Secret/amp-score-store-reader
+  NetworkPolicy/amp-score-store-postgresql
+)
+EXTERNAL_ARGS=(
+  --set scoreStore.enabled=true
+  --set scoreStore.postgresql.enabled=false
+  --set scoreStore.external.host=scores.db.example.com
+  --set scoreStore.external.caSecret=score-db-ca
+)
+
+objects="$(rendered_objects)"
+assert_objects "default render has no score store" absent "$objects" \
+  "${SCORE_STORE_OBJECTS[@]}" Certificate/amp-score-store-ca Job/amp-score-store-migration \
+  ConfigMap/amp-score-store-migrations
+
+objects="$(rendered_objects --set scoreStore.enabled=true)"
+assert_objects "scoreStore.enabled renders the bundled Postgres, CA, Secrets, policy and Job" present "$objects" \
+  "${SCORE_STORE_OBJECTS[@]}" Certificate/amp-score-store-ca Job/amp-score-store-migration \
+  ConfigMap/amp-score-store-migrations
+assert_env "the bundled Job connects to the bundled Postgres" \
+  PGHOST "amp-score-store-postgresql.default.svc.cluster.local" \
+  --set scoreStore.enabled=true --namespace default
+
+objects="$(rendered_objects "${EXTERNAL_ARGS[@]}" --set scoreStore.external.adminSecret=score-db-admin)"
+assert_objects "external mode renders no bundled Postgres or generated Secrets" absent "$objects" \
+  "${SCORE_STORE_OBJECTS[@]}"
+assert_objects "external mode with an admin Secret runs the migration Job" present "$objects" \
+  Job/amp-score-store-migration
+assert_env "the external Job connects to the external host" \
+  PGHOST "scores.db.example.com" \
+  "${EXTERNAL_ARGS[@]}" --set scoreStore.external.adminSecret=score-db-admin
+
+objects="$(rendered_objects "${EXTERNAL_ARGS[@]}")"
+assert_objects "external mode without an admin Secret runs no migration Job" absent "$objects" \
+  Job/amp-score-store-migration
+
+assert_schema_rejects "schema rejects an sslMode other than verify-full" \
+  "${EXTERNAL_ARGS[@]}" --set scoreStore.external.sslMode=require
+assert_schema_rejects "schema rejects external mode with an empty caSecret" \
+  "${EXTERNAL_ARGS[@]}" --set-string scoreStore.external.caSecret=
+assert_schema_rejects "schema rejects retentionDays under 1" \
+  --set scoreStore.retentionDays=0
+assert_schema_rejects "schema rejects the bundled Postgres without scoreStore.enabled" \
+  --set scoreStore.postgresql.enabled=true
+
+# The Job applies what the ConfigMap carries, so every SQL file must reach it.
+configmap="$(helm template test-release "$CHART_DIR" --set scoreStore.enabled=true \
+  -s templates/score-store-migration-configmap.yaml 2>&1)"
+missing_sql=""
+for sql in "$CHART_DIR"/files/score-store/migrations/*.sql; do
+  grep -q "^  ${sql##*/}: |" <<<"$configmap" || missing_sql+=" ${sql##*/}"
+done
+if [[ -z "$missing_sql" ]]; then
+  printf 'ok   - the migration ConfigMap carries every SQL file\n'
+else
+  printf 'FAIL - the migration ConfigMap is missing:%s\n' "$missing_sql"
+  FAILURES=$((FAILURES + 1))
+fi
+
 if ((FAILURES > 0)); then
   printf '\n%d assertion(s) failed\n' "$FAILURES"
   exit 1

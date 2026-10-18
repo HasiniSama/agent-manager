@@ -15,3 +15,12 @@ keywords:
 maintainers:
   - name: WSO2
     url: https://wso2.com
+
+dependencies:
+  # Score store Postgres: installed with scoreStore.enabled unless
+  # scoreStore.postgresql.enabled is false (external mode).
+  - name: postgresql
+    alias: scoreStorePostgresql
+    version: 18.1.13
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: scoreStore.postgresql.enabled,scoreStore.enabled

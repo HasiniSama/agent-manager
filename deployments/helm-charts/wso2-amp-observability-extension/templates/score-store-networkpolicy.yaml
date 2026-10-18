@@ -1,0 +1,31 @@
+{{- if include "amp-observability-extension.scoreStore.bundled" . }}
+# Only the observer, the score writer and the migration Job may reach the score database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.scoreStorePostgresql.fullnameOverride }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: {{ .Values.scoreStorePostgresql.nameOverride }}
+      app.kubernetes.io/component: primary
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - amp-observer
+                  - amp-score-writer
+                  - amp-score-store-migration
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}

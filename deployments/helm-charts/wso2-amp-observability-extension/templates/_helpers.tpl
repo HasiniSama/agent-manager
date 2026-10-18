@@ -107,3 +107,80 @@ imagePullSecrets:
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+"true" when the score store runs on the bundled Postgres: scoreStore.enabled,
+with scoreStore.postgresql.enabled unset or true, the same order as the
+subchart's condition in Chart.yaml.
+*/}}
+{{- define "amp-observability-extension.scoreStore.bundled" -}}
+{{- $pg := .Values.scoreStore.postgresql | default dict -}}
+{{- if and .Values.scoreStore.enabled (or (not (hasKey $pg "enabled")) $pg.enabled) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Score store connection details, from the bundled Postgres or the external block.
+*/}}
+{{- define "amp-observability-extension.scoreStore.host" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+{{- printf "%s.%s.svc.cluster.local" (required "scoreStorePostgresql.fullnameOverride must be set" .Values.scoreStorePostgresql.fullnameOverride) .Release.Namespace -}}
+{{- else -}}
+{{- .Values.scoreStore.external.host -}}
+{{- end -}}
+{{- end }}
+
+{{- define "amp-observability-extension.scoreStore.port" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+5432
+{{- else -}}
+{{- .Values.scoreStore.external.port -}}
+{{- end -}}
+{{- end }}
+
+{{- define "amp-observability-extension.scoreStore.database" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+{{- .Values.scoreStorePostgresql.auth.database -}}
+{{- else -}}
+{{- .Values.scoreStore.external.database -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Secret whose ca.crt key verifies the score database's server certificate.
+*/}}
+{{- define "amp-observability-extension.scoreStore.caSecret" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+{{- .Values.scoreStore.tls.caSecret -}}
+{{- else -}}
+{{- .Values.scoreStore.external.caSecret -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Secrets holding the admin, writer and reader passwords (key "password").
+*/}}
+{{- define "amp-observability-extension.scoreStore.adminSecret" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+{{- .Values.scoreStorePostgresql.auth.existingSecret -}}
+{{- else -}}
+{{- .Values.scoreStore.external.adminSecret -}}
+{{- end -}}
+{{- end }}
+
+{{- define "amp-observability-extension.scoreStore.writerSecret" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+amp-score-store-writer
+{{- else -}}
+{{- .Values.scoreStore.external.writerSecret -}}
+{{- end -}}
+{{- end }}
+
+{{- define "amp-observability-extension.scoreStore.readerSecret" -}}
+{{- if include "amp-observability-extension.scoreStore.bundled" . -}}
+amp-score-store-reader
+{{- else -}}
+{{- .Values.scoreStore.external.readerSecret -}}
+{{- end -}}
+{{- end }}

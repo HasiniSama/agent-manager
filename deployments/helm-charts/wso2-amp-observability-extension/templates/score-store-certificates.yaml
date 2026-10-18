@@ -1,0 +1,78 @@
+{{- if .Values.scoreStore.enabled }}
+# Self-signed root for the chart's own CA.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: amp-score-store-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amp-score-store-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: AMP Score Store CA
+  secretName: {{ .Values.scoreStore.tls.caSecret }}
+  duration: 87600h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # Renewal keeps the key, so certificates the CA already signed still verify.
+    rotationPolicy: Never
+  issuerRef:
+    name: amp-score-store-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+# Signs the score store's server certificates.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: amp-score-store-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ .Values.scoreStore.tls.caSecret }}
+{{- if include "amp-observability-extension.scoreStore.bundled" . }}
+{{- $name := .Values.scoreStorePostgresql.fullnameOverride }}
+---
+# Postgres reads this at start, so a renewed certificate takes effect on the next restart.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.scoreStorePostgresql.tls.certificatesSecret }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.scoreStorePostgresql.tls.certificatesSecret }}
+  dnsNames:
+    - {{ $name }}
+    - {{ $name }}.{{ .Release.Namespace }}
+    - {{ $name }}.{{ .Release.Namespace }}.svc
+    - {{ include "amp-observability-extension.scoreStore.host" . }}
+  duration: 43800h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+  issuerRef:
+    name: amp-score-store-ca
+    kind: Issuer
+    group: cert-manager.io
+{{- end }}
+{{- end }}

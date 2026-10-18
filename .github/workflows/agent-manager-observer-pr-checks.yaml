@@ -5,6 +5,8 @@ on:
     branches: ["main"]
     paths:
       - "agent-manager-observer/**"
+      # scorestore's tests compare these with scorestore/migrations.
+      - "deployments/helm-charts/wso2-amp-observability-extension/files/score-store/**"
       - ".github/workflows/agent-manager-observer-pr-checks.yaml"
 
 permissions:

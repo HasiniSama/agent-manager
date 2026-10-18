@@ -132,3 +132,80 @@ networkPolicy:
   otelCollector:
     # No-op on clusters whose CNI doesn't enforce NetworkPolicy.
     enabled: true
+
+# Score store: the Postgres that holds per-trace evaluation scores. The score
+# writer is its only writer; the observer reads it with a read-only login
+# pinned to the caller's org. With enabled false nothing below is rendered.
+scoreStore:
+  enabled: false
+  # Bundled Postgres, configured under scoreStorePostgresql below. Left unset,
+  # enabled follows scoreStore.enabled; set it to false to use `external`.
+  postgresql: {}
+  # The chart's own cert-manager CA. It signs the bundled Postgres server
+  # certificate. Clients mount only its ca.crt key: the Secret also holds the
+  # CA's private key.
+  tls:
+    caSecret: amp-score-store-ca
+  # An existing Postgres (managed, or a separate database on another server),
+  # used when scoreStore.postgresql.enabled is false.
+  external:
+    host: ""
+    port: 5432
+    database: amp_scores
+    # Clients verify the server certificate and hostname; nothing else is allowed.
+    sslMode: verify-full
+    # Secret with key ca.crt: the CA that signed the server certificate.
+    caSecret: ""
+    # Secret with keys username and password: a login that owns the database
+    # and can create roles. Empty skips the migration Job; apply
+    # files/score-store/migrations in order yourself.
+    adminSecret: ""
+    # Secrets with key password for the amp_scores_writer and
+    # amp_scores_reader logins. The migration Job sets them on the roles.
+    writerSecret: ""
+    readerSecret: ""
+  # Days a score is kept. Must equal the tracing module's retention.
+  retentionDays: 30
+  migration:
+    # Needs psql 15 or later.
+    image: postgres:18-alpine
+    backoffLimit: 3
+
+# Bitnami postgresql values for the bundled score store, used with
+# scoreStore.enabled. The chart's own templates read fullnameOverride,
+# auth.database, auth.existingSecret and tls.certificatesSecret.
+scoreStorePostgresql:
+  nameOverride: postgresql
+  fullnameOverride: amp-score-store-postgresql
+  auth:
+    database: amp_scores
+    # Created by the chart with a random password and kept on uninstall, since
+    # the data volume outlives the release.
+    existingSecret: amp-score-store-admin
+    secretKeys:
+      adminPasswordKey: password
+  tls:
+    enabled: true
+    # Issued by the chart's CA (scoreStore.tls.caSecret).
+    certificatesSecret: amp-score-store-postgresql-tls
+    certFilename: tls.crt
+    certKeyFilename: tls.key
+  primary:
+    # TCP connections must use TLS; every connection needs a password.
+    pgHbaConfiguration: |-
+      local    all  all                scram-sha-256
+      hostssl  all  all  0.0.0.0/0     scram-sha-256
+      hostssl  all  all  ::/0          scram-sha-256
+    # Replaced by the chart's policy, which admits only the observer, the
+    # writer and the migration Job.
+    networkPolicy:
+      enabled: false
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 250m
+      limits:
+        memory: 512Mi
+        cpu: 500m
+    persistence:
+      size: 10Gi

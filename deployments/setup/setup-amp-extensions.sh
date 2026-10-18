@@ -22,6 +22,7 @@ echo "=== Installing AMP Extensions ==="
 # Pre-update helm dependencies (must run before parallel installs)
 echo "   Updating Helm dependencies..."
 helm dependency update "${SCRIPT_DIR}/../helm-charts/wso2-amp-thunder-extension"
+helm dependency build "${SCRIPT_DIR}/../helm-charts/wso2-amp-observability-extension"
 echo "✅ Helm dependencies updated"
 echo ""
 

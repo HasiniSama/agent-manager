@@ -1,0 +1,173 @@
+{{- if .Values.scoreStore.enabled }}
+{{- $bundled := include "amp-observability-extension.scoreStore.bundled" . }}
+{{- if or $bundled .Values.scoreStore.external.adminSecret }}
+{{- $adminSecret := include "amp-observability-extension.scoreStore.adminSecret" . }}
+{{- $writerSecret := include "amp-observability-extension.scoreStore.writerSecret" . }}
+{{- $readerSecret := include "amp-observability-extension.scoreStore.readerSecret" . }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: amp-score-store-migration
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+    app.kubernetes.io/component: score-store-migration
+  annotations:
+    # Post-install: the bundled Postgres and the Secrets this Job reads are part of the release.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.scoreStore.migration.backoffLimit }}
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        # Admitted by the score store's NetworkPolicy.
+        app: amp-score-store-migration
+        app.kubernetes.io/component: score-store-migration
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "amp-observability-extension.imagePullSecrets" . | trim | nindent 6 }}
+      {{- end }}
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ .Values.scoreStore.migration.image }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              attempt=0
+              until psql -tAc 'SELECT 1' >/dev/null 2>/tmp/connect.err; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge 150 ]; then
+                  cat /tmp/connect.err >&2
+                  exit 1
+                fi
+                echo "Waiting for the score database: $(tail -n 1 /tmp/connect.err)"
+                sleep 2
+              done
+
+              psql -v ON_ERROR_STOP=1 -qc 'CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())'
+              for file in /migrations/*.sql; do
+                version="$(basename "$file" .sql)"
+                if [ -n "$(psql -tAc "SELECT 1 FROM schema_migrations WHERE version = '$version'")" ]; then
+                  echo "Already applied: $version"
+                  continue
+                fi
+                psql -v ON_ERROR_STOP=1 -q --single-transaction -f "$file" \
+                  -c "INSERT INTO schema_migrations (version) VALUES ('$version')"
+                echo "Applied: $version"
+              done
+
+              # Gives a role LOGIN with the password in the named variable; skips when it already logs in with it.
+              set_login() {
+                role="$1"
+                password="$(printenv "$2" || true)"
+                if [ -z "$password" ]; then
+                  echo "No password Secret for $role; it stays without login"
+                  return 0
+                fi
+                if PGUSER="$role" PGPASSWORD="$password" psql -tAc 'SELECT 1' >/dev/null 2>&1; then
+                  echo "$role logs in with its Secret"
+                  return 0
+                fi
+                psql -v ON_ERROR_STOP=1 -q <<SQL
+              \getenv password $2
+              ALTER ROLE $role LOGIN PASSWORD :'password';
+              SQL
+                echo "$role can log in"
+              }
+              set_login amp_scores_writer WRITER_PASSWORD
+              set_login amp_scores_reader READER_PASSWORD
+          env:
+            - name: PGHOST
+              value: {{ include "amp-observability-extension.scoreStore.host" . | quote }}
+            - name: PGPORT
+              value: {{ include "amp-observability-extension.scoreStore.port" . | quote }}
+            - name: PGDATABASE
+              value: {{ include "amp-observability-extension.scoreStore.database" . | quote }}
+            - name: PGUSER
+              {{- if $bundled }}
+              value: postgres
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminSecret }}
+                  key: username
+              {{- end }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminSecret }}
+                  key: password
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: /var/run/amp/score-store-ca/ca.crt
+            - name: PGCONNECT_TIMEOUT
+              value: "5"
+            - name: PGOPTIONS
+              value: "-c client_min_messages=warning"
+            {{- if $writerSecret }}
+            - name: WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $writerSecret }}
+                  key: password
+                  optional: true
+            {{- end }}
+            {{- if $readerSecret }}
+            - name: READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $readerSecret }}
+                  key: password
+                  optional: true
+            {{- end }}
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+            - name: ca
+              mountPath: /var/run/amp/score-store-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: migrations
+          configMap:
+            name: amp-score-store-migrations
+        - name: ca
+          secret:
+            secretName: {{ include "amp-observability-extension.scoreStore.caSecret" . }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

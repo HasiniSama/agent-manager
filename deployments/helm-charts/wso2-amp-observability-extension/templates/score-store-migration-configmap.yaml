@@ -1,0 +1,11 @@
+{{- if .Values.scoreStore.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amp-score-store-migrations
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+data:
+  {{- (.Files.Glob "files/score-store/migrations/*.sql").AsConfig | nindent 2 }}
+{{- end }}
