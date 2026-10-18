@@ -99,6 +99,19 @@ Its image (`scoreStore.migration.image`, default `postgres:18-alpine`) must prov
 
 The same SQL is kept in `agent-manager-observer/scorestore/migrations` for the services' tests. A test there fails if the two copies differ.
 
+### Score writer
+
+`amp-score-writer` runs from the observer's image (`/go/bin/score-writer`) whenever the score store is on. In external mode it needs `external.writerSecret`; without it the chart skips the writer. It logs in as `amp_scores_writer` with `sslmode=verify-full` against the score store CA, and listens on two TLS ports with a certificate from that CA (`amp-score-writer-tls`, read at start):
+
+| Port | Value | Callers | Serves |
+|---|---|---|---|
+| 9099 | `scoreWriter.publishPort` | evaluation jobs in `scoreWriter.networkPolicy.publishNamespaces`, and the gateway | the publish route (added by a later release; 404 until then) |
+| 9199 | `scoreWriter.internalPort` | agent-manager-service's namespace (`scoreWriter.networkPolicy.internalNamespace`) only | `GET /healthz`, and `GET /readyz`, which answers 200 once the writer login reaches the database |
+
+- **Gateway.** With `scoreWriter.ocIngress.enabled`, an HTTPRoute sends `scoreWriter.ocIngress.hostname` (default `scores.amp.localhost`), path `/api/v1/publisher/`, to port 9099 only, and a kgateway `BackendConfigPolicy` makes the gateway connect over TLS and verify the writer's certificate. The default `gateway-default` listener is plain HTTP; for jobs in another cluster, point `ocIngress.gatewayName` at a Gateway with an HTTPS listener.
+- **NetworkPolicy.** Ingress as in the table. Egress only to DNS, the bundled Postgres, Thunder (`networkPolicy.idp`) and agent-manager-service (`networkPolicy.runTokenIssuer`). For an external database, add an `ipBlock` rule to `networkPolicy.extraEgress`.
+- **Keys.** `scoreWriter.runToken` points at agent-manager-service's run-token key set; `scoreWriter.internalAuth` at Thunder's, with the issuer falling back to `amObserver.auth.issuer`.
+
 ### Retention
 
 `scoreStore.retentionDays` (default 30) is how long a score is kept. **It must equal the tracing module's retention.** OpenChoreo's default is 30 days. If the score retention is shorter, scores disappear while their traces are still visible. If it is longer, the store keeps scores for traces that no longer exist.

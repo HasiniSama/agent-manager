@@ -162,6 +162,7 @@ scoreStore:
     adminSecret: ""
     # Secrets with key password for the amp_scores_writer and
     # amp_scores_reader logins. The migration Job sets them on the roles.
+    # An empty writerSecret skips the score writer.
     writerSecret: ""
     readerSecret: ""
   # Days a score is kept. Must equal the tracing module's retention.
@@ -170,6 +171,67 @@ scoreStore:
     # Needs psql 15 or later.
     image: postgres:18-alpine
     backoffLimit: 3
+
+# Score writer: the only service that writes the score store. Deployed with
+# scoreStore.enabled, from the observer's image. Both ports serve TLS with a
+# certificate from the score store's CA.
+scoreWriter:
+  replicaCount: 1
+  # Evaluation jobs publish here; routed through the gateway (see ocIngress).
+  publishPort: 9099
+  # agent-manager-service only; never routed through the gateway.
+  internalPort: 9199
+  logLevel: INFO
+  resourceLimits:
+    memory: 256Mi
+    cpu: 500m
+  resourceRequests:
+    memory: 64Mi
+    cpu: 50m
+  # Verifies the evaluation run tokens agent-manager-service mints.
+  runToken:
+    jwksUrl: "http://amp-api.wso2-amp.svc.cluster.local:9000/auth/eval-run/jwks.json"
+    issuer: "urn:wso2:amp:eval-run"
+    audience: "urn:wso2:amp:eval-run"
+  # Verifies agent-manager-service's client-credentials token on the internal port.
+  internalAuth:
+    jwksUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/jwks"
+    # Empty uses amObserver.auth.issuer.
+    issuer: ""
+    clientId: amp-api-client
+  # Exposes the publish port as scores.<domain> through the observability-plane
+  # gateway, for evaluation jobs in another cluster. The gateway re-encrypts to
+  # the writer and verifies it against the score store's CA.
+  ocIngress:
+    enabled: true
+    gatewayName: gateway-default
+    hostname: scores.amp.localhost
+    requestTimeout: 60s
+  networkPolicy:
+    # No-op on clusters whose CNI doesn't enforce NetworkPolicy.
+    enabled: true
+    # Namespaces whose pods may call the publish port: where the evaluation
+    # jobs run (workflows-<env>).
+    publishNamespaces:
+      - workflows-default
+    # agent-manager-service's namespace, the only caller of the internal port.
+    internalNamespace: wso2-amp
+    # Egress targets. Ports are matched post-DNAT, so each is the target's
+    # containerPort, not its Service port.
+    dns:
+      namespace: kube-system
+      podLabel:
+        key: k8s-app
+        value: kube-dns
+    idp:
+      namespace: amp-thunder
+      ports: [8090]
+    runTokenIssuer:
+      namespace: wso2-amp
+      ports: [8080]
+    # Raw egress rules added as they are, such as an ipBlock for an external
+    # score database; the bundled one is allowed already.
+    extraEgress: []
 
 # Bitnami postgresql values for the bundled score store, used with
 # scoreStore.enabled. The chart's own templates read fullnameOverride,

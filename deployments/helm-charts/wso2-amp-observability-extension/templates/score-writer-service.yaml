@@ -1,0 +1,23 @@
+{{- if include "amp-observability-extension.scoreWriter.enabled" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: amp-score-writer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+    app.kubernetes.io/component: score-writer
+spec:
+  type: ClusterIP
+  selector:
+    app: amp-score-writer
+  ports:
+    - name: publish
+      port: {{ .Values.scoreWriter.publishPort }}
+      targetPort: publish
+      appProtocol: https
+    - name: internal
+      port: {{ .Values.scoreWriter.internalPort }}
+      targetPort: internal
+      appProtocol: https
+{{- end }}

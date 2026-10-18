@@ -1,0 +1,89 @@
+{{- if and (include "amp-observability-extension.scoreWriter.enabled" .) .Values.scoreWriter.networkPolicy.enabled }}
+{{- $np := .Values.scoreWriter.networkPolicy }}
+# Publish port: the evaluation jobs and the gateway. Internal port: agent-manager-service's
+# namespace only. Egress: DNS, the score database and the two key sets.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: amp-score-writer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+    app.kubernetes.io/component: score-writer
+spec:
+  podSelector:
+    matchLabels:
+      app: amp-score-writer
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if or $np.publishNamespaces .Values.scoreWriter.ocIngress.enabled }}
+    - from:
+        {{- range $np.publishNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- if .Values.scoreWriter.ocIngress.enabled }}
+        - podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: {{ .Values.scoreWriter.ocIngress.gatewayName }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.scoreWriter.publishPort }}
+    {{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.internalNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.scoreWriter.internalPort }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{ $np.dns.podLabel.key }}: {{ $np.dns.podLabel.value }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if include "amp-observability-extension.scoreStore.bundled" . }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/name: {{ .Values.scoreStorePostgresql.nameOverride }}
+              app.kubernetes.io/component: primary
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.idp.namespace }}
+      ports:
+        {{- range $np.idp.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.runTokenIssuer.namespace }}
+      ports:
+        {{- range $np.runTokenIssuer.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

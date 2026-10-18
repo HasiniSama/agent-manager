@@ -466,7 +466,7 @@
             },
             "writerSecret": {
               "default": "",
-              "description": "Secret with key password for the amp_scores_writer login. The migration Job sets it on the role.",
+              "description": "Secret with key password for the amp_scores_writer login. The migration Job sets it on the role. Empty skips the score writer.",
               "title": "writerSecret",
               "type": "string"
             },
@@ -578,6 +578,326 @@
           }
         }
       ]
+    },
+    "scoreWriter": {
+      "additionalProperties": false,
+      "description": "Score writer: the only service that writes the score store. Deployed with scoreStore.enabled, from the observer's image. Both ports serve TLS with a certificate from the score store's CA.",
+      "properties": {
+        "replicaCount": {
+          "default": 1,
+          "description": "Number of pod replicas to run.",
+          "title": "replicaCount",
+          "type": "integer",
+          "minimum": 1
+        },
+        "publishPort": {
+          "default": 9099,
+          "description": "Evaluation jobs publish here; routed through the gateway (see ocIngress).",
+          "title": "publishPort",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "internalPort": {
+          "default": 9199,
+          "description": "agent-manager-service only; never routed through the gateway.",
+          "title": "internalPort",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "logLevel": {
+          "default": "INFO",
+          "description": "Log level.",
+          "title": "logLevel",
+          "type": "string",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ]
+        },
+        "resourceLimits": {
+          "additionalProperties": false,
+          "description": "Maximum compute resources for the writer container.",
+          "properties": {
+            "memory": {
+              "default": "256Mi",
+              "description": "Maximum memory before the container is OOM-killed.",
+              "title": "memory",
+              "type": "string"
+            },
+            "cpu": {
+              "default": "500m",
+              "description": "Maximum CPU the container may use.",
+              "title": "cpu",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "resourceLimits",
+          "type": "object"
+        },
+        "resourceRequests": {
+          "additionalProperties": false,
+          "description": "Compute resources reserved for the writer at scheduling time.",
+          "properties": {
+            "memory": {
+              "default": "64Mi",
+              "description": "Memory reserved at scheduling time.",
+              "title": "memory",
+              "type": "string"
+            },
+            "cpu": {
+              "default": "50m",
+              "description": "CPU reserved at scheduling time.",
+              "title": "cpu",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "resourceRequests",
+          "type": "object"
+        },
+        "runToken": {
+          "additionalProperties": false,
+          "description": "Verifies the evaluation run tokens agent-manager-service mints.",
+          "properties": {
+            "jwksUrl": {
+              "default": "http://amp-api.wso2-amp.svc.cluster.local:9000/auth/eval-run/jwks.json",
+              "description": "agent-manager-service's run-token JSON Web Key Set.",
+              "title": "jwksUrl",
+              "type": "string",
+              "minLength": 1
+            },
+            "issuer": {
+              "default": "urn:wso2:amp:eval-run",
+              "description": "Required iss of a run token.",
+              "title": "issuer",
+              "type": "string",
+              "minLength": 1
+            },
+            "audience": {
+              "default": "urn:wso2:amp:eval-run",
+              "description": "Required aud of a run token.",
+              "title": "audience",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [],
+          "title": "runToken",
+          "type": "object"
+        },
+        "internalAuth": {
+          "additionalProperties": false,
+          "description": "Verifies agent-manager-service's client-credentials token on the internal port.",
+          "properties": {
+            "jwksUrl": {
+              "default": "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/jwks",
+              "description": "Thunder's JSON Web Key Set.",
+              "title": "jwksUrl",
+              "type": "string",
+              "minLength": 1
+            },
+            "issuer": {
+              "default": "",
+              "description": "Required iss. Empty uses amObserver.auth.issuer.",
+              "title": "issuer",
+              "type": "string"
+            },
+            "clientId": {
+              "default": "amp-api-client",
+              "description": "agent-manager-service's client ID, the only caller the internal port accepts.",
+              "title": "clientId",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [],
+          "title": "internalAuth",
+          "type": "object"
+        },
+        "ocIngress": {
+          "additionalProperties": false,
+          "description": "Exposes the publish port as scores.<domain> through the observability-plane gateway, for evaluation jobs in another cluster. The gateway re-encrypts to the writer and verifies it against the score store's CA.",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "description": "Route the publish port through the gateway.",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "gatewayName": {
+              "default": "gateway-default",
+              "description": "Gateway that serves this route.",
+              "title": "gatewayName",
+              "type": "string",
+              "minLength": 1
+            },
+            "hostname": {
+              "default": "scores.amp.localhost",
+              "description": "Hostname routed to the publish port.",
+              "title": "hostname",
+              "type": "string",
+              "minLength": 1
+            },
+            "requestTimeout": {
+              "default": "60s",
+              "description": "Time the gateway waits for a writer response before giving up.",
+              "title": "requestTimeout",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "ocIngress",
+          "type": "object"
+        },
+        "networkPolicy": {
+          "additionalProperties": false,
+          "description": "Traffic the writer may accept and send.",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "description": "No-op on clusters whose CNI doesn't enforce NetworkPolicy.",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "publishNamespaces": {
+              "default": [
+                "workflows-default"
+              ],
+              "description": "Namespaces whose pods may call the publish port: where the evaluation jobs run (workflows-<env>).",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": "publishNamespaces",
+              "type": "array"
+            },
+            "internalNamespace": {
+              "default": "wso2-amp",
+              "description": "agent-manager-service's namespace, the only caller of the internal port.",
+              "title": "internalNamespace",
+              "type": "string",
+              "minLength": 1
+            },
+            "dns": {
+              "additionalProperties": false,
+              "description": "Cluster DNS the writer resolves names with.",
+              "properties": {
+                "namespace": {
+                  "default": "kube-system",
+                  "description": "Namespace of the DNS pods.",
+                  "title": "namespace",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "podLabel": {
+                  "additionalProperties": false,
+                  "description": "Label selecting the DNS pods.",
+                  "properties": {
+                    "key": {
+                      "default": "k8s-app",
+                      "description": "Label key.",
+                      "title": "key",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "value": {
+                      "default": "kube-dns",
+                      "description": "Label value.",
+                      "title": "value",
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [],
+                  "title": "podLabel",
+                  "type": "object"
+                }
+              },
+              "required": [],
+              "title": "dns",
+              "type": "object"
+            },
+            "idp": {
+              "additionalProperties": false,
+              "description": "Thunder, for its JSON Web Key Set.",
+              "properties": {
+                "namespace": {
+                  "default": "amp-thunder",
+                  "description": "Thunder's namespace.",
+                  "title": "namespace",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ports": {
+                  "default": [
+                    8090
+                  ],
+                  "description": "Thunder's containerPorts.",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "title": "ports",
+                  "type": "array"
+                }
+              },
+              "required": [],
+              "title": "idp",
+              "type": "object"
+            },
+            "runTokenIssuer": {
+              "additionalProperties": false,
+              "description": "agent-manager-service, for its run-token JSON Web Key Set.",
+              "properties": {
+                "namespace": {
+                  "default": "wso2-amp",
+                  "description": "agent-manager-service's namespace.",
+                  "title": "namespace",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ports": {
+                  "default": [
+                    8080
+                  ],
+                  "description": "agent-manager-service's containerPorts.",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "title": "ports",
+                  "type": "array"
+                }
+              },
+              "required": [],
+              "title": "runTokenIssuer",
+              "type": "object"
+            },
+            "extraEgress": {
+              "default": [],
+              "description": "Raw egress rules added as they are, such as an ipBlock for an external score database; the bundled one is allowed already.",
+              "items": {
+                "type": "object"
+              },
+              "title": "extraEgress",
+              "type": "array"
+            }
+          },
+          "required": [],
+          "title": "networkPolicy",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "scoreWriter",
+      "type": "object"
     },
     "scoreStorePostgresql": {
       "description": "Bitnami postgresql values for the bundled score store, used with scoreStore.enabled. The chart's own templates read fullnameOverride, auth.database, auth.existingSecret and tls.certificatesSecret; the Bitnami chart's own schema checks the rest.",

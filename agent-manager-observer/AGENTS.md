@@ -41,6 +41,9 @@ HTTP → RequestLogger → CORS → mux ┬→ /health                          
 | Config + validation | `config/config.go` |
 | MCP server + route mount | `mcp/setup.go` |
 | MCP tool definitions/handlers | `mcp/tools/{tools,observability,traces}.go` |
+| Score writer entry point (second binary, same image) | `cmd/score-writer/main.go` |
+| Score writer listeners, probes, database pool | `scorewriter/` |
+| Score writer config | `config/score_writer.go` |
 
 ## Routing
 
@@ -85,6 +88,10 @@ make mock-traces  # generate OTLP traces via telemetrygen (for local testing)
 The four `cfg.Observer.*` fields are required together once `OPENCHOREO_OBSERVER_URL` is set; the `cfg.Auth.*` fields are required unless `IsLocalDevEnv` is true.
 
 Co-dependent values are checked together — a partially-set Observer or Auth config fails at startup, not first request. `getEnvAsList` parses comma-separated issuer/audience lists.
+
+### Score writer
+
+`config.LoadScoreWriter()` (`config/score_writer.go`) reads the writer's env and fails at startup on a missing value: `SCORE_WRITER_PUBLISH_PORT` (9099), `SCORE_WRITER_INTERNAL_PORT` (9199), `SCORE_WRITER_TLS_CERT_FILE`, `SCORE_WRITER_TLS_KEY_FILE`, `SCORE_DB_HOST`, `SCORE_DB_PORT` (5432), `SCORE_DB_NAME` (`amp_scores`), `SCORE_DB_USER` (`amp_scores_writer`), `SCORE_DB_PASSWORD_FILE`, `SCORE_DB_CA_FILE`, `EVAL_RUN_JWKS_URL`, `EVAL_RUN_ISSUER` and `EVAL_RUN_AUDIENCE` (both `urn:wso2:amp:eval-run`), `KEY_MANAGER_JWKS_URL`, `KEY_MANAGER_ISSUER`, `SCORE_WRITER_INTERNAL_CLIENT_ID` (`amp-api-client`). Both ports serve TLS 1.2 or later only. The database pool connects lazily with `sslmode=verify-full`, so the writer starts without a database and `GET /readyz` on the internal port answers 503 until it connects.
 
 ## Auth
 

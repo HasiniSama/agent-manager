@@ -184,3 +184,13 @@ amp-score-store-reader
 {{- .Values.scoreStore.external.readerSecret -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+"true" when the score writer is deployed: the score store is on and the writer
+has a login. External mode without scoreStore.external.writerSecret skips it.
+*/}}
+{{- define "amp-observability-extension.scoreWriter.enabled" -}}
+{{- if and .Values.scoreStore.enabled (include "amp-observability-extension.scoreStore.writerSecret" .) -}}
+true
+{{- end -}}
+{{- end }}

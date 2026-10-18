@@ -267,6 +267,61 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- scoreWriter --------------------------------------------------------------
+# The writer ships with the score store; its route must reach the publish port only.
+
+SCORE_WRITER_OBJECTS=(
+  Deployment/amp-score-writer
+  Service/amp-score-writer
+  Certificate/amp-score-writer-tls
+  NetworkPolicy/amp-score-writer
+  HTTPRoute/test-release-scores
+  BackendConfigPolicy/amp-score-writer-tls
+)
+
+objects="$(rendered_objects)"
+assert_objects "default render has no score writer" absent "$objects" "${SCORE_WRITER_OBJECTS[@]}"
+
+objects="$(rendered_objects --set scoreStore.enabled=true)"
+assert_objects "scoreStore.enabled renders the writer's Deployment, Service, Certificate, policy and route" present "$objects" \
+  "${SCORE_WRITER_OBJECTS[@]}"
+
+route="$(helm template test-release "$CHART_DIR" --set scoreStore.enabled=true \
+  -s templates/score-writer-httproute.yaml 2>&1)"
+if grep -q "9199" <<<"$route"; then
+  printf 'FAIL - the score writer route mentions the internal port 9199\n'
+  FAILURES=$((FAILURES + 1))
+elif grep -q "port: 9099" <<<"$route"; then
+  printf 'ok   - the score writer route reaches 9099 and never mentions 9199\n'
+else
+  printf 'FAIL - the score writer route does not reach the publish port 9099\n'
+  FAILURES=$((FAILURES + 1))
+fi
+
+objects="$(rendered_objects --set scoreStore.enabled=true --set scoreWriter.ocIngress.enabled=false)"
+assert_objects "ocIngress disabled renders no route" absent "$objects" \
+  HTTPRoute/test-release-scores BackendConfigPolicy/amp-score-writer-tls
+
+assert_env "the writer connects to the bundled Postgres" \
+  SCORE_DB_HOST "amp-score-store-postgresql.default.svc.cluster.local" \
+  --set scoreStore.enabled=true --namespace default
+assert_env "the writer connects to the external host" \
+  SCORE_DB_HOST "scores.db.example.com" \
+  "${EXTERNAL_ARGS[@]}" --set scoreStore.external.writerSecret=score-db-writer
+assert_env "the internal issuer falls back to the observer's issuer" \
+  KEY_MANAGER_ISSUER "https://thunder.example.com" \
+  --set scoreStore.enabled=true --set amObserver.auth.issuer=https://thunder.example.com
+
+objects="$(rendered_objects "${EXTERNAL_ARGS[@]}")"
+assert_objects "external mode without a writer Secret renders no writer" absent "$objects" \
+  "${SCORE_WRITER_OBJECTS[@]}"
+objects="$(rendered_objects "${EXTERNAL_ARGS[@]}" --set scoreStore.external.writerSecret=score-db-writer)"
+assert_objects "external mode with a writer Secret renders the writer" present "$objects" \
+  "${SCORE_WRITER_OBJECTS[@]}"
+
+assert_schema_rejects "schema rejects a writer port out of range" \
+  --set scoreStore.enabled=true --set scoreWriter.internalPort=70000
+
 if ((FAILURES > 0)); then
   printf '\n%d assertion(s) failed\n' "$FAILURES"
   exit 1

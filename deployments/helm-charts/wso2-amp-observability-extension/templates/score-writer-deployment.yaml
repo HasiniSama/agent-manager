@@ -1,0 +1,141 @@
+{{- if include "amp-observability-extension.scoreWriter.enabled" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amp-score-writer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+    app.kubernetes.io/component: score-writer
+spec:
+  replicas: {{ .Values.scoreWriter.replicaCount }}
+  selector:
+    matchLabels:
+      app: amp-score-writer
+  template:
+    metadata:
+      labels:
+        # Admitted by the score store's NetworkPolicy.
+        app: amp-score-writer
+        app.kubernetes.io/component: score-writer
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "amp-observability-extension.imagePullSecrets" . | trim | nindent 6 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: score-writer
+          {{- if .Values.amObserver.developmentMode }}
+          image: amp-observer:0.0.0-dev
+          {{- else }}
+          image: {{ include "amp-observability-extension.image" . }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.amObserver.image.pullPolicy }}
+          command:
+            - /go/bin/score-writer
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: publish
+              containerPort: {{ .Values.scoreWriter.publishPort }}
+            - name: internal
+              containerPort: {{ .Values.scoreWriter.internalPort }}
+          env:
+            - name: SCORE_WRITER_PUBLISH_PORT
+              value: {{ .Values.scoreWriter.publishPort | quote }}
+            - name: SCORE_WRITER_INTERNAL_PORT
+              value: {{ .Values.scoreWriter.internalPort | quote }}
+            - name: SCORE_WRITER_TLS_CERT_FILE
+              value: /var/run/amp/score-writer-tls/tls.crt
+            - name: SCORE_WRITER_TLS_KEY_FILE
+              value: /var/run/amp/score-writer-tls/tls.key
+            - name: SCORE_DB_HOST
+              value: {{ include "amp-observability-extension.scoreStore.host" . | quote }}
+            - name: SCORE_DB_PORT
+              value: {{ include "amp-observability-extension.scoreStore.port" . | quote }}
+            - name: SCORE_DB_NAME
+              value: {{ include "amp-observability-extension.scoreStore.database" . | quote }}
+            - name: SCORE_DB_USER
+              value: amp_scores_writer
+            - name: SCORE_DB_PASSWORD_FILE
+              value: /var/run/amp/score-store-writer/password
+            - name: SCORE_DB_CA_FILE
+              value: /var/run/amp/score-store-ca/ca.crt
+            - name: EVAL_RUN_JWKS_URL
+              value: {{ .Values.scoreWriter.runToken.jwksUrl | quote }}
+            - name: EVAL_RUN_ISSUER
+              value: {{ .Values.scoreWriter.runToken.issuer | quote }}
+            - name: EVAL_RUN_AUDIENCE
+              value: {{ .Values.scoreWriter.runToken.audience | quote }}
+            - name: KEY_MANAGER_JWKS_URL
+              value: {{ .Values.scoreWriter.internalAuth.jwksUrl | quote }}
+            - name: KEY_MANAGER_ISSUER
+              value: {{ .Values.scoreWriter.internalAuth.issuer | default .Values.amObserver.auth.issuer | quote }}
+            - name: SCORE_WRITER_INTERNAL_CLIENT_ID
+              value: {{ .Values.scoreWriter.internalAuth.clientId | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.scoreWriter.logLevel | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: internal
+              scheme: HTTPS
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: internal
+              scheme: HTTPS
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            limits:
+              memory: {{ .Values.scoreWriter.resourceLimits.memory }}
+              cpu: {{ .Values.scoreWriter.resourceLimits.cpu }}
+            requests:
+              memory: {{ .Values.scoreWriter.resourceRequests.memory }}
+              cpu: {{ .Values.scoreWriter.resourceRequests.cpu }}
+          volumeMounts:
+            # Read at start, so a renewed certificate takes effect on the next restart.
+            - name: tls
+              mountPath: /var/run/amp/score-writer-tls
+              readOnly: true
+            - name: score-store-ca
+              mountPath: /var/run/amp/score-store-ca
+              readOnly: true
+            - name: score-store-writer
+              mountPath: /var/run/amp/score-store-writer
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: amp-score-writer-tls
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: score-store-ca
+          secret:
+            secretName: {{ include "amp-observability-extension.scoreStore.caSecret" . }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: score-store-writer
+          secret:
+            secretName: {{ include "amp-observability-extension.scoreStore.writerSecret" . }}
+            items:
+              - key: password
+                path: password
+{{- end }}

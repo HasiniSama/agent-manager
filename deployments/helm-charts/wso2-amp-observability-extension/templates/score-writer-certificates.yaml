@@ -1,0 +1,59 @@
+{{- if include "amp-observability-extension.scoreWriter.enabled" . }}
+# The writer's listener certificate, for both ports.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amp-score-writer-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+    app.kubernetes.io/component: score-writer
+spec:
+  secretName: amp-score-writer-tls
+  dnsNames:
+    - amp-score-writer
+    - amp-score-writer.{{ .Release.Namespace }}
+    - amp-score-writer.{{ .Release.Namespace }}.svc
+    - amp-score-writer.{{ .Release.Namespace }}.svc.cluster.local
+  duration: 43800h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+  issuerRef:
+    name: amp-score-store-ca
+    kind: Issuer
+    group: cert-manager.io
+{{- if .Values.scoreWriter.ocIngress.enabled }}
+---
+# The gateway's side of the gateway-to-writer hop; its ca.crt verifies the writer.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: amp-score-writer-gateway-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amp-observability-extension.labels" . | nindent 4 }}
+    app.kubernetes.io/component: score-writer
+spec:
+  secretName: amp-score-writer-gateway-tls
+  commonName: {{ .Values.scoreWriter.ocIngress.gatewayName }}
+  duration: 43800h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - client auth
+    - digital signature
+  issuerRef:
+    name: amp-score-store-ca
+    kind: Issuer
+    group: cert-manager.io
+{{- end }}
+{{- end }}

@@ -15,14 +15,15 @@ RUN go mod download
 # Copy the source code as the last step
 COPY . .
 
-# Build the binary with optimizations using Go's native cross-compilation
+# Build the observer and the score writer with optimizations using Go's native cross-compilation
 # This runs natively on the build platform (amd64) and cross-compiles for target platform
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -a \
     -installsuffix cgo \
     -ldflags="-w -s" \
-    -o /go/bin/agent-manager-observer \
-    -buildvcs=false
+    -o /go/bin/ \
+    -buildvcs=false \
+    . ./cmd/score-writer
 
 FROM public.ecr.aws/docker/library/alpine:3.21
 
@@ -32,8 +33,9 @@ RUN apk add --no-cache ca-certificates tzdata
 # Create a non-root user/group (UID:GID = 1000:1000)
 RUN addgroup -g 1000 app && adduser -D -u 1000 -G app app
 
-# Copy binary with ownership set
+# Copy binaries with ownership set; the score writer runs from the same image
 COPY --from=builder --chown=1000:1000 /go/bin/agent-manager-observer /go/bin/agent-manager-observer
+COPY --from=builder --chown=1000:1000 /go/bin/score-writer /go/bin/score-writer
 
 # Drop root privileges
 USER 1000:1000
