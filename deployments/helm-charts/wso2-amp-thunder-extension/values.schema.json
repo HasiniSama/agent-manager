@@ -1346,6 +1346,7 @@
                     "59-am-mcp-client.yaml",
                     "60-amp-resource-server.yaml",
                     "60-mcp-resource-servers.yaml",
+                    "60-amp-score-writer-resource-server.yaml",
                     "61-amp-role-admin.yaml",
                     "62-amp-role-developer.yaml",
                     "63-amp-role-ai-lead.yaml",

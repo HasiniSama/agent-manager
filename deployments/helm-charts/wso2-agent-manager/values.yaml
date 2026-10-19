@@ -182,6 +182,9 @@ agentManagerService:
       caSecret: ""
       # Timeout for each call to the writer, as a Go duration.
       clientTimeout: "10s"
+      # Resource the writer's token is requested for. Must equal the observability
+      # chart's scoreWriter.internalAuth.audience and a Thunder resource server.
+      audience: "urn:wso2:amp:score-writer"
 
     # TLS Configuration
     tlsEnabled: false

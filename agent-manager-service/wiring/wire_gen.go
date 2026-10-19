@@ -7,6 +7,7 @@
 package wiring
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/wire"
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/observersvc"
+	"github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/auth"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/client"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/scorewritersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
@@ -192,7 +194,7 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	a2ACardFetcher := services.NewA2ACardFetcher()
 	a2APublicationReconcilerService := services.NewA2APublicationReconcilerService(txRunner, a2APublicationRepository, a2AAgentCardRepository, a2AProxyRepository, deploymentRepository, gatewayRepository, agentConfigRepository, openChoreoClient, a2ACardFetcher, v, gatewayEventsService, logger)
 	a2ACardReconcilerService := services.NewA2ACardReconcilerService(a2AAgentCardRepository, a2AProxyRepository, gatewayRepository, a2ACardFetcher, openChoreoClient, logger)
-	scoreWriterClient, err := ProvideScoreWriterClient(configConfig, authProvider)
+	scoreWriterClient, err := ProvideScoreWriterClient(configConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -640,8 +642,8 @@ func ProvideObserverClient(cfg config.Config, authProvider client.AuthProvider) 
 	})
 }
 
-// ProvideScoreWriterClient builds the score writer client; nil without a writer URL, which keeps the outbox worker off.
-func ProvideScoreWriterClient(cfg config.Config, authProvider client.AuthProvider) (scorewritersvc.ScoreWriterClient, error) {
+// ProvideScoreWriterClient builds the score writer client with its own writer-audience token; nil without a writer URL.
+func ProvideScoreWriterClient(cfg config.Config) (scorewritersvc.ScoreWriterClient, error) {
 	if cfg.ScoreWriter.InternalURL == "" {
 		return nil, nil
 	}
@@ -650,10 +652,15 @@ func ProvideScoreWriterClient(cfg config.Config, authProvider client.AuthProvide
 		return nil, fmt.Errorf("invalid score writer client timeout: %w", err)
 	}
 	return scorewritersvc.NewScoreWriterClient(scorewritersvc.Config{
-		BaseURL:      cfg.ScoreWriter.InternalURL,
-		CAFile:       cfg.ScoreWriter.CAFile,
-		Timeout:      timeout,
-		AuthProvider: authProvider,
+		BaseURL: cfg.ScoreWriter.InternalURL,
+		CAFile:  cfg.ScoreWriter.CAFile,
+		Timeout: timeout,
+		AuthProvider: auth.NewAuthProvider(auth.Config{
+			TokenURL:     cfg.IDP.TokenURL,
+			ClientID:     cfg.IDP.ClientID,
+			ClientSecret: cfg.IDP.ClientSecret,
+			Resource:     cmp.Or(cfg.ScoreWriter.Audience, scorewritersvc.DefaultAudience),
+		}),
 	})
 }
 

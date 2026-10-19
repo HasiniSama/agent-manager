@@ -43,6 +43,13 @@ setup_job = next(
 mounts = setup_job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
 assert any(mount.get("subPath") == "60-mcp-resource-servers.yaml" for mount in mounts)
 
+score_writer = yaml.safe_load(data["60-amp-score-writer-resource-server.yaml"])
+assert score_writer["identifier"] == "urn:wso2:amp:score-writer", score_writer["identifier"]
+assert not score_writer.get("resources"), "the score writer resource server grants no permissions"
+assert any(mount.get("subPath") == "60-amp-score-writer-resource-server.yaml" for mount in mounts)
+default_config = yaml.safe_load(data["69-amp-default-resource-server-config.yaml"])
+assert default_config["value"]["resourceServerId"] == "amp-resource-server", default_config
+
 main_permissions = {
     action["handle"]
     for resource in main["resources"]

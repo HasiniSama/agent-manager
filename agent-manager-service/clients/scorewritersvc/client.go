@@ -34,6 +34,9 @@ import (
 
 const deletePath = "/internal/v1/scores/delete"
 
+// DefaultAudience is the score writer's own audience, the resource its token is requested for.
+const DefaultAudience = "urn:wso2:amp:score-writer"
+
 //go:generate moq -rm -fmt goimports -skip-ensure -pkg clientmocks -out ../clientmocks/score_writer_client_fake.go . ScoreWriterClient:ScoreWriterClientMock
 
 // ScoreWriterClient sends score deletes to the score writer.

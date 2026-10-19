@@ -20,6 +20,7 @@
 package wiring
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	observersvc "github.com/wso2/agent-manager/agent-manager-service/clients/observersvc"
+	ocauth "github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/auth"
 	occlient "github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/client"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/scorewritersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
@@ -317,8 +319,8 @@ func ProvideObserverClient(cfg config.Config, authProvider occlient.AuthProvider
 	})
 }
 
-// ProvideScoreWriterClient builds the score writer client; nil without a writer URL, which keeps the outbox worker off.
-func ProvideScoreWriterClient(cfg config.Config, authProvider occlient.AuthProvider) (scorewritersvc.ScoreWriterClient, error) {
+// ProvideScoreWriterClient builds the score writer client with its own writer-audience token; nil without a writer URL.
+func ProvideScoreWriterClient(cfg config.Config) (scorewritersvc.ScoreWriterClient, error) {
 	if cfg.ScoreWriter.InternalURL == "" {
 		return nil, nil //nolint:nilnil // no writer URL means no client
 	}
@@ -327,10 +329,15 @@ func ProvideScoreWriterClient(cfg config.Config, authProvider occlient.AuthProvi
 		return nil, fmt.Errorf("invalid score writer client timeout: %w", err)
 	}
 	return scorewritersvc.NewScoreWriterClient(scorewritersvc.Config{
-		BaseURL:      cfg.ScoreWriter.InternalURL,
-		CAFile:       cfg.ScoreWriter.CAFile,
-		Timeout:      timeout,
-		AuthProvider: authProvider,
+		BaseURL: cfg.ScoreWriter.InternalURL,
+		CAFile:  cfg.ScoreWriter.CAFile,
+		Timeout: timeout,
+		AuthProvider: ocauth.NewAuthProvider(ocauth.Config{
+			TokenURL:     cfg.IDP.TokenURL,
+			ClientID:     cfg.IDP.ClientID,
+			ClientSecret: cfg.IDP.ClientSecret,
+			Resource:     cmp.Or(cfg.ScoreWriter.Audience, scorewritersvc.DefaultAudience),
+		}),
 	})
 }
 

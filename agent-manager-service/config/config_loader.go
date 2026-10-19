@@ -217,6 +217,7 @@ func loadEnvs() {
 		InternalURL:   strings.TrimSpace(r.readOptionalString("SCORE_WRITER_INTERNAL_URL", "")),
 		CAFile:        strings.TrimSpace(r.readOptionalString("SCORE_WRITER_CA_FILE", "")),
 		ClientTimeout: strings.TrimSpace(r.readOptionalString("SCORE_WRITER_CLIENT_TIMEOUT", "10s")),
+		Audience:      strings.TrimSpace(r.readOptionalString("SCORE_WRITER_AUDIENCE", "")),
 	}
 
 	config.GatewayManifestCache = GatewayManifestCacheConfig{
@@ -475,8 +476,13 @@ func validateEvalRunTokenConfig(cfg *Config, r *configReader) {
 	}
 }
 
-// validateScoreWriterConfig requires an https writer URL when one is set, and a positive client timeout.
+// validateScoreWriterConfig requires an https writer URL when one is set, a positive client timeout, and an absolute URI audience when one is set.
 func validateScoreWriterConfig(cfg *Config, r *configReader) {
+	if raw := cfg.ScoreWriter.Audience; raw != "" {
+		if u, err := url.Parse(raw); err != nil || !u.IsAbs() {
+			r.errors = append(r.errors, fmt.Errorf("SCORE_WRITER_AUDIENCE %q must be an absolute URI", raw))
+		}
+	}
 	if raw := cfg.ScoreWriter.InternalURL; raw != "" {
 		u, err := url.Parse(raw)
 		switch {

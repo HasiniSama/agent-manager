@@ -713,6 +713,13 @@
                   "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
                   "title": "clientTimeout",
                   "type": "string"
+                },
+                "audience": {
+                  "default": "urn:wso2:amp:score-writer",
+                  "description": "Resource the writer's token is requested for. Must equal the observability chart's scoreWriter.internalAuth.audience and a Thunder resource server.",
+                  "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:.+$",
+                  "title": "audience",
+                  "type": "string"
                 }
               },
               "title": "scoreWriter",

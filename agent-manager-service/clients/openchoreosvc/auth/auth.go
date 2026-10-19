@@ -48,6 +48,9 @@ type Config struct {
 
 	// Scope is the OAuth2 scope(s) to request (space-separated)
 	Scope string
+
+	// Resource is the RFC 8707 resource indicator to request; it becomes the token's audience
+	Resource string
 }
 
 // AuthProvider implements client.AuthProvider for on-prem deployments using IDP
@@ -152,6 +155,9 @@ func (p *AuthProvider) fetchToken(ctx context.Context) (string, int64, error) {
 	}
 	if p.config.Scope != "" {
 		formData["scope"] = p.config.Scope
+	}
+	if p.config.Resource != "" {
+		formData["resource"] = p.config.Resource
 	}
 	req.SetFormData(formData)
 	auth := base64.StdEncoding.EncodeToString([]byte(p.config.ClientID + ":" + p.config.ClientSecret))

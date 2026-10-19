@@ -606,6 +606,20 @@ data:
   {{- end }}
   {{- end }}
 
+  60-amp-score-writer-resource-server.yaml: |
+    # The score writer's internal routes require this aud and client_id amp-api-client
+    # (observability chart, scoreWriter.internalAuth). agent-manager-service requests it with
+    # resource=urn:wso2:amp:score-writer and no scope. No permissions: the writer reads no
+    # scope, and no role may grant score deletes. Not the default resource server (see 69-).
+    resource_type: resource_server
+    id: amp-score-writer-resource-server
+    name: Score Writer
+    description: The score writer's internal delete and backfill routes
+    identifier: "urn:wso2:amp:score-writer"
+    type: API
+    ouHandle: default
+    delimiter: ":"
+
   61-amp-role-admin.yaml: |
     resource_type: role
     id: amp-role-admin

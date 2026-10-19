@@ -235,6 +235,8 @@ type ScoreWriterConfig struct {
 	CAFile string
 	// ClientTimeout bounds each call to the writer, as a Go duration.
 	ClientTimeout string
+	// Audience is the resource the writer's token is requested for; empty means scorewritersvc.DefaultAudience.
+	Audience string
 }
 
 // GatewayManifestCacheConfig selects and configures the backend for the
