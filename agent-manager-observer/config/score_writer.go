@@ -23,6 +23,9 @@ import (
 	"strings"
 )
 
+// DefaultScoreWriterAudience is the audience the internal port requires when none is configured.
+const DefaultScoreWriterAudience = "urn:wso2:amp:score-writer"
+
 // ScoreWriterConfig holds the score writer's configuration.
 type ScoreWriterConfig struct {
 	PublishPort  int
@@ -33,7 +36,9 @@ type ScoreWriterConfig struct {
 	InternalAuth InternalAuthConfig
 	// RetentionDays bounds how old a published trace may be; it equals the score store's retention.
 	RetentionDays int
-	LogLevel      string
+	// BackfillEnabled serves the internal backfill route; off, it answers 404.
+	BackfillEnabled bool
+	LogLevel        string
 }
 
 // TLSFiles are the PEM certificate and key a listener serves.
@@ -64,6 +69,8 @@ type InternalAuthConfig struct {
 	JWKSURL  string
 	Issuer   []string
 	ClientID string
+	// Audience is the writer's own audience; empty means DefaultScoreWriterAudience.
+	Audience string
 }
 
 // LoadScoreWriter loads the score writer's configuration from environment variables.
@@ -92,9 +99,11 @@ func LoadScoreWriter() (*ScoreWriterConfig, error) {
 			JWKSURL:  getEnv("KEY_MANAGER_JWKS_URL", ""),
 			Issuer:   getEnvAsOptionalList("KEY_MANAGER_ISSUER"),
 			ClientID: getEnv("SCORE_WRITER_INTERNAL_CLIENT_ID", "amp-api-client"),
+			Audience: strings.TrimSpace(getEnv("SCORE_WRITER_INTERNAL_AUDIENCE", "")),
 		},
-		RetentionDays: getEnvAsInt("SCORE_RETENTION_DAYS", 30),
-		LogLevel:      getEnv("LOG_LEVEL", "INFO"),
+		RetentionDays:   getEnvAsInt("SCORE_RETENTION_DAYS", 30),
+		BackfillEnabled: getEnvAsBool("SCORE_WRITER_BACKFILL_ENABLED", false),
+		LogLevel:        getEnv("LOG_LEVEL", "INFO"),
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err

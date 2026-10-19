@@ -102,12 +102,14 @@ type spanRow struct {
 	Explanation   *string
 }
 
-// validator collects field errors, up to maxFieldErrors.
+// validator collects field errors, up to maxFieldErrors, and counts every one.
 type validator struct {
-	errs []fieldError
+	errs  []fieldError
+	count int
 }
 
 func (v *validator) add(field, format string, args ...any) {
+	v.count++
 	if len(v.errs) < maxFieldErrors {
 		v.errs = append(v.errs, fieldError{Field: field, Message: fmt.Sprintf(format, args...)})
 	}
@@ -117,7 +119,12 @@ func (v *validator) add(field, format string, args ...any) {
 func buildRows(req *publishRequest, now time.Time, retention time.Duration) ([]traceRow, []spanRow, []fieldError) {
 	v := &validator{}
 	checkName(v, "context.monitorName", req.Context.MonitorName, maxMonitorNameLen)
-	if len(req.IndividualScores) == 0 {
+	return v.rows(req.IndividualScores, now, retention)
+}
+
+// rows validates the items and groups them; any error collected so far, earlier ones included, returns no rows.
+func (v *validator) rows(items []scoreItem, now time.Time, retention time.Duration) ([]traceRow, []spanRow, []fieldError) {
+	if len(items) == 0 {
 		v.add("individualScores", "must hold at least one score")
 	}
 
@@ -130,8 +137,8 @@ func buildRows(req *publishRequest, now time.Time, retention time.Duration) ([]t
 		traceSeen = map[[2]string]bool{}
 		traceIDs  = map[string]bool{}
 	)
-	for i := range req.IndividualScores {
-		item := &req.IndividualScores[i]
+	for i := range items {
+		item := &items[i]
 		path := fmt.Sprintf("individualScores[%d]", i)
 		if !checkItem(v, path, item, oldest, newest) {
 			continue
@@ -217,7 +224,7 @@ func buildRows(req *publishRequest, now time.Time, retention time.Duration) ([]t
 
 // checkItem validates one item and reports whether it can be grouped.
 func checkItem(v *validator, path string, item *scoreItem, oldest, newest time.Time) bool {
-	before := len(v.errs)
+	before := v.count
 	checkName(v, path+".evaluatorName", item.EvaluatorName, maxNameLength)
 	if item.EvaluatorIdentifier != "" {
 		checkName(v, path+".evaluatorIdentifier", item.EvaluatorIdentifier, maxNameLength)
@@ -264,7 +271,7 @@ func checkItem(v *validator, path string, item *scoreItem, oldest, newest time.T
 			}
 		}
 	}
-	return len(v.errs) == before
+	return v.count == before
 }
 
 // checkName requires 1 to max characters of valid text without control characters.

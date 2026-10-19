@@ -40,13 +40,16 @@ const readyTimeout = 2 * time.Second
 
 // Writer serves the publish and internal listeners.
 type Writer struct {
-	publish   *http.Server
-	internal  *http.Server
-	pool      *pgxpool.Pool
-	store     scoreStore
-	runTokens *runTokenVerifier
-	retention time.Duration
-	now       func() time.Time
+	publish       *http.Server
+	internal      *http.Server
+	pool          *pgxpool.Pool
+	store         scoreStore
+	deleter       scoreDeleter
+	runTokens     *runTokenVerifier
+	serviceTokens *serviceTokenVerifier
+	backfill      bool
+	retention     time.Duration
+	now           func() time.Time
 }
 
 // New builds the writer; it fails when the TLS key pair or the database files can't be read.
@@ -59,12 +62,16 @@ func New(cfg *config.ScoreWriterConfig) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
+	st := &store{pool: pool}
 	w := &Writer{
-		pool:      pool,
-		store:     &store{pool: pool},
-		runTokens: newRunTokenVerifier(cfg.RunToken, &http.Client{Timeout: jwksFetchTimeout}),
-		retention: time.Duration(cfg.RetentionDays) * 24 * time.Hour,
-		now:       time.Now,
+		pool:          pool,
+		store:         st,
+		deleter:       st,
+		runTokens:     newRunTokenVerifier(cfg.RunToken, &http.Client{Timeout: jwksFetchTimeout}),
+		serviceTokens: newServiceTokenVerifier(cfg.InternalAuth, &http.Client{Timeout: jwksFetchTimeout}),
+		backfill:      cfg.BackfillEnabled,
+		retention:     time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+		now:           time.Now,
 	}
 	w.publish = newServer(tlsCfg, w.publishHandler())
 	w.internal = newServer(tlsCfg, w.internalHandler())
@@ -136,13 +143,17 @@ func (w *Writer) publishHandler() http.Handler {
 	return logger.RequestLogger()(mux)
 }
 
-// internalHandler serves the internal port's probes.
+// internalHandler serves the internal port's probes and agent-manager-service's routes.
 func (w *Writer) internalHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(rw http.ResponseWriter, _ *http.Request) {
 		writeStatus(rw, http.StatusOK, "healthy")
 	})
 	mux.HandleFunc("GET /readyz", w.readyz)
+	mux.HandleFunc(deleteRoute, w.deleteScores)
+	if w.backfill {
+		mux.HandleFunc(backfillRoute, w.backfillScores)
+	}
 	return mux
 }
 

@@ -193,12 +193,19 @@ scoreWriter:
     jwksUrl: "http://amp-api.wso2-amp.svc.cluster.local:9000/auth/eval-run/jwks.json"
     issuer: "urn:wso2:amp:eval-run"
     audience: "urn:wso2:amp:eval-run"
-  # Verifies agent-manager-service's client-credentials token on the internal port.
+  # Verifies agent-manager-service's client-credentials token on the internal port:
+  # the token's client_id must equal clientId and its aud must hold audience.
+  # Scopes are not read.
   internalAuth:
     jwksUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/jwks"
     # Empty uses amObserver.auth.issuer.
     issuer: ""
     clientId: amp-api-client
+    # The writer's own audience, so a token minted for another service is refused here.
+    audience: "urn:wso2:amp:score-writer"
+  # Serves POST /internal/v1/scores/backfill; off, that route answers 404.
+  backfill:
+    enabled: false
   # Exposes the publish port as scores.<domain> through the observability-plane
   # gateway, for evaluation jobs in another cluster. The gateway re-encrypts to
   # the writer and verifies it against the score store's CA.

@@ -692,7 +692,7 @@
         },
         "internalAuth": {
           "additionalProperties": false,
-          "description": "Verifies agent-manager-service's client-credentials token on the internal port.",
+          "description": "Verifies agent-manager-service's client-credentials token on the internal port: the token's client_id must equal clientId and its aud must hold audience. Scopes are not read.",
           "properties": {
             "jwksUrl": {
               "default": "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/jwks",
@@ -713,10 +713,32 @@
               "title": "clientId",
               "type": "string",
               "minLength": 1
+            },
+            "audience": {
+              "default": "urn:wso2:amp:score-writer",
+              "description": "The writer's own audience, so a token minted for another service is refused here.",
+              "title": "audience",
+              "type": "string",
+              "minLength": 1
             }
           },
           "required": [],
           "title": "internalAuth",
+          "type": "object"
+        },
+        "backfill": {
+          "additionalProperties": false,
+          "description": "The internal backfill route.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Serve POST /internal/v1/scores/backfill; off, that route answers 404.",
+              "title": "enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "title": "backfill",
           "type": "object"
         },
         "ocIngress": {

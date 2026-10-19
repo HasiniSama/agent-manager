@@ -21,6 +21,16 @@ info:
 
     Both ports serve TLS 1.2 or later only. The internal port (9199) is never routed through
     the gateway.
+
+    **The internal routes accept only agent-manager-service's own client identity.** The token
+    is a client-credentials JWT from the key manager (Thunder), verified against
+    `KEY_MANAGER_JWKS_URL` and `KEY_MANAGER_ISSUER`. Its `aud` must hold the writer's audience
+    (`SCORE_WRITER_INTERNAL_AUDIENCE`, `urn:wso2:amp:score-writer` by default) and its
+    `client_id` must equal `SCORE_WRITER_INTERNAL_CLIENT_ID` (`amp-api-client` by default).
+    Scopes are not read, so no role or scope grants these routes. Run tokens, user tokens and
+    tokens for another audience are rejected with 401; another client's token is rejected with
+    403. Each internal request logs one audit line (`score.delete` or `score.backfill`) with
+    the caller's client ID, the org and the row counts.
   version: 1.0.0
   contact:
     name: WSO2 LLC
@@ -34,10 +44,14 @@ servers:
     description: In-cluster publish port
   - url: https://scores.amp.localhost
     description: Publish port through the observability-plane gateway
+  - url: https://amp-score-writer.openchoreo-observability-plane.svc:9199
+    description: In-cluster internal port, reachable only from agent-manager-service's namespace
 
 tags:
   - name: publish
     description: Score publishing (requires a run token)
+  - name: internal
+    description: Deletes and backfill on the internal port (requires agent-manager-service's client token)
   - name: health
     description: Liveness and readiness on the internal port (unauthenticated)
 
@@ -130,6 +144,137 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /internal/v1/scores/delete:
+    post:
+      tags: [internal]
+      summary: Delete scores by monitor ID (internal port)
+      description: |
+        Deletes the org's trace rows for the given monitors, and their span rows with them.
+        With `evaluatorName` and `runStartedBefore`, deletes only that evaluator's rows from runs
+        started before the time (the run token's `iat`), so a re-added evaluator's newer scores
+        stay. The two come together or not at all. Rows are selected by org and monitor ID,
+        never by name. Rows go in batches of 5,000, each committed on its own; a delete that
+        stops part way is finished by sending it again, and sending it twice changes nothing.
+
+        Validation, each failure reported with a field path: `orgId` is 1 to 256 characters;
+        `monitorIds` holds 1 to 100 UUIDs; `runStartedBefore` is at most 5 minutes in the
+        future; unknown fields are rejected; the body is at most 64 KiB (413 past it).
+      operationId: deleteScores
+      security:
+        - serviceClientToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteScoresRequest'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traceCount]
+                properties:
+                  traceCount:
+                    type: integer
+                    description: Trace rows deleted; their span rows went with them.
+        '400':
+          description: The body is not a valid delete request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing, invalid or expired token, or a token for another issuer or audience
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: The token is valid but belongs to another client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: The body is larger than 64 KiB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The client-token keys could not be fetched yet, or the score store could not be written; retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /internal/v1/scores/backfill:
+    post:
+      tags: [internal]
+      summary: Backfill one run's scores (internal port)
+      description: |
+        Answers 404 unless `scoreWriter.backfill.enabled` is set. Stores one run's scores with
+        the same validation and the same write as the publish route, except that the org,
+        project, agent, environment, monitor, run and run start come from the body, because
+        agent-manager-service is the system of record for the scores it already holds.
+      operationId: backfillScores
+      security:
+        - serviceClientToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackfillScoresRequest'
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traceCount, spanCount]
+                properties:
+                  traceCount:
+                    type: integer
+                  spanCount:
+                    type: integer
+        '400':
+          description: The body is not a valid backfill request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing, invalid or expired token, or a token for another issuer or audience
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: The token is valid but belongs to another client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Backfill is not enabled
+        '413':
+          description: The body is larger than 8 MiB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The client-token keys could not be fetched yet, or the score store could not be written; retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /healthz:
     get:
       tags: [health]
@@ -170,8 +315,73 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Evaluation run token minted by agent-manager-service for this monitor and run.
+    serviceClientToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: agent-manager-service's client-credentials token for the writer's audience.
 
   schemas:
+    DeleteScoresRequest:
+      type: object
+      additionalProperties: false
+      required: [orgId, monitorIds]
+      properties:
+        orgId:
+          type: string
+          maxLength: 256
+        monitorIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+        evaluatorName:
+          type: string
+          maxLength: 256
+          description: With `runStartedBefore`, limits the delete to this evaluator.
+        runStartedBefore:
+          type: string
+          format: date-time
+          description: With `evaluatorName`, limits the delete to runs started before this time.
+
+    BackfillScoresRequest:
+      type: object
+      additionalProperties: false
+      required: [orgId, monitorId, runId, runStartedAt, projectName, agentName, environmentName, monitorName, individualScores]
+      properties:
+        orgId:
+          type: string
+          maxLength: 256
+        monitorId:
+          type: string
+          format: uuid
+        runId:
+          type: string
+          format: uuid
+        runStartedAt:
+          type: string
+          format: date-time
+          description: At most 5 minutes in the future.
+        projectName:
+          type: string
+          maxLength: 256
+        agentName:
+          type: string
+          maxLength: 256
+        environmentName:
+          type: string
+          maxLength: 256
+        monitorName:
+          type: string
+          maxLength: 128
+        individualScores:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ScoreItem'
+
     PublishScoresRequest:
       type: object
       additionalProperties: false

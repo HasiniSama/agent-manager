@@ -44,6 +44,19 @@ type scoreStore interface {
 	publish(ctx context.Context, b *publishBatch) error
 }
 
+// deleteFilter selects one org's rows for some monitors, or one evaluator's rows from runs started before a time.
+type deleteFilter struct {
+	OrgID            string
+	MonitorIDs       []string
+	EvaluatorName    *string
+	RunStartedBefore *time.Time
+}
+
+// scoreDeleter deletes score rows and reports how many trace rows went.
+type scoreDeleter interface {
+	deleteScores(ctx context.Context, f *deleteFilter) (int64, error)
+}
+
 // store writes score rows as the writer login.
 type store struct {
 	pool *pgxpool.Pool
@@ -91,6 +104,35 @@ INSERT INTO span_scores (
 SELECT $1, $2::uuid, s.evaluator_name, s.trace_id, s.span_id, s.label, s.score, s.skip_reason, s.explanation
 FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::float8[], $8::text[], $9::text[])
      AS s(evaluator_name, trace_id, span_id, label, score, skip_reason, explanation)`
+
+// The outer run_started_at check holds for a row a concurrent publish replaced after the batch was picked.
+const deleteTraceScoresSQL = `
+DELETE FROM trace_scores t
+USING (
+    SELECT monitor_id, evaluator_name, trace_id FROM trace_scores
+    WHERE org_id = $1 AND monitor_id = ANY($2::text[]::uuid[])
+      AND ($3::text IS NULL OR (evaluator_name = $3::text AND run_started_at < $4::timestamptz))
+    LIMIT $5) d
+WHERE t.org_id = $1 AND t.monitor_id = d.monitor_id
+  AND t.evaluator_name = d.evaluator_name AND t.trace_id = d.trace_id
+  AND ($3::text IS NULL OR t.run_started_at < $4::timestamptz)`
+
+const deleteBatchSize = 5000
+
+// deleteScores deletes matching trace rows in batches, each its own transaction; span rows go with them by foreign key.
+func (s *store) deleteScores(ctx context.Context, f *deleteFilter) (int64, error) {
+	var total int64
+	for {
+		tag, err := s.pool.Exec(ctx, deleteTraceScoresSQL, f.OrgID, f.MonitorIDs, f.EvaluatorName, f.RunStartedBefore, deleteBatchSize)
+		if err != nil {
+			return total, fmt.Errorf("delete trace scores: %w", err)
+		}
+		total += tag.RowsAffected()
+		if tag.RowsAffected() < deleteBatchSize {
+			return total, nil
+		}
+	}
+}
 
 // publish upserts the trace rows and replaces their span rows in one transaction, so a retry is safe.
 func (s *store) publish(ctx context.Context, b *publishBatch) error {

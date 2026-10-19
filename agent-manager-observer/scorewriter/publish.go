@@ -113,8 +113,8 @@ func (w *Writer) publishScores(rw http.ResponseWriter, r *http.Request) {
 		reject(http.StatusBadRequest, "body unreadable", "the body could not be read", nil)
 		return
 	}
-	req, fe := decodePublishRequest(body)
-	if fe != nil {
+	req := &publishRequest{}
+	if fe := decodeStrict(body, req); fe != nil {
 		reject(http.StatusBadRequest, "malformed body", "the body is not a valid publish request", []fieldError{*fe})
 		return
 	}
@@ -152,18 +152,17 @@ func (w *Writer) publishScores(rw http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(rw).Encode(map[string]int{"traceCount": audit.traces, "spanCount": audit.spans})
 }
 
-// decodePublishRequest parses the body strictly: unknown fields and trailing data are errors.
-func decodePublishRequest(body []byte) (*publishRequest, *fieldError) {
+// decodeStrict parses the body into v strictly: unknown fields and trailing data are errors.
+func decodeStrict(body []byte, v any) *fieldError {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
-	var req publishRequest
-	if err := dec.Decode(&req); err != nil {
-		return nil, jsonFieldError(err)
+	if err := dec.Decode(v); err != nil {
+		return jsonFieldError(err)
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, &fieldError{Field: "", Message: "has data after the JSON object"}
+		return &fieldError{Field: "", Message: "has data after the JSON object"}
 	}
-	return &req, nil
+	return nil
 }
 
 // jsonFieldError names the field a decode error is about where the decoder says.
