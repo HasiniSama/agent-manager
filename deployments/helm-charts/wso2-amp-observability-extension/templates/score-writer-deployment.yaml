@@ -83,6 +83,8 @@ spec:
               value: {{ .Values.scoreWriter.internalAuth.issuer | default .Values.amObserver.auth.issuer | quote }}
             - name: SCORE_WRITER_INTERNAL_CLIENT_ID
               value: {{ .Values.scoreWriter.internalAuth.clientId | quote }}
+            - name: SCORE_RETENTION_DAYS
+              value: {{ .Values.scoreStore.retentionDays | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.scoreWriter.logLevel | quote }}
           readinessProbe:

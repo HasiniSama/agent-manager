@@ -38,6 +38,7 @@ var requiredScoreWriterEnv = map[string]string{
 var optionalScoreWriterEnv = []string{
 	"SCORE_WRITER_PUBLISH_PORT", "SCORE_WRITER_INTERNAL_PORT", "SCORE_DB_PORT", "SCORE_DB_NAME",
 	"SCORE_DB_USER", "EVAL_RUN_ISSUER", "EVAL_RUN_AUDIENCE", "SCORE_WRITER_INTERNAL_CLIENT_ID", "LOG_LEVEL",
+	"SCORE_RETENTION_DAYS",
 }
 
 func setScoreWriterEnv(t *testing.T, overrides map[string]string) {
@@ -64,6 +65,7 @@ func TestLoadScoreWriter_EveryValue(t *testing.T) {
 		"EVAL_RUN_AUDIENCE":               "urn:test:audience",
 		"KEY_MANAGER_ISSUER":              "https://a.example.com, https://b.example.com",
 		"SCORE_WRITER_INTERNAL_CLIENT_ID": "amp-service",
+		"SCORE_RETENTION_DAYS":            "14",
 		"LOG_LEVEL":                       "DEBUG",
 	})
 
@@ -89,7 +91,8 @@ func TestLoadScoreWriter_EveryValue(t *testing.T) {
 			Issuer:   []string{"https://a.example.com", "https://b.example.com"},
 			ClientID: "amp-service",
 		},
-		LogLevel: "DEBUG",
+		RetentionDays: 14,
+		LogLevel:      "DEBUG",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("config mismatch\n got: %+v\nwant: %+v", cfg, want)
@@ -114,6 +117,9 @@ func TestLoadScoreWriter_Defaults(t *testing.T) {
 	}
 	if cfg.InternalAuth.ClientID != "amp-api-client" {
 		t.Errorf("internal client ID = %q, want amp-api-client", cfg.InternalAuth.ClientID)
+	}
+	if cfg.RetentionDays != 30 {
+		t.Errorf("retention days = %d, want 30", cfg.RetentionDays)
 	}
 }
 
@@ -144,6 +150,7 @@ func TestLoadScoreWriter_Invalid(t *testing.T) {
 		{"Thunder JWKS not http", map[string]string{"KEY_MANAGER_JWKS_URL": "file:///etc/jwks.json"}, "KEY_MANAGER_JWKS_URL must be an absolute http or https URL"},
 		{"blank client ID", map[string]string{"SCORE_WRITER_INTERNAL_CLIENT_ID": " "}, "SCORE_WRITER_INTERNAL_CLIENT_ID is required"},
 		{"only commas in issuer", map[string]string{"KEY_MANAGER_ISSUER": ", ,"}, "KEY_MANAGER_ISSUER is required"},
+		{"retention under a day", map[string]string{"SCORE_RETENTION_DAYS": "0"}, "SCORE_RETENTION_DAYS must be at least 1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,0 +1,274 @@
+openapi: 3.0.3
+info:
+  title: Score Writer API
+  description: |
+    The score writer is the only service that writes the score store. Evaluation jobs publish
+    one run's per-trace and per-span scores to it.
+
+    **Who the scores belong to comes from the run token, never the body.** The publish route
+    accepts only evaluation run tokens: RS256 JWTs minted by agent-manager-service for one run,
+    verified against its run-token key set (`/auth/eval-run/jwks.json`). The token must carry
+    `iss` and `aud` `urn:wso2:amp:eval-run`, `exp`, `nbf` and `iat` (30 s leeway), `jti` equal
+    to `runId`, and `ouId`, `ouHandle`, `projectName`, `agentName`, `environmentName`,
+    `monitorId` and `runId`. Any other token, including publisher-audience (`amp-publisher-*`)
+    and user tokens, is rejected with 401. The org is the token's `ouId`; project, agent and
+    environment come from the token; the run's start is the token's `iat`. The path's
+    `monitorId` and `runId` must equal the token's, or the request is rejected with 403.
+
+    Every request logs one audit line (`msg` `audit`, `action` `score.publish`) with the
+    outcome, the org, monitor, run and token ID (`jti`), and the trace and span counts. The
+    token itself is never logged.
+
+    Both ports serve TLS 1.2 or later only. The internal port (9199) is never routed through
+    the gateway.
+  version: 1.0.0
+  contact:
+    name: WSO2 LLC
+    url: https://www.wso2.com
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://amp-score-writer.openchoreo-observability-plane.svc:9099
+    description: In-cluster publish port
+  - url: https://scores.amp.localhost
+    description: Publish port through the observability-plane gateway
+
+tags:
+  - name: publish
+    description: Score publishing (requires a run token)
+  - name: health
+    description: Liveness and readiness on the internal port (unauthenticated)
+
+paths:
+  /api/v1/publisher/monitors/{monitorId}/runs/{runId}/scores:
+    post:
+      tags: [publish]
+      summary: Publish one run's scores
+      description: |
+        Stores the scores in one transaction. Each (evaluator, trace) becomes one row: an
+        existing row for the same org, monitor, evaluator and trace is replaced, and its span
+        rows are replaced by this request's. Other evaluators' rows for the same trace are
+        kept. Publishing the same request again leaves the same rows, so it is safe to retry.
+
+        Validation, each failure reported with a field path:
+        - at most 500 distinct traces per request, and a body of at most 8 MiB (413 past it);
+        - unknown fields are rejected, including any org, project, agent or environment field;
+        - each item has a `score` in [0, 1] or a `skipReason`, not both;
+        - `traceStartTime` is within the score store's retention (`scoreStore.retentionDays`,
+          30 by default) and at most 5 minutes in the future;
+        - `traceId` is 32 lowercase hex characters, `spanId` 16 or 32;
+        - names are 1 to 256 characters without control characters (`monitorName` up to 128).
+      operationId: publishScores
+      security:
+        - runToken: []
+      parameters:
+        - name: monitorId
+          in: path
+          required: true
+          description: Must equal the run token's `monitorId`.
+          schema:
+            type: string
+            format: uuid
+        - name: runId
+          in: path
+          required: true
+          description: Must equal the run token's `runId`.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishScoresRequest'
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traceCount, spanCount]
+                properties:
+                  traceCount:
+                    type: integer
+                    description: Distinct traces stored.
+                  spanCount:
+                    type: integer
+                    description: Span rows stored.
+        '400':
+          description: The body is not a valid publish request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing, invalid or expired run token, or a token that is not a run token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: The path's monitor or run differs from the run token's
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: The body is larger than 8 MiB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The run-token keys could not be fetched yet, or the score store could not be written; retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness (internal port)
+      operationId: healthz
+      responses:
+        '200':
+          description: The process is serving
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness (internal port)
+      description: 200 once the writer login reaches the score database, 503 until then.
+      operationId: readyz
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '503':
+          description: The score database is not reachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+
+components:
+  securitySchemes:
+    runToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Evaluation run token minted by agent-manager-service for this monitor and run.
+
+  schemas:
+    PublishScoresRequest:
+      type: object
+      additionalProperties: false
+      required: [context, individualScores]
+      properties:
+        context:
+          type: object
+          additionalProperties: false
+          required: [monitorName]
+          properties:
+            monitorName:
+              type: string
+              maxLength: 128
+              description: The monitor's display name. Display only; never used to select or delete rows.
+        individualScores:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ScoreItem'
+
+    ScoreItem:
+      type: object
+      additionalProperties: false
+      description: |
+        One evaluator's result for a trace (no `spanContext`) or for one of its spans. Items for
+        the same evaluator and trace must agree on `level`, `evaluatorIdentifier` and
+        `traceStartTime`. The trace row's `score` is the mean of the scored items, NULL when
+        every item was skipped; `score_sum` and `scored_count` keep the mean across evaluators
+        exact.
+      required: [evaluatorName, level, traceId, traceStartTime]
+      properties:
+        evaluatorName:
+          type: string
+          maxLength: 256
+        evaluatorIdentifier:
+          type: string
+          maxLength: 256
+          description: Defaults to `evaluatorName`.
+        level:
+          type: string
+          enum: [trace, agent, llm]
+        traceId:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+        traceStartTime:
+          type: string
+          format: date-time
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+        skipReason:
+          type: string
+        explanation:
+          type: string
+        spanContext:
+          type: object
+          additionalProperties: false
+          required: [spanId]
+          properties:
+            spanId:
+              type: string
+              pattern: '^([0-9a-f]{16}|[0-9a-f]{32})$'
+            agentName:
+              type: string
+              description: The span label for agent-level scores.
+            model:
+              type: string
+              description: With `vendor`, the span label for llm-level scores (`vendor/model`).
+            vendor:
+              type: string
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        fields:
+          type: array
+          description: One entry per validation failure, up to 50.
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+                example: individualScores[3].score
+              message:
+                type: string
+
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [healthy, ready, unavailable]

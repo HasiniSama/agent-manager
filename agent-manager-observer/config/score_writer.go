@@ -31,7 +31,9 @@ type ScoreWriterConfig struct {
 	Database     ScoreDatabaseConfig
 	RunToken     RunTokenConfig
 	InternalAuth InternalAuthConfig
-	LogLevel     string
+	// RetentionDays bounds how old a published trace may be; it equals the score store's retention.
+	RetentionDays int
+	LogLevel      string
 }
 
 // TLSFiles are the PEM certificate and key a listener serves.
@@ -91,7 +93,8 @@ func LoadScoreWriter() (*ScoreWriterConfig, error) {
 			Issuer:   getEnvAsOptionalList("KEY_MANAGER_ISSUER"),
 			ClientID: getEnv("SCORE_WRITER_INTERNAL_CLIENT_ID", "amp-api-client"),
 		},
-		LogLevel: getEnv("LOG_LEVEL", "INFO"),
+		RetentionDays: getEnvAsInt("SCORE_RETENTION_DAYS", 30),
+		LogLevel:      getEnv("LOG_LEVEL", "INFO"),
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -140,6 +143,9 @@ func (c *ScoreWriterConfig) validate() error {
 		if err := checkHTTPURL(u.value); err != nil {
 			errs = append(errs, fmt.Errorf("%s %w", u.name, err))
 		}
+	}
+	if c.RetentionDays < 1 {
+		errs = append(errs, fmt.Errorf("SCORE_RETENTION_DAYS must be at least 1, got %d", c.RetentionDays))
 	}
 	if len(c.InternalAuth.Issuer) == 0 {
 		errs = append(errs, fmt.Errorf("KEY_MANAGER_ISSUER is required"))

@@ -105,12 +105,13 @@ The same SQL is kept in `agent-manager-observer/scorestore/migrations` for the s
 
 | Port | Value | Callers | Serves |
 |---|---|---|---|
-| 9099 | `scoreWriter.publishPort` | evaluation jobs in `scoreWriter.networkPolicy.publishNamespaces`, and the gateway | the publish route (added by a later release; 404 until then) |
+| 9099 | `scoreWriter.publishPort` | evaluation jobs in `scoreWriter.networkPolicy.publishNamespaces`, and the gateway | `POST /api/v1/publisher/monitors/{monitorId}/runs/{runId}/scores`, run tokens only (see `agent-manager-observer/docs/score-writer-openapi.yaml`) |
 | 9199 | `scoreWriter.internalPort` | agent-manager-service's namespace (`scoreWriter.networkPolicy.internalNamespace`) only | `GET /healthz`, and `GET /readyz`, which answers 200 once the writer login reaches the database |
 
 - **Gateway.** With `scoreWriter.ocIngress.enabled`, an HTTPRoute sends `scoreWriter.ocIngress.hostname` (default `scores.amp.localhost`), path `/api/v1/publisher/`, to port 9099 only, and a kgateway `BackendConfigPolicy` makes the gateway connect over TLS and verify the writer's certificate. The default `gateway-default` listener is plain HTTP; for jobs in another cluster, point `ocIngress.gatewayName` at a Gateway with an HTTPS listener.
 - **NetworkPolicy.** Ingress as in the table. Egress only to DNS, the bundled Postgres, Thunder (`networkPolicy.idp`) and agent-manager-service (`networkPolicy.runTokenIssuer`). For an external database, add an `ipBlock` rule to `networkPolicy.extraEgress`.
-- **Keys.** `scoreWriter.runToken` points at agent-manager-service's run-token key set; `scoreWriter.internalAuth` at Thunder's, with the issuer falling back to `amObserver.auth.issuer`.
+- **Keys.** `scoreWriter.runToken` points at agent-manager-service's run-token key set, fetched on the first publish and again on an unknown key ID at most once a minute (until they first load, publishes get 503 so the job retries); `scoreWriter.internalAuth` at Thunder's, with the issuer falling back to `amObserver.auth.issuer`.
+- **Retention.** The writer refuses a score whose trace started before `scoreStore.retentionDays`.
 
 ### Retention
 

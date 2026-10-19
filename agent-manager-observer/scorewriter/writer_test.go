@@ -244,10 +244,13 @@ func TestServe_ProbesOnInternalPortOnly(t *testing.T) {
 	if code, body := get(t, client, "https://"+internalAddr+"/readyz"); code != http.StatusServiceUnavailable || body != `{"status":"unavailable"}` {
 		t.Errorf("internal /readyz = %d %s, want 503 unavailable", code, body)
 	}
-	for _, path := range []string{"/", "/healthz", "/readyz", "/api/v1/publisher/monitors/m/runs/r/scores"} {
+	for _, path := range []string{"/", "/healthz", "/readyz"} {
 		if code, _ := get(t, client, "https://"+publishAddr+path); code != http.StatusNotFound {
 			t.Errorf("publish %s = %d, want 404", path, code)
 		}
+	}
+	if code, _ := get(t, client, "https://"+publishAddr+"/api/v1/publisher/monitors/m/runs/r/scores"); code != http.StatusMethodNotAllowed {
+		t.Errorf("GET on the publish route = %d, want 405", code)
 	}
 }
 

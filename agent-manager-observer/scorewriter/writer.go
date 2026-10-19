@@ -40,9 +40,13 @@ const readyTimeout = 2 * time.Second
 
 // Writer serves the publish and internal listeners.
 type Writer struct {
-	publish  *http.Server
-	internal *http.Server
-	pool     *pgxpool.Pool
+	publish   *http.Server
+	internal  *http.Server
+	pool      *pgxpool.Pool
+	store     scoreStore
+	runTokens *runTokenVerifier
+	retention time.Duration
+	now       func() time.Time
 }
 
 // New builds the writer; it fails when the TLS key pair or the database files can't be read.
@@ -55,8 +59,14 @@ func New(cfg *config.ScoreWriterConfig) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	w := &Writer{pool: pool}
-	w.publish = newServer(tlsCfg, logger.RequestLogger()(http.NewServeMux()))
+	w := &Writer{
+		pool:      pool,
+		store:     &store{pool: pool},
+		runTokens: newRunTokenVerifier(cfg.RunToken, &http.Client{Timeout: jwksFetchTimeout}),
+		retention: time.Duration(cfg.RetentionDays) * 24 * time.Hour,
+		now:       time.Now,
+	}
+	w.publish = newServer(tlsCfg, w.publishHandler())
 	w.internal = newServer(tlsCfg, w.internalHandler())
 	return w, nil
 }
@@ -117,6 +127,13 @@ func Run(cfg *config.ScoreWriterConfig) error {
 	}
 	slog.Info("Score writer exited")
 	return nil
+}
+
+// publishHandler serves the publish port's one route.
+func (w *Writer) publishHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc(publishRoute, w.publishScores)
+	return logger.RequestLogger()(mux)
 }
 
 // internalHandler serves the internal port's probes.
