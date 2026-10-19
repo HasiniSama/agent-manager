@@ -63,6 +63,26 @@ spec:
           protocol: TCP
         {{- end }}
 
+    {{- if .Values.ampEvaluation.scoreWriter.endpoint }}
+    {{- with .Values.networkPolicy.evaluationJob.scoreWriter }}
+    # amp-score-writer's publish port, or the gateway in front of it — publish scores to the score store.
+    - to:
+        {{- if .cidr }}
+        - ipBlock:
+            cidr: {{ .cidr }}
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+        {{- end }}
+      ports:
+        {{- range .ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- end }}
+
     # LLM gateway for llm_judge evaluators — unconditional since NetworkPolicy can't scope by workflow.
     # Two selectors, because the gateway's namespace is a deployment choice: the
     # per-org-env namespaces created by setup-gateway.sh / add-environment.sh carry the

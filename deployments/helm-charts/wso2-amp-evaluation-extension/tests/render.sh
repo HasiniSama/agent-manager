@@ -169,6 +169,66 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- ampEvaluation.scoreWriter ------------------------------------------------
+# Off by default: nothing about the writer renders. On, the job gets the flags,
+# its container alone mounts the CA, and egress opens to the writer's port.
+
+WRITER_URL="https://amp-score-writer.openchoreo-observability-plane.svc.cluster.local:9099"
+
+check() {
+  local label="$1"
+  shift
+  if "$@"; then
+    printf 'ok   - %s\n' "$label"
+  else
+    printf 'FAIL - %s\n' "$label"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+writer_render() {
+  helm template test-release "$CHART_DIR" "$@" 2>&1 | python3 -c '
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+wf = next(d for d in docs if d["kind"] == "ClusterWorkflowTemplate")
+container = wf["spec"]["templates"][0]["container"]
+np = next(d for d in docs if d["kind"] == "NetworkPolicy")
+args = [a for a in container["args"] if a.startswith("--score-writer")]
+mounts = [m["mountPath"] for m in container.get("volumeMounts", [])]
+volumes = [v["secret"]["secretName"] for v in wf["spec"].get("volumes", [])]
+rules = []
+for rule in np["spec"]["egress"]:
+    ports = [str(p["port"]) for p in rule.get("ports") or []]
+    for t in rule.get("to") or []:
+        ns = ((t.get("namespaceSelector") or {}).get("matchLabels") or {}).get("kubernetes.io/metadata.name")
+        cidr = (t.get("ipBlock") or {}).get("cidr")
+        if ports in (["9099"], ["8443"]):
+            rules.append((ns or cidr) + "=" + ",".join(ports))
+print(" ".join(args) + "|" + ",".join(mounts) + "|" + ",".join(volumes) + "|" + ";".join(rules))
+'
+}
+
+check "default render mentions no score writer" \
+  bash -c "! helm template test-release '$CHART_DIR' | grep -qi 'score-writer\|scoreWriter\|9099'"
+
+check "endpoint and CA render the flags, the mount and the egress rule" \
+  test "$(writer_render --set "ampEvaluation.scoreWriter.endpoint=$WRITER_URL" \
+    --set ampEvaluation.scoreWriter.caSecret=amp-score-store-ca)" == \
+  "--score-writer-endpoint=$WRITER_URL --score-writer-ca=/var/run/amp/ca/ca.crt|/var/run/amp/ca|amp-score-store-ca|openchoreo-observability-plane=9099"
+
+check "endpoint without a CA mounts nothing" \
+  test "$(writer_render --set "ampEvaluation.scoreWriter.endpoint=$WRITER_URL")" == \
+  "--score-writer-endpoint=$WRITER_URL|||openchoreo-observability-plane=9099"
+
+check "a cidr replaces the namespace for a gateway outside the cluster" \
+  test "$(writer_render --set ampEvaluation.scoreWriter.endpoint=https://scores.example.com \
+    --set networkPolicy.evaluationJob.scoreWriter.cidr=203.0.113.10/32 \
+    --set 'networkPolicy.evaluationJob.scoreWriter.ports[0]=8443')" == \
+  "--score-writer-endpoint=https://scores.example.com|||203.0.113.10/32=8443"
+
+check "the schema refuses a plain http endpoint" \
+  bash -c "! helm template test-release '$CHART_DIR' --set ampEvaluation.scoreWriter.endpoint=http://amp-score-writer:9099 >/dev/null 2>&1"
+
 if [[ $FAILURES -gt 0 ]]; then
   printf '\nwso2-amp-evaluation-extension: %d render assertion(s) failed\n' "$FAILURES"
   exit 1

@@ -69,6 +69,16 @@ spec:
       - name: idp-token-url
       - name: idp-client-id
       - name: publisher-secret-name
+  {{- if and .Values.ampEvaluation.scoreWriter.endpoint .Values.ampEvaluation.scoreWriter.caSecret }}
+  # The score writer's CA; only the job container mounts it.
+  volumes:
+    - name: score-writer-ca
+      secret:
+        secretName: {{ .Values.ampEvaluation.scoreWriter.caSecret }}
+        items:
+          - key: ca.crt
+            path: ca.crt
+  {{- end }}
   templates:
     - name: run-monitor
       container:
@@ -89,6 +99,14 @@ spec:
           - '--monitor-id={{ "{{" }}workflow.parameters.monitor-id{{ "}}" }}'
           - '--run-id={{ "{{" }}workflow.parameters.run-id{{ "}}" }}'
           - '--publisher-endpoint={{ "{{" }}workflow.parameters.publisher-endpoint{{ "}}" }}'
+          {{- with .Values.ampEvaluation.scoreWriter }}
+          {{- if .endpoint }}
+          - '--score-writer-endpoint={{ .endpoint }}'
+          {{- if .caSecret }}
+          - '--score-writer-ca=/var/run/amp/ca/ca.crt'
+          {{- end }}
+          {{- end }}
+          {{- end }}
         env:
           - name: LLM_API_KEY
             valueFrom:
@@ -114,6 +132,12 @@ spec:
           limits:
             cpu: "500m"
             memory: "512Mi"
+        {{- if and .Values.ampEvaluation.scoreWriter.endpoint .Values.ampEvaluation.scoreWriter.caSecret }}
+        volumeMounts:
+          - name: score-writer-ca
+            mountPath: /var/run/amp/ca
+            readOnly: true
+        {{- end }}
   ttlStrategy:
     secondsAfterCompletion: 3600
     # Without this a failed workflow is kept for the full completion TTL, and the

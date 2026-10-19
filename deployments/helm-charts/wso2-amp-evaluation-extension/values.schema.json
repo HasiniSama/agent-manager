@@ -137,6 +137,28 @@
           "required": [],
           "title": "publisher",
           "type": "object"
+        },
+        "scoreWriter": {
+          "additionalProperties": false,
+          "description": "Score writer the job also publishes scores to, after agent-manager, with the run token. Without the run token file in the pod the job skips it with a warning.",
+          "properties": {
+            "endpoint": {
+              "default": "",
+              "description": "https URL of amp-score-writer's publish port, or https://scores.<domain> through the gateway. Empty turns the publish off.",
+              "pattern": "^(https://[^\\s']+)?$",
+              "title": "endpoint",
+              "type": "string"
+            },
+            "caSecret": {
+              "default": "",
+              "description": "Secret in the workflow namespace whose ca.crt verifies the writer, mounted into the job container at /var/run/amp/ca/ca.crt. Empty uses the image's trust store.",
+              "title": "caSecret",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "scoreWriter",
+          "type": "object"
         }
       },
       "required": [],
@@ -275,6 +297,38 @@
               },
               "required": [],
               "title": "idp",
+              "type": "object"
+            },
+            "scoreWriter": {
+              "additionalProperties": false,
+              "description": "amp-score-writer's publish port. Rendered only when ampEvaluation.scoreWriter.endpoint is set.",
+              "properties": {
+                "namespace": {
+                  "default": "openchoreo-observability-plane",
+                  "description": "Namespace running amp-score-writer.",
+                  "title": "namespace",
+                  "type": "string"
+                },
+                "ports": {
+                  "default": [
+                    9099
+                  ],
+                  "description": "Ports the job may reach on the writer, or on the gateway when cidr is set.",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "title": "ports",
+                  "type": "array"
+                },
+                "cidr": {
+                  "default": "",
+                  "description": "Allowed instead of the namespace, for a writer behind a gateway outside the cluster; set ports to the gateway's port with it.",
+                  "title": "cidr",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "scoreWriter",
               "type": "object"
             },
             "llmGateway": {

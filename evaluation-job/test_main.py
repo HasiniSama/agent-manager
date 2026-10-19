@@ -24,12 +24,15 @@ Verifies:
 - Argument validation and error handling
 """
 
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from main import (
     parse_args,
@@ -41,6 +44,12 @@ from main import (
     _load_custom_code_evaluator,
     _create_custom_llm_judge,
     _apply_monitor_parameter_policy,
+)
+from main import (
+    WRITER_BATCH_TRACES,
+    batch_by_trace,
+    publish_trace_scores,
+    writer_score_items,
 )
 
 
@@ -1345,3 +1354,275 @@ class TestLoadCustomCodeEvaluator:
         """Empty source raises ValueError."""
         with pytest.raises(ValueError, match="empty source"):
             _load_custom_code_evaluator("test-eval", "", {})
+
+
+# ===========================================================================
+# Score writer publish
+# ===========================================================================
+
+WRITER = "https://amp-score-writer.test:9099"
+MONITOR_ID = "550e8400-e29b-41d4-a716-446655440000"
+RUN_ID = "660e8400-e29b-41d4-a716-446655440000"
+RUN_TOKEN = "run-token-for-tests"
+SAMPLE_TRACES = Path(__file__).resolve().parent.parent / "libs/amp-evaluation/samples/data/sample_traces.json"
+TS = datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc)
+
+
+def _response(status, body=None):
+    """A real requests.Response, so raise_for_status behaves as in production."""
+    resp = requests.Response()
+    resp.status_code = status
+    resp._content = json.dumps(body if body is not None else {}).encode()
+    return resp
+
+
+def _trace_items(count, per_trace=2):
+    """Writer items for count traces, per_trace items each."""
+    return [
+        {"evaluatorName": f"e{i}", "level": "trace", "traceId": f"{n:032x}", "score": 1.0}
+        for n in range(count)
+        for i in range(per_trace)
+    ]
+
+
+class TestWriterBatching:
+    def test_batches_hold_at_most_500_traces(self):
+        batches = batch_by_trace(_trace_items(1201))
+        assert [len({i["traceId"] for i in b}) for b in batches] == [500, 500, 201]
+        assert WRITER_BATCH_TRACES == 500
+
+    def test_a_traces_items_share_one_batch(self):
+        items = _trace_items(600, per_trace=1)
+        # A second item for the first trace arrives last, as another evaluator's result would.
+        items.append({"evaluatorName": "late", "level": "trace", "traceId": f"{0:032x}", "score": 0.5})
+        batches = batch_by_trace(items)
+        first_trace = [b for b in batches if any(i["traceId"] == f"{0:032x}" for i in b)]
+        assert len(first_trace) == 1
+        assert sum(1 for i in first_trace[0] if i["traceId"] == f"{0:032x}") == 2
+
+    def test_batch_closes_before_the_size_limit(self):
+        items = _trace_items(10, per_trace=1)
+        one = len(json.dumps([items[0]]))
+        with patch("main.WRITER_BATCH_BYTES", one * 3):
+            batches = batch_by_trace(items)
+        assert [len(b) for b in batches] == [3, 3, 3, 1]
+
+
+class TestWriterScoreItems:
+    def _summary(self, name, trace_ids, level="trace"):
+        scores = [_make_evaluator_score(t, 0.5, timestamp=TS) for t in trace_ids]
+        return _make_evaluator_summary(name, level, scores, {"mean": 0.5})
+
+    def test_items_carry_the_identifier(self):
+        items = writer_score_items(
+            {"Latency": self._summary("Latency", ["a" * 32])},
+            {"Latency": "latency_performance"},
+            {"a" * 32},
+        )
+        assert items == [
+            {
+                "evaluatorName": "Latency",
+                "level": "trace",
+                "traceId": "a" * 32,
+                "score": 0.5,
+                "traceStartTime": TS.isoformat(),
+                "evaluatorIdentifier": "latency_performance",
+            }
+        ]
+
+    def test_unfetched_traces_and_unknown_evaluators_are_dropped_and_counted(self, caplog):
+        scores = {
+            "Latency": self._summary("Latency", ["a" * 32, "f" * 32]),
+            "Injected": self._summary("Injected", ["a" * 32]),
+        }
+        with caplog.at_level("WARNING", logger="main"):
+            items = writer_score_items(scores, {"Latency": "latency_performance"}, {"a" * 32})
+        assert [(i["evaluatorName"], i["traceId"]) for i in items] == [("Latency", "a" * 32)]
+        assert "Dropped 2 score(s)" in caplog.text
+
+
+class TestPublishTraceScores:
+    def _publish(self, items, ca_path="/var/run/amp/ca/ca.crt"):
+        return publish_trace_scores(
+            endpoint=WRITER,
+            monitor_id=MONITOR_ID,
+            run_id=RUN_ID,
+            monitor_name="my-monitor",
+            items=items,
+            run_token=RUN_TOKEN,
+            ca_path=ca_path,
+        )
+
+    @patch("main.requests.post", return_value=_response(200))
+    def test_sends_the_run_token_and_the_ca(self, mock_post):
+        assert self._publish(_trace_items(2))
+
+        args, kwargs = mock_post.call_args
+        assert args[0] == f"{WRITER}/api/v1/publisher/monitors/{MONITOR_ID}/runs/{RUN_ID}/scores"
+        assert kwargs["headers"]["Authorization"] == f"Bearer {RUN_TOKEN}"
+        assert kwargs["verify"] == "/var/run/amp/ca/ca.crt"
+        assert kwargs["json"]["context"] == {"monitorName": "my-monitor"}
+        assert set(kwargs["json"]) == {"context", "individualScores"}
+
+    @patch("main.requests.post", return_value=_response(200))
+    def test_without_a_ca_the_system_store_verifies(self, mock_post):
+        assert self._publish(_trace_items(1), ca_path="")
+        assert mock_post.call_args.kwargs["verify"] is True
+
+    @patch("main.requests.post", return_value=_response(200))
+    def test_one_request_per_batch(self, mock_post, caplog):
+        with caplog.at_level("INFO", logger="main"):
+            assert self._publish(_trace_items(501, per_trace=1))
+        assert mock_post.call_count == 2
+        assert "batch=1/2 traces=500 scores=500" in caplog.text
+        assert "batch=2/2 traces=1 scores=1" in caplog.text
+
+    @patch("main.time.sleep")
+    @patch("main.requests.post", return_value=_response(503))
+    def test_5xx_retries(self, mock_post, mock_sleep):
+        assert not self._publish(_trace_items(1))
+        assert mock_post.call_count == 3
+
+    @patch("main.time.sleep")
+    @patch("main.requests.post", side_effect=[_response(503), _response(200)])
+    def test_5xx_then_success(self, mock_post, mock_sleep):
+        assert self._publish(_trace_items(1))
+        assert mock_post.call_count == 2
+
+    @patch("main.requests.post", return_value=_response(400, {"message": "invalid"}))
+    def test_4xx_stops_and_later_batches_are_not_sent(self, mock_post, caplog):
+        with caplog.at_level("ERROR", logger="main"):
+            assert not self._publish(_trace_items(501, per_trace=1))
+        assert mock_post.call_count == 1
+        assert f"Score writer {WRITER} did not accept batch 1/2" in caplog.text
+
+    @patch("main.requests.post")
+    def test_no_items_sends_nothing(self, mock_post):
+        assert self._publish([])
+        mock_post.assert_not_called()
+
+
+@pytest.mark.skipif(not SAMPLE_TRACES.exists(), reason="sample traces not in this checkout")
+class TestMainWithScoreWriter:
+    """main() against the sample traces, a fake observer, agent-manager and score writer."""
+
+    EVALUATORS = [
+        {"identifier": "latency_performance", "displayName": "Latency", "config": {"max_latency_ms": 3000}},
+        {"identifier": "token_efficiency", "displayName": "Tokens", "config": {"max_tokens": 4000}},
+    ]
+
+    def _run(self, tmp_path, *, writer=True, token=True, writer_status=200, am_status=200, endpoint=WRITER):
+        traces = sorted(json.loads(SAMPLE_TRACES.read_text())["traces"], key=lambda t: t["startTime"])
+        calls = {"am": [], "writer": [], "idp": 0}
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            page = [t for t in traces if t["startTime"] >= params["startTime"]][: int(params["limit"])]
+            return _response(200, {"traces": page, "totalCount": len(traces)})
+
+        def fake_post(url, json=None, data=None, headers=None, timeout=None, verify=True):
+            if url.endswith("/oauth2/token"):
+                calls["idp"] += 1
+                return _response(200, {"access_token": "cc-token", "expires_in": 3600})
+            if url.startswith(endpoint):
+                calls["writer"].append({"json": json, "headers": headers, "verify": verify})
+                return _response(writer_status)
+            calls["am"].append(json)
+            return _response(am_status)
+
+        argv = [
+            "main.py",
+            "--monitor-name=sample-monitor",
+            "--organization=default",
+            "--project=p",
+            "--agent=a",
+            "--environment=e",
+            "--evaluators=" + json.dumps(self.EVALUATORS),
+            "--trace-start=2026-02-01T00:00:00Z",
+            "--trace-end=2026-02-28T00:00:00Z",
+            "--traces-api-endpoint=http://observer.test",
+            f"--monitor-id={MONITOR_ID}",
+            f"--run-id={RUN_ID}",
+            "--publisher-endpoint=http://amp-api.test",
+        ]
+        if writer:
+            argv += [f"--score-writer-endpoint={endpoint}", "--score-writer-ca=/var/run/amp/ca/ca.crt"]
+        token_file = tmp_path / "token"
+        if token:
+            token_file.write_text(RUN_TOKEN + "\n")
+        env = {
+            "IDP_TOKEN_URL": "http://thunder.test/oauth2/token",
+            "IDP_CLIENT_ID": "c",
+            "IDP_CLIENT_SECRET": "s",
+            "EVAL_RUN_TOKEN_FILE": str(token_file),
+            "LOG_LEVEL": "DEBUG",
+        }
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict("os.environ", env, clear=True),
+            patch("requests.get", fake_get),
+            patch("requests.post", fake_post),
+            patch("main.time.sleep"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            from main import main
+
+            main()
+        return exc_info.value.code, calls
+
+    @staticmethod
+    def _sha256(payload):
+        return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
+
+    def test_agent_manager_payload_is_unchanged_by_the_writer_publish(self, tmp_path):
+        off_code, off = self._run(tmp_path, writer=False)
+        on_code, on = self._run(tmp_path)
+
+        assert off_code == on_code == 0
+        assert len(off["am"]) == len(on["am"]) == 1
+        assert self._sha256(on["am"][0]) == self._sha256(off["am"][0])
+        assert off["writer"] == []
+        assert len(on["writer"]) == 1
+
+        sent = on["writer"][0]
+        assert sent["headers"]["Authorization"] == f"Bearer {RUN_TOKEN}"
+        assert sent["verify"] == "/var/run/amp/ca/ca.crt"
+        am_items = on["am"][0]["individualScores"]
+        writer_items = sent["json"]["individualScores"]
+        assert len(writer_items) == len(am_items)
+        assert {i["traceId"] for i in writer_items} == {i["traceId"] for i in am_items}
+        assert {i["evaluatorIdentifier"] for i in writer_items} == {"latency_performance", "token_efficiency"}
+
+    def test_writer_failure_keeps_the_exit_code(self, tmp_path):
+        code, calls = self._run(tmp_path, writer_status=500)
+        assert code == 0
+        assert len(calls["writer"]) == 3
+        assert len(calls["am"]) == 1
+
+    def test_writer_publish_follows_a_failed_agent_manager_publish(self, tmp_path):
+        code, calls = self._run(tmp_path, am_status=500)
+        assert code == 1
+        assert len(calls["am"]) == 3
+        assert len(calls["writer"]) == 1
+
+    def test_no_token_file_means_no_writer_request_and_one_warning(self, tmp_path, caplog):
+        with caplog.at_level("DEBUG"):
+            code, calls = self._run(tmp_path, token=False)
+        assert code == 0
+        assert calls["writer"] == []
+        assert len(calls["am"]) == 1
+        warnings = [r for r in caplog.records if "Run token file not found" in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+
+    def test_plain_http_writer_is_skipped(self, tmp_path, caplog):
+        with caplog.at_level("ERROR", logger="main"):
+            code, calls = self._run(tmp_path, endpoint="http://amp-score-writer.test:9099")
+        assert code == 0
+        assert calls["writer"] == []
+        assert "not an https URL" in caplog.text
+
+    def test_the_run_token_is_never_logged(self, tmp_path, caplog):
+        with caplog.at_level("DEBUG"):
+            self._run(tmp_path, writer_status=401)
+        assert caplog.records
+        assert all(RUN_TOKEN not in r.getMessage() for r in caplog.records)

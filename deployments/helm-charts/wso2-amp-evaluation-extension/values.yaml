@@ -75,6 +75,17 @@ ampEvaluation:
     idpTokenUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/token"
     clientId: "amp-publisher-client"
 
+  # -- Score writer the job also publishes scores to, after agent-manager, with the
+  # run token. Without the run token file in the pod the job skips it with a warning.
+  scoreWriter:
+    # -- https URL of amp-score-writer's publish port, such as
+    # https://amp-score-writer.openchoreo-observability-plane.svc.cluster.local:9099,
+    # or https://scores.<domain> through the gateway. Empty turns the publish off.
+    endpoint: ""
+    # -- Secret in the workflow namespace whose ca.crt verifies the writer, mounted into
+    # the job container at /var/run/amp/ca/ca.crt. Empty uses the image's trust store.
+    caSecret: ""
+
 # Restricts the evaluation-job pod's egress (untrusted, user-submitted code) to just DNS,
 # the traces observer, Thunder, the agent-manager-service publisher endpoint, and the LLM gateway.
 networkPolicy:
@@ -105,6 +116,14 @@ networkPolicy:
     idp:
       namespace: "amp-thunder"
       ports: [8090]
+
+    # -- amp-score-writer's publish port. Rendered only when ampEvaluation.scoreWriter.endpoint is set.
+    scoreWriter:
+      namespace: "openchoreo-observability-plane"
+      ports: [9099]
+      # -- Allowed instead of the namespace, for a writer behind a gateway outside the cluster;
+      # set ports to the gateway's port with it.
+      cidr: ""
 
     llmGateway:
       ports: [22893]

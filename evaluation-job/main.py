@@ -42,18 +42,24 @@ import signal
 import sys
 import time
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, Iterator, List, Any, cast
 
 import requests
 from amp_evaluation import Monitor, builtin
-from amp_evaluation.models import EvaluatorSummary
+from amp_evaluation.models import EvaluatorScore, EvaluatorSummary
 from amp_evaluation.trace import TraceFetcher
+from amp_evaluation.trace.fetcher import OTELTrace
 
 logger = logging.getLogger(__name__)
 
 # Maximum number of retries for publishing scores
 PUBLISH_MAX_RETRIES = 3
 PUBLISH_INITIAL_BACKOFF = 2  # seconds
+
+# Most traces in one score-writer request; the writer rejects more.
+WRITER_BATCH_TRACES = 500
+# A score-writer batch closes before its body passes this, under the writer's 8 MiB limit.
+WRITER_BATCH_BYTES = 6 * 1024 * 1024
 
 # Max traces per /traces/export page. Kept small and deliberate -- each page is fully
 # parsed into memory at once, so this bounds peak memory regardless of how many traces
@@ -95,6 +101,32 @@ class OAuth2TokenManager:
         self._token = data["access_token"]
         self._expires_at = time.time() + data.get("expires_in", 3600)
         return self._token
+
+
+class FetchedTraceRecorder:
+    """Passes a TraceFetcher's traces through and remembers each trace ID."""
+
+    def __init__(self, fetcher: TraceFetcher):
+        self._fetcher = fetcher
+        self.trace_ids: set[str] = set()
+
+    def fetch_traces(self, **kwargs: Any) -> Iterator[OTELTrace]:
+        for trace in self._fetcher.fetch_traces(**kwargs):
+            self.trace_ids.add(trace.traceId)
+            yield trace
+
+
+def read_run_token() -> str | None:
+    """Return the run token in EVAL_RUN_TOKEN_FILE, or None when unset, missing or empty."""
+    path = os.environ.get("EVAL_RUN_TOKEN_FILE")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return None
+    return token or None
 
 
 def handle_sigterm(signum: int, frame: Any) -> None:
@@ -239,6 +271,18 @@ def parse_args() -> argparse.Namespace:
         help="Publisher API endpoint for score publishing (e.g., http://agent-manager-internal:8081)",
     )
 
+    parser.add_argument(
+        "--score-writer-endpoint",
+        default="",
+        help="Score writer https URL that also receives the scores; empty skips that publish",
+    )
+
+    parser.add_argument(
+        "--score-writer-ca",
+        default="",
+        help="CA certificate file that verifies the score writer; empty uses the system trust store",
+    )
+
     return parser.parse_args()
 
 
@@ -297,38 +341,7 @@ def publish_scores(
 
         # Add individual scores (per-trace/span scores)
         for score in summary.individual_scores:
-            item: Dict[str, Any] = {
-                "evaluatorName": display_name,
-                "level": summary.level,
-                "traceId": score.trace_id,
-            }
-
-            # Optional fields
-            if score.is_successful and score.score is not None:
-                item["score"] = score.score
-            elif score.skip_reason:
-                item["skipReason"] = score.skip_reason
-            else:
-                item["skipReason"] = "Evaluation did not produce a score"
-            if score.explanation:
-                item["explanation"] = score.explanation
-            if score.trace_start_time:
-                item["traceStartTime"] = score.trace_start_time.isoformat()
-            # Span context (enriched by the framework)
-            if score.span_context:
-                span_ctx: Dict[str, str] = {}
-                if score.span_context.span_id:
-                    span_ctx["spanId"] = score.span_context.span_id
-                if score.span_context.agent_name:
-                    span_ctx["agentName"] = score.span_context.agent_name
-                if score.span_context.model:
-                    span_ctx["model"] = score.span_context.model
-                if score.span_context.vendor:
-                    span_ctx["vendor"] = score.span_context.vendor
-                if span_ctx:
-                    item["spanContext"] = span_ctx
-
-            individual_scores.append(item)
+            individual_scores.append(_score_item(display_name, summary.level, score))
 
     payload = {
         "individualScores": individual_scores,
@@ -377,6 +390,150 @@ def publish_scores(
                 time.sleep(backoff)
 
     return False
+
+
+def _score_item(display_name: str, level: str, score: EvaluatorScore) -> Dict[str, Any]:
+    """Build one individualScores item as agent-manager receives it."""
+    item: Dict[str, Any] = {
+        "evaluatorName": display_name,
+        "level": level,
+        "traceId": score.trace_id,
+    }
+
+    # Optional fields
+    if score.is_successful and score.score is not None:
+        item["score"] = score.score
+    elif score.skip_reason:
+        item["skipReason"] = score.skip_reason
+    else:
+        item["skipReason"] = "Evaluation did not produce a score"
+    if score.explanation:
+        item["explanation"] = score.explanation
+    if score.trace_start_time:
+        item["traceStartTime"] = score.trace_start_time.isoformat()
+    # Span context (enriched by the framework)
+    if score.span_context:
+        span_ctx: Dict[str, str] = {}
+        if score.span_context.span_id:
+            span_ctx["spanId"] = score.span_context.span_id
+        if score.span_context.agent_name:
+            span_ctx["agentName"] = score.span_context.agent_name
+        if score.span_context.model:
+            span_ctx["model"] = score.span_context.model
+        if score.span_context.vendor:
+            span_ctx["vendor"] = score.span_context.vendor
+        if span_ctx:
+            item["spanContext"] = span_ctx
+    return item
+
+
+def writer_score_items(
+    scores: Dict[str, EvaluatorSummary],
+    display_name_to_identifier: Dict[str, str],
+    fetched_trace_ids: set[str],
+) -> List[Dict[str, Any]]:
+    """Build the score writer's items, dropping results for traces not fetched or evaluators not configured."""
+    items: List[Dict[str, Any]] = []
+    dropped = 0
+    for display_name, summary in scores.items():
+        identifier = display_name_to_identifier.get(display_name)
+        for score in summary.individual_scores:
+            if identifier is None or score.trace_id not in fetched_trace_ids:
+                dropped += 1
+                continue
+            item = _score_item(display_name, summary.level, score)
+            item["evaluatorIdentifier"] = identifier
+            items.append(item)
+    if dropped:
+        logger.warning(
+            "Dropped %d score(s) for traces this run did not fetch or evaluators it was not configured with",
+            dropped,
+        )
+    return items
+
+
+def batch_by_trace(items: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Split items into batches that keep each trace's items together, within the writer's trace and size limits."""
+    by_trace: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        by_trace.setdefault(item["traceId"], []).append(item)
+
+    batches: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    traces = size = 0
+    for group in by_trace.values():
+        group_size = len(json.dumps(group))
+        if current and (traces == WRITER_BATCH_TRACES or size + group_size > WRITER_BATCH_BYTES):
+            batches.append(current)
+            current, traces, size = [], 0, 0
+        current.extend(group)
+        traces += 1
+        size += group_size
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _post_to_writer(url: str, body: Dict[str, Any], headers: Dict[str, str], verify: str | bool) -> bool:
+    """POST one batch to the score writer with publish_scores' retries."""
+    for attempt in range(PUBLISH_MAX_RETRIES):
+        try:
+            response = requests.post(url, json=body, headers=headers, timeout=30, verify=verify)
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(
+                "Failed to publish scores to the score writer (attempt %d/%d): %s",
+                attempt + 1,
+                PUBLISH_MAX_RETRIES,
+                e,
+            )
+            if e.response is not None:
+                logger.error("Score writer response status: %d", e.response.status_code)
+                logger.error("Score writer response body: %s", e.response.text[:500])
+                if 400 <= e.response.status_code < 500:
+                    return False
+            if attempt < PUBLISH_MAX_RETRIES - 1:
+                time.sleep(PUBLISH_INITIAL_BACKOFF * (2**attempt))
+    return False
+
+
+def publish_trace_scores(
+    endpoint: str,
+    monitor_id: str,
+    run_id: str,
+    monitor_name: str,
+    items: List[Dict[str, Any]],
+    run_token: str,
+    ca_path: str,
+) -> bool:
+    """Publish per-trace scores to the score writer in batches, stopping at the first batch that fails."""
+    if not items:
+        logger.warning("No scores to publish to the score writer")
+        return True
+
+    url = f"{endpoint.rstrip('/')}/api/v1/publisher/monitors/{monitor_id}/runs/{run_id}/scores"
+    headers = {"Authorization": f"Bearer {run_token}", "Content-Type": "application/json"}
+    verify: str | bool = ca_path or True
+    batches = batch_by_trace(items)
+    for number, batch in enumerate(batches, start=1):
+        body = {"context": {"monitorName": monitor_name}, "individualScores": batch}
+        if not _post_to_writer(url, body, headers, verify):
+            logger.error(
+                "Score writer %s did not accept batch %d/%d; later batches not sent",
+                endpoint,
+                number,
+                len(batches),
+            )
+            return False
+        logger.info(
+            "Published to the score writer batch=%d/%d traces=%d scores=%d",
+            number,
+            len(batches),
+            len({item["traceId"] for item in batch}),
+            len(batch),
+        )
+    return True
 
 
 def _load_custom_code_evaluator(identifier: str, source: str, config: dict):
@@ -562,6 +719,16 @@ def main() -> None:
 
         logger.debug("Configured LLM client to route through OpenAI-compatible gateway at %s", llm_api_base)
 
+    # The score writer accepts only the run token, so without one its publish is skipped.
+    writer_token: str | None = None
+    if args.score_writer_endpoint:
+        if not args.score_writer_endpoint.startswith("https://"):
+            logger.error("--score-writer-endpoint is not an https URL; skipping the score writer publish")
+        else:
+            writer_token = read_run_token()
+            if writer_token is None:
+                logger.warning("Run token file not found; skipping the score writer publish")
+
     logger.info(
         "Starting monitor evaluation monitor=%s organization=%s project=%s agent=%s env=%s time_range=%s..%s sampling=%.2f",
         args.monitor_name,
@@ -690,10 +857,12 @@ def main() -> None:
             token_provider=token_manager.get_token,
             page_size=TRACE_FETCH_PAGE_SIZE,
         )
+        recorder = FetchedTraceRecorder(fetcher) if writer_token else None
 
         monitor = Monitor(
             evaluators=evaluator_instances,
-            trace_fetcher=fetcher,
+            # Monitor only calls fetch_traces on the recorder.
+            trace_fetcher=cast(TraceFetcher, recorder) if recorder else fetcher,
         )
 
         # Run evaluation
@@ -774,6 +943,21 @@ def main() -> None:
             api_endpoint=args.publisher_endpoint,
             token_manager=token_manager,
         )
+
+        # The score writer publish never changes the exit code.
+        if writer_token and recorder:
+            try:
+                publish_trace_scores(
+                    endpoint=args.score_writer_endpoint,
+                    monitor_id=args.monitor_id,
+                    run_id=args.run_id,
+                    monitor_name=args.monitor_name,
+                    items=writer_score_items(result.scores or {}, display_name_to_identifier, recorder.trace_ids),
+                    run_token=writer_token,
+                    ca_path=args.score_writer_ca,
+                )
+            except Exception as e:
+                logger.error("Failed to publish scores to the score writer %s: %s", args.score_writer_endpoint, e)
 
         if not publish_success:
             logger.error("Failed to publish scores - evaluation results not persisted")

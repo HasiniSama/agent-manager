@@ -25,10 +25,13 @@ A Dockerized Python **job** (not a library) that runs Monitor-mode evaluations a
 | `--trace-start`, `--trace-end` | ISO-8601 window |
 | `--traces-api-endpoint` | e.g. `http://amp-observer:8080` |
 | `--publisher-endpoint` | agent-manager internal API base for score publishing (e.g. `http://agent-manager-internal:8081`) |
+| `--score-writer-endpoint`, `--score-writer-ca` | optional https base of `amp-score-writer` and the CA file that verifies it; empty skips the second publish |
 
 OAuth2 client credentials for publisher authentication are read from the environment (via `OAuth2TokenManager`), not passed as CLI flags.
 
 Traces are fetched via `TraceFetcher.fetch_traces(...)`. Page size is configurable via the `page_size` parameter and defaults to the value set on the `TraceFetcher` instance; this job constructs the fetcher with `page_size=TRACE_FETCH_PAGE_SIZE` (a module constant, currently `10`, to bound memory). Scores POST to `/api/v1/publisher/monitors/{monitor_id}/runs/{run_id}/scores` (built from `--publisher-endpoint`) as an `EvaluatorSummary`-derived payload (`individualScores` + `aggregatedScores`), with exponential backoff (3 retries, 2s initial).
+
+With `--score-writer-endpoint` set and the run token file at `EVAL_RUN_TOKEN_FILE`, the job then posts the same per-trace scores (plus `evaluatorIdentifier`) to the score writer's route of the same path, with the run token as the Bearer, in batches of at most 500 traces that keep each trace's items together. Results for traces the run did not fetch, or for evaluators not in `--evaluators`, are dropped first and counted. A writer failure is logged and never changes the exit code; without the token file the publish is skipped with one warning.
 
 ## Commands
 
