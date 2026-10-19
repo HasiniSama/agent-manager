@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,6 +79,18 @@ type monitorManagerService struct {
 	llmProvisioner        *LLMProxyProvisioner
 	monitorLLMMappingRepo repositories.MonitorLLMMappingRepository
 	provisioner           PublisherCredentialProvisioner
+	// scoreOutbox is nil when no option set it; score deletes are then not queued.
+	scoreOutbox *ScoreOutbox
+}
+
+// MonitorManagerOption sets an optional collaborator of the monitor manager.
+type MonitorManagerOption func(*monitorManagerService)
+
+// WithMonitorScoreOutbox queues score deletes in the same transaction as each monitor change.
+func WithMonitorScoreOutbox(outbox *ScoreOutbox) MonitorManagerOption {
+	return func(s *monitorManagerService) {
+		s.scoreOutbox = outbox
+	}
 }
 
 // NewMonitorManagerService creates a new monitor manager service instance
@@ -93,8 +106,9 @@ func NewMonitorManagerService(
 	llmProvisioner *LLMProxyProvisioner,
 	monitorLLMMappingRepo repositories.MonitorLLMMappingRepository,
 	provisioner PublisherCredentialProvisioner,
+	opts ...MonitorManagerOption,
 ) MonitorManagerService {
-	return &monitorManagerService{
+	s := &monitorManagerService{
 		logger:                logger,
 		db:                    db,
 		ocClient:              ocClient,
@@ -107,6 +121,10 @@ func NewMonitorManagerService(
 		monitorLLMMappingRepo: monitorLLMMappingRepo,
 		provisioner:           provisioner,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreateMonitor creates a new evaluation monitor with DB persistence and OpenChoreo CR
@@ -457,6 +475,7 @@ func (s *monitorManagerService) UpdateMonitor(ctx context.Context, ouID, project
 		}
 		return nil, fmt.Errorf("failed to get monitor: %w", err)
 	}
+	oldEvaluators := monitor.Evaluators
 
 	// Validate evaluator list and enforce llm_judge ↔ provider invariant.
 	// Revalidate the effective evaluator set when either evaluators or provider
@@ -689,7 +708,7 @@ func (s *monitorManagerService) UpdateMonitor(ctx context.Context, ouID, project
 	if req.SamplingRate != nil {
 		monitor.SamplingRate = *req.SamplingRate
 	}
-	if err := s.monitorRepo.UpdateMonitor(monitor); err != nil {
+	if err := s.saveMonitor(ctx, monitor, removedEvaluatorNames(oldEvaluators, monitor.Evaluators)); err != nil {
 		return nil, fmt.Errorf("failed to update monitor: %w", err)
 	}
 
@@ -742,8 +761,41 @@ func (s *monitorManagerService) UpdateMonitor(ctx context.Context, ouID, project
 	return resp, nil
 }
 
+// saveMonitor saves the monitor and queues score deletes for removed evaluators in the same transaction.
+func (s *monitorManagerService) saveMonitor(ctx context.Context, monitor *models.Monitor, removedEvaluators []string) error {
+	if s.scoreOutbox == nil || len(removedEvaluators) == 0 {
+		return s.monitorRepo.UpdateMonitor(monitor)
+	}
+	return s.scoreOutbox.tx(ctx, func(tx *gorm.DB) error {
+		if err := s.monitorRepo.WithTx(tx).UpdateMonitor(monitor); err != nil {
+			return err
+		}
+		return s.scoreOutbox.queueEvaluatorRemovals(ctx, tx, monitor.OUID, monitor.ID, removedEvaluators)
+	})
+}
+
+// removedEvaluatorNames returns the display names in before that after drops; scores are keyed by display name.
+func removedEvaluatorNames(before, after []models.MonitorEvaluator) []string {
+	kept := make(map[string]bool, len(after))
+	for _, e := range after {
+		kept[e.DisplayName] = true
+	}
+	var removed []string
+	for _, e := range before {
+		if !kept[e.DisplayName] && !slices.Contains(removed, e.DisplayName) {
+			removed = append(removed, e.DisplayName)
+		}
+	}
+	return removed
+}
+
 // DeleteMonitor removes a monitor from DB and attempts to clean up any WorkflowRun CRs
 func (s *monitorManagerService) DeleteMonitor(ctx context.Context, ouID, projectName, agentName, monitorName string) error {
+	return s.deleteMonitor(ctx, ouID, projectName, agentName, monitorName, true)
+}
+
+// deleteMonitor is DeleteMonitor; queueScoreDelete queues the monitor's score delete with its row delete.
+func (s *monitorManagerService) deleteMonitor(ctx context.Context, ouID, projectName, agentName, monitorName string, queueScoreDelete bool) error {
 	s.logger.Info("Deleting monitor", "ouID", ouID, "name", monitorName)
 
 	// Get monitor first to check type and get runs
@@ -768,7 +820,7 @@ func (s *monitorManagerService) DeleteMonitor(ctx context.Context, ouID, project
 	}
 
 	// Delete from DB (cascade will delete runs and monitor_llm_mapping)
-	if err := s.monitorRepo.DeleteMonitor(monitor); err != nil {
+	if err := s.deleteMonitorRow(ctx, monitor, queueScoreDelete); err != nil {
 		return fmt.Errorf("failed to delete monitor from DB: %w", err)
 	}
 
@@ -814,15 +866,16 @@ func (s *monitorManagerService) DeleteMonitor(ctx context.Context, ouID, project
 // combined error (if any) is returned so callers can surface partial-cleanup failures.
 // Intended for agent deletion, where orphaned monitors would otherwise linger.
 func (s *monitorManagerService) DeleteMonitorsByAgent(ctx context.Context, ouID, projectName, agentName string) error {
-	monitors, err := s.monitorRepo.ListMonitorsByAgent(ouID, projectName, agentName)
+	monitors, err := s.listAgentMonitorsForDelete(ctx, ouID, projectName, agentName)
 	if err != nil {
-		return fmt.Errorf("failed to list monitors for agent %s: %w", agentName, err)
+		return err
 	}
 
 	var errs []error
 	for i := range monitors {
 		monitorName := monitors[i].Name
-		if delErr := s.DeleteMonitor(ctx, ouID, projectName, agentName, monitorName); delErr != nil {
+		// The agent's score delete, queued above, already covers this monitor.
+		if delErr := s.deleteMonitor(ctx, ouID, projectName, agentName, monitorName, false); delErr != nil {
 			s.logger.Error("Failed to delete monitor during agent cleanup",
 				"agentName", agentName, "monitorName", monitorName, "error", delErr)
 			errs = append(errs, fmt.Errorf("monitor %s: %w", monitorName, delErr))
@@ -834,6 +887,49 @@ func (s *monitorManagerService) DeleteMonitorsByAgent(ctx context.Context, ouID,
 
 	s.logger.Info("Deleted all monitors for agent", "agentName", agentName, "count", len(monitors))
 	return nil
+}
+
+// listAgentMonitorsForDelete lists the agent's monitors and queues one score delete for all of them in the same transaction.
+func (s *monitorManagerService) listAgentMonitorsForDelete(ctx context.Context, ouID, projectName, agentName string) ([]models.Monitor, error) {
+	list := func(repo repositories.MonitorRepository) ([]models.Monitor, error) {
+		monitors, err := repo.ListMonitorsByAgent(ouID, projectName, agentName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list monitors for agent %s: %w", agentName, err)
+		}
+		return monitors, nil
+	}
+	if s.scoreOutbox == nil {
+		return list(s.monitorRepo)
+	}
+	var monitors []models.Monitor
+	err := s.scoreOutbox.tx(ctx, func(tx *gorm.DB) error {
+		var err error
+		if monitors, err = list(s.monitorRepo.WithTx(tx)); err != nil {
+			return err
+		}
+		ids := make([]uuid.UUID, len(monitors))
+		for i := range monitors {
+			ids[i] = monitors[i].ID
+		}
+		return s.scoreOutbox.queueMonitorDeletes(ctx, tx, ouID, ids)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return monitors, nil
+}
+
+// deleteMonitorRow deletes the monitor row, queuing its score delete in the same transaction when asked.
+func (s *monitorManagerService) deleteMonitorRow(ctx context.Context, monitor *models.Monitor, queueScoreDelete bool) error {
+	if s.scoreOutbox == nil || !queueScoreDelete {
+		return s.monitorRepo.DeleteMonitor(monitor)
+	}
+	return s.scoreOutbox.tx(ctx, func(tx *gorm.DB) error {
+		if err := s.monitorRepo.WithTx(tx).DeleteMonitor(monitor); err != nil {
+			return err
+		}
+		return s.scoreOutbox.queueMonitorDeletes(ctx, tx, monitor.OUID, []uuid.UUID{monitor.ID})
+	})
 }
 
 // StopMonitor stops a future monitor by setting next_run_time to NULL

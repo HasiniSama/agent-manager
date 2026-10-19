@@ -213,6 +213,28 @@ type Config struct {
 	// Deployments that run evaluation jobs in a separate workflow-plane cluster
 	// (WSO2 Cloud) turn it on. EVAL_JOBS_USE_PUBLIC_GATEWAY_URL.
 	EvalJobsUsePublicGatewayURL bool
+
+	// EvalRunToken holds the evaluation run settings the run-token issuer reads.
+	EvalRunToken EvalRunTokenConfig
+
+	// ScoreWriter points the score outbox worker at the score writer's internal port.
+	ScoreWriter ScoreWriterConfig
+}
+
+// EvalRunTokenConfig holds the evaluation run settings the run-token issuer reads.
+type EvalRunTokenConfig struct {
+	// ActiveDeadlineSeconds must equal the evaluation chart's ampEvaluation.activeDeadlineSeconds.
+	ActiveDeadlineSeconds int
+}
+
+// ScoreWriterConfig points the score outbox worker at the score writer's internal port.
+type ScoreWriterConfig struct {
+	// InternalURL is the writer's internal https base URL; empty leaves the outbox worker off.
+	InternalURL string
+	// CAFile is the PEM bundle that verifies the writer; empty uses the system pool.
+	CAFile string
+	// ClientTimeout bounds each call to the writer, as a Go duration.
+	ClientTimeout string
 }
 
 // GatewayManifestCacheConfig selects and configures the backend for the

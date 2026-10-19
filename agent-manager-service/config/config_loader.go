@@ -210,6 +210,14 @@ func loadEnvs() {
 	// replica reads and writes the same cached manifest.
 	config.GatewayPublicVhostFallback = r.readOptionalBool("GATEWAY_PUBLIC_VHOST_FALLBACK", false)
 	config.EvalJobsUsePublicGatewayURL = r.readOptionalBool("EVAL_JOBS_USE_PUBLIC_GATEWAY_URL", false)
+	config.EvalRunToken = EvalRunTokenConfig{
+		ActiveDeadlineSeconds: int(r.readOptionalInt64("EVAL_RUN_ACTIVE_DEADLINE_SECONDS", 1800)),
+	}
+	config.ScoreWriter = ScoreWriterConfig{
+		InternalURL:   strings.TrimSpace(r.readOptionalString("SCORE_WRITER_INTERNAL_URL", "")),
+		CAFile:        strings.TrimSpace(r.readOptionalString("SCORE_WRITER_CA_FILE", "")),
+		ClientTimeout: strings.TrimSpace(r.readOptionalString("SCORE_WRITER_CLIENT_TIMEOUT", "10s")),
+	}
 
 	config.GatewayManifestCache = GatewayManifestCacheConfig{
 		Backend: r.readOptionalString("GATEWAY_MANIFEST_CACHE_BACKEND", "memory"),
@@ -393,6 +401,8 @@ func loadEnvs() {
 	validateSecretManagerConfig(config, r)
 	validateAgentWorkloadCORSConfig(agentWorkloadConfig, r)
 	validateGatewayManifestCacheConfig(config, r)
+	validateEvalRunTokenConfig(config, r)
+	validateScoreWriterConfig(config, r)
 
 	r.logAndExitIfErrorsFound()
 
@@ -455,6 +465,32 @@ func validateGatewayManifestCacheConfig(cfg *Config, r *configReader) {
 		r.errors = append(r.errors, fmt.Errorf(
 			"GATEWAY_MANIFEST_CACHE_REDIS_HOST is required when GATEWAY_MANIFEST_CACHE_BACKEND=redis",
 		))
+	}
+}
+
+func validateEvalRunTokenConfig(cfg *Config, r *configReader) {
+	if cfg.EvalRunToken.ActiveDeadlineSeconds <= 0 {
+		r.errors = append(r.errors, fmt.Errorf(
+			"EVAL_RUN_ACTIVE_DEADLINE_SECONDS must be greater than 0, got %d", cfg.EvalRunToken.ActiveDeadlineSeconds))
+	}
+}
+
+// validateScoreWriterConfig requires an https writer URL when one is set, and a positive client timeout.
+func validateScoreWriterConfig(cfg *Config, r *configReader) {
+	if raw := cfg.ScoreWriter.InternalURL; raw != "" {
+		u, err := url.Parse(raw)
+		switch {
+		case err != nil:
+			r.errors = append(r.errors, fmt.Errorf("SCORE_WRITER_INTERNAL_URL %q is not a valid URL: %w", raw, err))
+		case u.Scheme != "https":
+			r.errors = append(r.errors, fmt.Errorf("SCORE_WRITER_INTERNAL_URL %q must use https", raw))
+		case u.Host == "":
+			r.errors = append(r.errors, fmt.Errorf("SCORE_WRITER_INTERNAL_URL %q must have a non-empty host", raw))
+		}
+	}
+	if d, err := time.ParseDuration(cfg.ScoreWriter.ClientTimeout); err != nil || d <= 0 {
+		r.errors = append(r.errors, fmt.Errorf(
+			"SCORE_WRITER_CLIENT_TIMEOUT must be a positive duration, got %q", cfg.ScoreWriter.ClientTimeout))
 	}
 }
 

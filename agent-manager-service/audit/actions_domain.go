@@ -112,6 +112,10 @@ const (
 	// Score publishing by the evaluation job.
 	ActionMonitorScorePublish Action = "monitor-score:publish"
 
+	// Score deletes sent to the score writer by the outbox worker.
+	ActionMonitorScoreDelete          Action = "monitor-score:delete"
+	ActionMonitorScoreDeleteEvaluator Action = "monitor-score:delete-evaluator"
+
 	// Monitors: scheduled evaluations that read agent traces and call an LLM
 	// judge, so starting or rerunning one spends money and reads data.
 	ActionMonitorCreate  Action = "monitor:create"
@@ -508,6 +512,22 @@ func init() {
 		"agentName":   KindName,
 		"runId":       KindIdentifier,
 		"reason":      KindName,
+	})
+	// Sends from the score outbox, recorded with a system actor. Fail-open: the outbox row is the record.
+	scoreDeleteFields := map[string]FieldKind{
+		"monitorIds": KindNameList,
+		"resend":     KindFlag,
+		"attempt":    KindCount,
+	}
+	Register(ActionMonitorScoreDelete, ClassSystem, SeverityNotice)
+	RegisterDetailSchema(ActionMonitorScoreDelete, scoreDeleteFields)
+	Register(ActionMonitorScoreDeleteEvaluator, ClassSystem, SeverityNotice)
+	RegisterDetailSchema(ActionMonitorScoreDeleteEvaluator, map[string]FieldKind{
+		"monitorIds":       KindNameList,
+		"resend":           KindFlag,
+		"attempt":          KindCount,
+		"evaluatorName":    KindName,
+		"runStartedBefore": KindIdentifier,
 	})
 
 	Register(ActionSystemAgentIdentityProvisioned, ClassCredential, SeverityNotice)

@@ -50,16 +50,33 @@ type InfraResourceManager interface {
 type infraResourceManager struct {
 	ocClient client.OpenChoreoClient
 	logger   *slog.Logger
+	// scoreOutbox is nil when no option set it; project deletes then queue no score deletes.
+	scoreOutbox *ScoreOutbox
+}
+
+// InfraResourceManagerOption sets an optional collaborator of the infra resource manager.
+type InfraResourceManagerOption func(*infraResourceManager)
+
+// WithProjectScoreOutbox queues score deletes for a project's monitors before the project is deleted.
+func WithProjectScoreOutbox(outbox *ScoreOutbox) InfraResourceManagerOption {
+	return func(s *infraResourceManager) {
+		s.scoreOutbox = outbox
+	}
 }
 
 func NewInfraResourceManager(
 	openChoreoClient client.OpenChoreoClient,
 	logger *slog.Logger,
+	opts ...InfraResourceManagerOption,
 ) InfraResourceManager {
-	return &infraResourceManager{
+	s := &infraResourceManager{
 		ocClient: openChoreoClient,
 		logger:   logger,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *infraResourceManager) ListOrganizations(ctx context.Context, limit int, offset int) ([]*models.OrganizationResponse, int32, error) {
@@ -293,6 +310,14 @@ func (s *infraResourceManager) DeleteProject(ctx context.Context, ouID string, p
 		return utils.ErrProjectHasAssociatedAgents
 	}
 	s.logger.Debug("No components found, proceeding with deletion", "ouID", ouID, "projectName", projectName)
+
+	// Monitors left by the project's deleted agents lose their scores with it; refused when that cannot be queued.
+	if s.scoreOutbox != nil {
+		if err := s.scoreOutbox.queueProjectDeletes(ctx, ouID, projectName); err != nil {
+			s.logger.Error("Failed to queue score deletes for project", "ouID", ouID, "projectName", projectName, "error", err)
+			return fmt.Errorf("failed to queue score deletes for project %s: %w", projectName, err)
+		}
+	}
 
 	// Delete project from OpenChoreo
 	deleteAttempt, auditErr := audit.Begin(

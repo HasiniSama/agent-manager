@@ -167,6 +167,22 @@ agentManagerService:
     # clients surface "observer not configured".
     amObserverPublicURL: ""
 
+    # Evaluation run settings the run-token issuer reads.
+    evalRunToken:
+      # Must equal wso2-amp-evaluation-extension's ampEvaluation.activeDeadlineSeconds.
+      activeDeadlineSeconds: 1800
+
+    # The score writer's internal port, where the score outbox sends score deletes.
+    scoreWriter:
+      # https URL of amp-score-writer's internal port (9199). Empty leaves the outbox
+      # worker off; deletes are still queued and sent once this is set.
+      internalUrl: ""
+      # Secret in this namespace whose ca.crt verifies the writer. Empty uses the
+      # image trust store.
+      caSecret: ""
+      # Timeout for each call to the writer, as a Go duration.
+      clientTimeout: "10s"
+
     # TLS Configuration
     tlsEnabled: false
   

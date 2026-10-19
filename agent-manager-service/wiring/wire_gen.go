@@ -16,6 +16,7 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/observersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/client"
+	"github.com/wso2/agent-manager/agent-manager-service/clients/scorewritersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/thundersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/config"
@@ -83,7 +84,11 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	}
 	gatewayEventsService := services.NewGatewayEventsService(eventHub)
 	apiKeyRepository := ProvideAPIKeyRepository(db)
-	infraResourceManager := services.NewInfraResourceManager(openChoreoClient, logger)
+	txRunner := ProvideTxRunner(db)
+	scoreOutboxRepository := repositories.NewScoreOutboxRepository(db)
+	scoreOutbox := services.NewScoreOutbox(txRunner, scoreOutboxRepository, configConfig)
+	v2 := ProvideInfraResourceManagerOptions(scoreOutbox)
+	infraResourceManager := services.NewInfraResourceManager(openChoreoClient, logger, v2...)
 	agentThunderClientRepository := ProvideAgentThunderClientRepository(db)
 	mcpProxyScopeRepository := repositories.NewMCPProxyScopeRepository(db)
 	envThunderURLRepository := ProvideEnvThunderURLRepository(db)
@@ -119,8 +124,8 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	evaluatorManagerService := services.NewEvaluatorManagerService(logger, customEvaluatorRepository, monitorRepository)
 	scoreRepository := ProvideScoreRepository(db)
 	llmProxyProvisioner := services.NewLLMProxyProvisioner(logger, llmProviderRepository, gatewayRepository, llmProxyService, llmProxyDeploymentService, llmProxyAPIKeyService, llmProviderAPIKeyService, secretManagementClient, v)
-	monitorManagerService := services.NewMonitorManagerService(logger, db, openChoreoClient, observerSvcClient, monitorExecutor, evaluatorManagerService, monitorRepository, scoreRepository, llmProxyProvisioner, monitorLLMMappingRepository, publisherCredentialProvisioner)
-	txRunner := ProvideTxRunner(db)
+	v3 := ProvideMonitorManagerOptions(scoreOutbox)
+	monitorManagerService := services.NewMonitorManagerService(logger, db, openChoreoClient, observerSvcClient, monitorExecutor, evaluatorManagerService, monitorRepository, scoreRepository, llmProxyProvisioner, monitorLLMMappingRepository, publisherCredentialProvisioner, v3...)
 	a2APublicationRepository := ProvideA2APublicationRepository(db)
 	a2AProxyRepository := ProvideA2AProxyRepository(db)
 	a2AAgentCardRepository := ProvideA2AAgentCardRepository(db)
@@ -187,6 +192,11 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	a2ACardFetcher := services.NewA2ACardFetcher()
 	a2APublicationReconcilerService := services.NewA2APublicationReconcilerService(txRunner, a2APublicationRepository, a2AAgentCardRepository, a2AProxyRepository, deploymentRepository, gatewayRepository, agentConfigRepository, openChoreoClient, a2ACardFetcher, v, gatewayEventsService, logger)
 	a2ACardReconcilerService := services.NewA2ACardReconcilerService(a2AAgentCardRepository, a2AProxyRepository, gatewayRepository, a2ACardFetcher, openChoreoClient, logger)
+	scoreWriterClient, err := ProvideScoreWriterClient(configConfig, authProvider)
+	if err != nil {
+		return nil, err
+	}
+	scoreOutboxWorker := services.NewScoreOutboxWorker(scoreWriterClient, txRunner, scoreOutboxRepository, logger)
 	appParams := &AppParams{
 		AuthMiddleware:                   middleware,
 		Logger:                           logger,
@@ -225,6 +235,7 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 		AgentThunderReconciler:           agentThunderReconcilerService,
 		A2APublicationReconciler:         a2APublicationReconcilerService,
 		A2ACardReconciler:                a2ACardReconcilerService,
+		ScoreOutboxWorker:                scoreOutboxWorker,
 		LLMTemplateStore:                 llmTemplateStore,
 		InfraResourceManager:             infraResourceManager,
 		AgentManagerService:              agentManagerService,
@@ -283,7 +294,11 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	}
 	gatewayEventsService := services.NewGatewayEventsService(eventHub)
 	apiKeyRepository := ProvideAPIKeyRepository(db)
-	infraResourceManager := services.NewInfraResourceManager(openChoreoClient, logger)
+	txRunner := ProvideTxRunner(db)
+	scoreOutboxRepository := repositories.NewScoreOutboxRepository(db)
+	scoreOutbox := services.NewScoreOutbox(txRunner, scoreOutboxRepository, configConfig)
+	v2 := ProvideInfraResourceManagerOptions(scoreOutbox)
+	infraResourceManager := services.NewInfraResourceManager(openChoreoClient, logger, v2...)
 	agentThunderClientRepository := ProvideAgentThunderClientRepository(db)
 	mcpProxyScopeRepository := repositories.NewMCPProxyScopeRepository(db)
 	envThunderURLRepository := ProvideEnvThunderURLRepository(db)
@@ -318,9 +333,9 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	evaluatorManagerService := services.NewEvaluatorManagerService(logger, customEvaluatorRepository, monitorRepository)
 	scoreRepository := ProvideScoreRepository(db)
 	llmProxyProvisioner := services.NewLLMProxyProvisioner(logger, llmProviderRepository, gatewayRepository, llmProxyService, llmProxyDeploymentService, llmProxyAPIKeyService, llmProviderAPIKeyService, secretManagementClient, v)
-	monitorManagerService := services.NewMonitorManagerService(logger, db, openChoreoClient, observerSvcClient, monitorExecutor, evaluatorManagerService, monitorRepository, scoreRepository, llmProxyProvisioner, monitorLLMMappingRepository, publisherCredentialProvisioner)
+	v3 := ProvideMonitorManagerOptions(scoreOutbox)
+	monitorManagerService := services.NewMonitorManagerService(logger, db, openChoreoClient, observerSvcClient, monitorExecutor, evaluatorManagerService, monitorRepository, scoreRepository, llmProxyProvisioner, monitorLLMMappingRepository, publisherCredentialProvisioner, v3...)
 	buildSecretProvisioner := ProvideNilBuildSecretProvisioner()
-	txRunner := ProvideTxRunner(db)
 	a2APublicationRepository := ProvideA2APublicationRepository(db)
 	a2AProxyRepository := ProvideA2AProxyRepository(db)
 	a2AAgentCardRepository := ProvideA2AAgentCardRepository(db)
@@ -387,6 +402,8 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	a2ACardFetcher := services.NewA2ACardFetcher()
 	a2APublicationReconcilerService := services.NewA2APublicationReconcilerService(txRunner, a2APublicationRepository, a2AAgentCardRepository, a2AProxyRepository, deploymentRepository, gatewayRepository, agentConfigRepository, openChoreoClient, a2ACardFetcher, v, gatewayEventsService, logger)
 	a2ACardReconcilerService := services.NewA2ACardReconcilerService(a2AAgentCardRepository, a2AProxyRepository, gatewayRepository, a2ACardFetcher, openChoreoClient, logger)
+	scoreWriterClient := ProvideTestScoreWriterClient()
+	scoreOutboxWorker := services.NewScoreOutboxWorker(scoreWriterClient, txRunner, scoreOutboxRepository, logger)
 	appParams := &AppParams{
 		AuthMiddleware:                   authMiddleware,
 		Logger:                           logger,
@@ -425,6 +442,7 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 		AgentThunderReconciler:           agentThunderReconcilerService,
 		A2APublicationReconciler:         a2APublicationReconcilerService,
 		A2ACardReconciler:                a2ACardReconcilerService,
+		ScoreOutboxWorker:                scoreOutboxWorker,
 		LLMTemplateStore:                 llmTemplateStore,
 		InfraResourceManager:             infraResourceManager,
 		AgentManagerService:              agentManagerService,
@@ -451,6 +469,7 @@ var configProviderSet = wire.NewSet(
 
 var clientProviderSet = wire.NewSet(
 	ProvideObserverClient,
+	ProvideScoreWriterClient,
 	ProvideOCClient,
 	ProvideSecretManagementClient,
 	ProvidePublisherProvisioner,
@@ -460,7 +479,7 @@ var clientProviderSet = wire.NewSet(
 	ProvideEnvThunderResolverWithEndpoints,
 )
 
-var serviceProviderSet = wire.NewSet(services.NewAgentManagerService, services.NewAgentKindService, services.NewInfraResourceManager, services.NewAgentTokenManagerService, ProvideGitCredentialsService, services.NewRepositoryService, services.NewMonitorExecutor, services.NewMonitorManagerService, ProvideThunderConfig, services.NewMonitorSchedulerService, ProvideAgentIdentityInjectionServiceWithEndpointResolver, services.NewAgentThunderReconcilerService, services.NewA2APublicationReconcilerService, services.NewA2ACardFetcher, services.NewA2ACardReconcilerService, services.NewA2AAgentCardService, ProvideTxRunner, services.NewA2APublisher, services.NewA2AProxyService, ProvideA2AProxyHooks, services.NewEvaluatorManagerService, services.NewEnvironmentService, services.NewPlatformGatewayService, services.NewLLMProviderTemplateService, services.NewLLMProviderService, services.NewLLMProxyService, services.NewLLMProviderDeploymentService, services.NewLLMProviderAPIKeyService, services.NewLLMProxyAPIKeyService, services.NewAgentAPIKeyService, services.NewLLMProxyDeploymentService, services.NewMCPProxyService, services.NewMCPProxyScopeService, wire.Bind(new(services.MCPProxyRedeployer), new(*services.MCPProxyService)), wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)), services.NewGatewayInternalAPIService, services.NewMonitorScoresService, services.NewCatalogService, services.NewLLMProxyProvisioner, services.NewAgentConfigurationService, services.NewLLMTemplateStore, services.NewGitSecretService, services.NewAIApplicationService)
+var serviceProviderSet = wire.NewSet(services.NewAgentManagerService, services.NewAgentKindService, services.NewInfraResourceManager, ProvideInfraResourceManagerOptions, services.NewAgentTokenManagerService, ProvideGitCredentialsService, services.NewRepositoryService, services.NewMonitorExecutor, services.NewMonitorManagerService, ProvideMonitorManagerOptions, services.NewScoreOutbox, services.NewScoreOutboxWorker, ProvideThunderConfig, services.NewMonitorSchedulerService, ProvideAgentIdentityInjectionServiceWithEndpointResolver, services.NewAgentThunderReconcilerService, services.NewA2APublicationReconcilerService, services.NewA2ACardFetcher, services.NewA2ACardReconcilerService, services.NewA2AAgentCardService, ProvideTxRunner, services.NewA2APublisher, services.NewA2AProxyService, ProvideA2AProxyHooks, services.NewEvaluatorManagerService, services.NewEnvironmentService, services.NewPlatformGatewayService, services.NewLLMProviderTemplateService, services.NewLLMProviderService, services.NewLLMProxyService, services.NewLLMProviderDeploymentService, services.NewLLMProviderAPIKeyService, services.NewLLMProxyAPIKeyService, services.NewAgentAPIKeyService, services.NewLLMProxyDeploymentService, services.NewMCPProxyService, services.NewMCPProxyScopeService, wire.Bind(new(services.MCPProxyRedeployer), new(*services.MCPProxyService)), wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)), services.NewGatewayInternalAPIService, services.NewMonitorScoresService, services.NewCatalogService, services.NewLLMProxyProvisioner, services.NewAgentConfigurationService, services.NewLLMTemplateStore, services.NewGitSecretService, services.NewAIApplicationService)
 
 var instrumentationProviderSet = wire.NewSet(
 	ProvideInstrumentationCatalog,
@@ -473,6 +492,7 @@ var controllerProviderSet = wire.NewSet(controllers.NewAgentController, controll
 var testClientProviderSet = wire.NewSet(
 	ProvideTestOpenChoreoClient,
 	ProvideTestObserverClient,
+	ProvideTestScoreWriterClient,
 	ProvideTestSecretManagementClient,
 	ProvidePublisherProvisioner,
 	ProvideIdentityClient,
@@ -620,6 +640,33 @@ func ProvideObserverClient(cfg config.Config, authProvider client.AuthProvider) 
 	})
 }
 
+// ProvideScoreWriterClient builds the score writer client; nil without a writer URL, which keeps the outbox worker off.
+func ProvideScoreWriterClient(cfg config.Config, authProvider client.AuthProvider) (scorewritersvc.ScoreWriterClient, error) {
+	if cfg.ScoreWriter.InternalURL == "" {
+		return nil, nil
+	}
+	timeout, err := time.ParseDuration(cfg.ScoreWriter.ClientTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("invalid score writer client timeout: %w", err)
+	}
+	return scorewritersvc.NewScoreWriterClient(scorewritersvc.Config{
+		BaseURL:      cfg.ScoreWriter.InternalURL,
+		CAFile:       cfg.ScoreWriter.CAFile,
+		Timeout:      timeout,
+		AuthProvider: authProvider,
+	})
+}
+
+// ProvideMonitorManagerOptions gives the monitor manager the score outbox.
+func ProvideMonitorManagerOptions(outbox *services.ScoreOutbox) []services.MonitorManagerOption {
+	return []services.MonitorManagerOption{services.WithMonitorScoreOutbox(outbox)}
+}
+
+// ProvideInfraResourceManagerOptions gives the infra resource manager the score outbox.
+func ProvideInfraResourceManagerOptions(outbox *services.ScoreOutbox) []services.InfraResourceManagerOption {
+	return []services.InfraResourceManagerOption{services.WithProjectScoreOutbox(outbox)}
+}
+
 // ProvideSecretManagementClient creates the secret management service client.
 // If the provider implements secretmanagersvc.SecretReferenceManager and
 // reports that it manages SecretReferences itself, the OpenChoreo client is
@@ -695,8 +742,7 @@ var repositoryProviderSet = wire.NewSet(
 	ProvideArtifactRepository,
 	ProvideScoreRepository,
 	ProvideCatalogRepository,
-	ProvideMonitorRepository,
-	ProvideAgentConfigRepository,
+	ProvideMonitorRepository, repositories.NewScoreOutboxRepository, ProvideAgentConfigRepository,
 	ProvideCustomEvaluatorRepository,
 	ProvideAPIKeyRepository, repositories.NewAgentConfigurationRepository, repositories.NewEnvAgentModelMappingRepository, repositories.NewEnvAgentMCPMappingRepository, repositories.NewAgentEnvConfigVariableRepository, repositories.NewMonitorLLMMappingRepository, ProvideOrgPublisherCredentialRepository,
 	ProvideOrgSchedulerCredentialRepository,
@@ -721,6 +767,11 @@ func ProvideGatewayConnectionChecker(m *websocket.Manager) services.GatewayConne
 // Test client providers
 func ProvideTestOpenChoreoClient(testClients TestClients) client.OpenChoreoClient {
 	return testClients.OpenChoreoClient
+}
+
+// ProvideTestScoreWriterClient leaves tests without a score writer, so the outbox worker stays off.
+func ProvideTestScoreWriterClient() scorewritersvc.ScoreWriterClient {
+	return nil
 }
 
 func ProvideTestObserverClient(testClients TestClients) observersvc.ObserverSvcClient {

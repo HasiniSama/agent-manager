@@ -329,6 +329,7 @@ The operations below emit a record describing what actually changed, not just th
 | Per-config API keys | `api-key:create` / `:rotate` / `:revoke` (model-config, mcp-config) | Fail-closed |
 | Monitors | `monitor:create` / `:update` / `:delete` / `:start` / `:stop` / `:rerun` | Fail-open |
 | Monitors | `monitor:run-failed` (scheduler, system actor) | Fail-open |
+| Score deletes | `monitor-score:delete` / `monitor-score:delete-evaluator` (score outbox worker, system actor) | Fail-open |
 
 Three of these carry detail worth calling out:
 
@@ -386,6 +387,8 @@ The registry is the source of truth (`audit/actions.go`, `audit/actions_domain.g
 | `git-secret:delete` | credential | 4 critical | — |
 | `group:add-member` | identity | 4 critical | `groupName`, `memberCount`, `memberTypes`, `members` |
 | `group:remove-member` | identity | 4 critical | `groupName`, `memberCount`, `memberTypes`, `members` |
+| `monitor-score:delete` | system | 2 notice | `attempt`, `monitorIds`, `resend` |
+| `monitor-score:delete-evaluator` | system | 2 notice | `attempt`, `evaluatorName`, `monitorIds`, `resend`, `runStartedBefore` |
 | `monitor-score:publish` | config | 1 info | `monitorId`, `runId`, `scoreCount` |
 | `monitor:create` | config | 1 info | `agentName`, `evaluators`, `monitorName`, `monitorType` |
 | `monitor:delete` | config | 2 notice | `agentName`, `evaluators`, `monitorName`, `monitorType` |
@@ -1949,6 +1952,78 @@ REST scope denial. MCP denials (`mcp/tools/authz.go`) carry `tool` and no `grant
       "members": [
         "2b7d9e41-0c3a-4f6e-8d1b-7a9c5e3f2d10"
       ]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><code>monitor-score:delete</code> — Record · `services/score_outbox_worker.go:200`</summary>
+
+```json
+{
+  "log_type": "audit",
+  "event": {
+    "eventId": "87b3970f-c1e4-4df4-befd-9dc02834dcfc",
+    "schemaVersion": 1,
+    "occurredAt": "2026-09-25T08:13:37Z",
+    "action": "monitor-score:delete",
+    "actionClass": "system",
+    "severity": 2,
+    "actorType": "system",
+    "actorId": "system:score-outbox",
+    "surface": "system",
+    "correlationId": "-",
+    "ouId": "ou-9f2",
+    "resourceType": "score-outbox",
+    "resourceId": "41",
+    "outcome": "success",
+    "details": {
+      "attempt": 1,
+      "monitorIds": [
+        "mon-6b3f",
+        "mon-77a1"
+      ],
+      "resend": false
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><code>monitor-score:delete-evaluator</code> — Record · `services/score_outbox_worker.go:200`</summary>
+
+```json
+{
+  "log_type": "audit",
+  "event": {
+    "eventId": "87b3970f-c1e4-4df4-befd-9dc02834dcfc",
+    "schemaVersion": 1,
+    "occurredAt": "2026-09-25T08:13:37Z",
+    "action": "monitor-score:delete-evaluator",
+    "actionClass": "system",
+    "severity": 2,
+    "actorType": "system",
+    "actorId": "system:score-outbox",
+    "surface": "system",
+    "correlationId": "-",
+    "ouId": "ou-9f2",
+    "resourceType": "score-outbox",
+    "resourceId": "42",
+    "outcome": "failure",
+    "errorMessage": "scorewritersvc.DeleteScores: failed with status code 503",
+    "details": {
+      "attempt": 2,
+      "evaluatorName": "tone",
+      "monitorIds": [
+        "mon-6b3f"
+      ],
+      "resend": true,
+      "runStartedBefore": "2026-09-25T08:00:00Z"
     }
   }
 }

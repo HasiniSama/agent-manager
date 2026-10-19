@@ -257,6 +257,13 @@ func Run(authProvider occlient.AuthProvider, secretProvider secretmanagersvc.Pro
 		os.Exit(1)
 	}
 
+	// Stays off without a score writer URL; queued score deletes wait for one.
+	scoreOutboxCtx, scoreOutboxCancel := context.WithCancel(backgroundCtx)
+	if err := dependencies.ScoreOutboxWorker.Start(scoreOutboxCtx); err != nil {
+		slog.Error("failed to start score outbox worker", "error", err)
+		os.Exit(1)
+	}
+
 	// Load built-in LLM provider templates into memory
 	if err := loadBuiltInLLMTemplates(dependencies); err != nil {
 		slog.Error("Failed to load built-in LLM provider templates", "error", err)
@@ -321,6 +328,11 @@ func Run(authProvider occlient.AuthProvider, secretProvider secretmanagersvc.Pro
 		a2aCardReconcilerCancel()
 		if err := dependencies.A2ACardReconciler.Stop(); err != nil {
 			slog.Error("error stopping A2A card reconciler", "error", err)
+		}
+
+		scoreOutboxCancel()
+		if err := dependencies.ScoreOutboxWorker.Stop(); err != nil {
+			slog.Error("error stopping score outbox worker", "error", err)
 		}
 
 		// Shutdown WebSocket manager in a goroutine since it blocks

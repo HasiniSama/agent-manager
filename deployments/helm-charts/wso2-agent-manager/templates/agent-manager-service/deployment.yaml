@@ -231,6 +231,11 @@ spec:
               mountPath: /app/data/certs
               readOnly: true
             {{- end }}
+            {{- if dig "scoreWriter" "caSecret" "" .Values.agentManagerService.config }}
+            - name: score-writer-ca
+              mountPath: /app/score-writer-ca
+              readOnly: true
+            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -249,6 +254,15 @@ spec:
             secretName: {{ include "agent-management-platform.tlsCertsSecretName" . }}
             defaultMode: 0440
             optional: false
+        {{- end }}
+        {{- with dig "scoreWriter" "caSecret" "" .Values.agentManagerService.config }}
+        - name: score-writer-ca
+          secret:
+            secretName: {{ . }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+            defaultMode: 0440
         {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}

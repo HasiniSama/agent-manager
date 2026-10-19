@@ -11,6 +11,14 @@ data:
   # (console bootstrap, CLI) via /api/v1/config. No internal fallback:
   # unset means clients surface "observer not configured".
   AM_OBSERVER_PUBLIC_URL: {{ .Values.agentManagerService.config.amObserverPublicURL | default "" | quote }}
+  # Must equal the evaluation chart's ampEvaluation.activeDeadlineSeconds.
+  EVAL_RUN_ACTIVE_DEADLINE_SECONDS: {{ dig "evalRunToken" "activeDeadlineSeconds" 1800 .Values.agentManagerService.config | int | quote }}
+  # Score deletes queue in the score outbox and are sent here; empty leaves the sender off.
+  SCORE_WRITER_INTERNAL_URL: {{ dig "scoreWriter" "internalUrl" "" .Values.agentManagerService.config | quote }}
+  SCORE_WRITER_CLIENT_TIMEOUT: {{ dig "scoreWriter" "clientTimeout" "10s" .Values.agentManagerService.config | quote }}
+  {{- if dig "scoreWriter" "caSecret" "" .Values.agentManagerService.config }}
+  SCORE_WRITER_CA_FILE: "/app/score-writer-ca/ca.crt"
+  {{- end }}
   SERVER_HOST: {{ .Values.agentManagerService.config.serverHost | quote }}
   SERVER_PORT: {{ .Values.agentManagerService.service.targetPort | quote }}
   LOG_LEVEL: {{ .Values.agentManagerService.config.logLevel | quote }}

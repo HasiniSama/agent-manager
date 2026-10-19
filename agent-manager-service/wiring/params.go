@@ -81,6 +81,7 @@ type AppParams struct {
 	AgentThunderReconciler           services.AgentThunderReconcilerService
 	A2APublicationReconciler         services.A2APublicationReconcilerService
 	A2ACardReconciler                services.A2ACardReconcilerService
+	ScoreOutboxWorker                services.ScoreOutboxWorker
 
 	// Services
 	LLMTemplateStore              *services.LLMTemplateStore

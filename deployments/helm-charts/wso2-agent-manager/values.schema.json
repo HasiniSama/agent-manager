@@ -675,6 +675,49 @@
               "title": "amObserverPublicURL",
               "type": "string"
             },
+            "evalRunToken": {
+              "additionalProperties": false,
+              "description": "Evaluation run settings the run-token issuer reads.",
+              "properties": {
+                "activeDeadlineSeconds": {
+                  "default": 1800,
+                  "description": "Must equal wso2-amp-evaluation-extension's ampEvaluation.activeDeadlineSeconds.",
+                  "minimum": 1,
+                  "title": "activeDeadlineSeconds",
+                  "type": "integer"
+                }
+              },
+              "title": "evalRunToken",
+              "type": "object"
+            },
+            "scoreWriter": {
+              "additionalProperties": false,
+              "description": "The score writer's internal port, where the score outbox sends score deletes.",
+              "properties": {
+                "internalUrl": {
+                  "default": "",
+                  "description": "https URL of amp-score-writer's internal port (9199). Empty leaves the outbox worker off; deletes are still queued and sent once this is set.",
+                  "pattern": "^(https://.+)?$",
+                  "title": "internalUrl",
+                  "type": "string"
+                },
+                "caSecret": {
+                  "default": "",
+                  "description": "Secret in this namespace whose ca.crt verifies the writer. Empty uses the image trust store.",
+                  "title": "caSecret",
+                  "type": "string"
+                },
+                "clientTimeout": {
+                  "default": "10s",
+                  "description": "Timeout for each call to the writer, as a Go duration.",
+                  "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+                  "title": "clientTimeout",
+                  "type": "string"
+                }
+              },
+              "title": "scoreWriter",
+              "type": "object"
+            },
             "tlsEnabled": {
               "default": false,
               "description": "TLS Configuration",

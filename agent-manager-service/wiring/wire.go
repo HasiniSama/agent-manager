@@ -31,6 +31,7 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	observersvc "github.com/wso2/agent-manager/agent-manager-service/clients/observersvc"
 	occlient "github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/client"
+	"github.com/wso2/agent-manager/agent-manager-service/clients/scorewritersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/thundersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/config"
@@ -53,6 +54,7 @@ var configProviderSet = wire.NewSet(
 
 var clientProviderSet = wire.NewSet(
 	ProvideObserverClient,
+	ProvideScoreWriterClient,
 	ProvideOCClient,
 	ProvideSecretManagementClient,
 	ProvidePublisherProvisioner,
@@ -71,11 +73,15 @@ var serviceProviderSet = wire.NewSet(
 	services.NewAgentManagerService,
 	services.NewAgentKindService,
 	services.NewInfraResourceManager,
+	ProvideInfraResourceManagerOptions,
 	services.NewAgentTokenManagerService,
 	ProvideGitCredentialsService,
 	services.NewRepositoryService,
 	services.NewMonitorExecutor,
 	services.NewMonitorManagerService,
+	ProvideMonitorManagerOptions,
+	services.NewScoreOutbox,
+	services.NewScoreOutboxWorker,
 	ProvideThunderConfig,
 	services.NewMonitorSchedulerService,
 	// Provisioning service is injected (see InitializeAppParams); only the
@@ -159,6 +165,7 @@ var controllerProviderSet = wire.NewSet(
 var testClientProviderSet = wire.NewSet(
 	ProvideTestOpenChoreoClient,
 	ProvideTestObserverClient,
+	ProvideTestScoreWriterClient,
 	ProvideTestSecretManagementClient,
 	ProvidePublisherProvisioner,
 	ProvideIdentityClient,
@@ -310,6 +317,33 @@ func ProvideObserverClient(cfg config.Config, authProvider occlient.AuthProvider
 	})
 }
 
+// ProvideScoreWriterClient builds the score writer client; nil without a writer URL, which keeps the outbox worker off.
+func ProvideScoreWriterClient(cfg config.Config, authProvider occlient.AuthProvider) (scorewritersvc.ScoreWriterClient, error) {
+	if cfg.ScoreWriter.InternalURL == "" {
+		return nil, nil //nolint:nilnil // no writer URL means no client
+	}
+	timeout, err := time.ParseDuration(cfg.ScoreWriter.ClientTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("invalid score writer client timeout: %w", err)
+	}
+	return scorewritersvc.NewScoreWriterClient(scorewritersvc.Config{
+		BaseURL:      cfg.ScoreWriter.InternalURL,
+		CAFile:       cfg.ScoreWriter.CAFile,
+		Timeout:      timeout,
+		AuthProvider: authProvider,
+	})
+}
+
+// ProvideMonitorManagerOptions gives the monitor manager the score outbox.
+func ProvideMonitorManagerOptions(outbox *services.ScoreOutbox) []services.MonitorManagerOption {
+	return []services.MonitorManagerOption{services.WithMonitorScoreOutbox(outbox)}
+}
+
+// ProvideInfraResourceManagerOptions gives the infra resource manager the score outbox.
+func ProvideInfraResourceManagerOptions(outbox *services.ScoreOutbox) []services.InfraResourceManagerOption {
+	return []services.InfraResourceManagerOption{services.WithProjectScoreOutbox(outbox)}
+}
+
 // ProvideSecretManagementClient creates the secret management service client.
 // If the provider implements secretmanagersvc.SecretReferenceManager and
 // reports that it manages SecretReferences itself, the OpenChoreo client is
@@ -390,6 +424,7 @@ var repositoryProviderSet = wire.NewSet(
 	ProvideScoreRepository,
 	ProvideCatalogRepository,
 	ProvideMonitorRepository,
+	repositories.NewScoreOutboxRepository,
 	ProvideAgentConfigRepository,
 	ProvideCustomEvaluatorRepository,
 	ProvideAPIKeyRepository,
@@ -424,6 +459,11 @@ func ProvideGatewayConnectionChecker(m *websocket.Manager) services.GatewayConne
 // Test client providers
 func ProvideTestOpenChoreoClient(testClients TestClients) occlient.OpenChoreoClient {
 	return testClients.OpenChoreoClient
+}
+
+// ProvideTestScoreWriterClient leaves tests without a score writer, so the outbox worker stays off.
+func ProvideTestScoreWriterClient() scorewritersvc.ScoreWriterClient {
+	return nil
 }
 
 func ProvideTestObserverClient(testClients TestClients) observersvc.ObserverSvcClient {
