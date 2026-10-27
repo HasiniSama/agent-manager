@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -180,4 +181,41 @@ func TestApplyRenamedMCPEnvVars_ResolutionFailureWritesNothing(t *testing.T) {
 
 	require.Error(t, err)
 	require.Zero(t, rec.writes, "no OpenChoreo resource may be touched once resolution has failed")
+}
+
+// The live rewrite runs while the caller holds the configuration's variable rows locked, so a
+// hung OpenChoreo call must not hold that lock for as long as the client's own retries allow.
+// The rewrite gives up at mcpRenameApplyTimeout with a deadline error, which rolls the rename
+// back and releases the lock.
+func TestApplyRenamedMCPEnvVars_HungOpenChoreoCallTimesOut(t *testing.T) {
+	prev := mcpRenameApplyTimeout
+	mcpRenameApplyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { mcpRenameApplyTimeout = prev })
+
+	f := newMCPURLTestFixture()
+	configUUID := uuid.New()
+
+	rec := &mcpRenameRecorder{}
+	oc := rec.ocClient()
+	oc.ReplaceReleaseBindingEnvVarsFunc = func(ctx context.Context, _, _, _, _ string, _ []string, _ []client.EnvVar) error {
+		<-ctx.Done() // a call that never answers on its own
+		return ctx.Err()
+	}
+	svc := f.newService()
+	svc.ocClient = oc
+	svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{
+		ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
+			return []models.EnvAgentMCPMapping{f.mapping}, nil
+		},
+	}
+
+	config := &models.AgentConfiguration{UUID: configUUID, OUID: f.ouID, ProjectName: "default", AgentID: "it-support", Name: "github"}
+	start := time.Now()
+	err := svc.applyRenamedMCPEnvVars(context.Background(), config, f.ouID, "default", "it-support",
+		map[string]string{f.envUUID.String(): "default"}, "default",
+		renameVarRows(configUUID, f.envUUID, "github-default-proxy-secrets"), renamedTemplates(),
+		[]string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 5*time.Second, "the rewrite must give up at its own deadline, not wait on the hung call")
 }

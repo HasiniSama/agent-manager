@@ -2803,6 +2803,14 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 	return nil
 }
 
+// mcpRenameApplyTimeout bounds the whole live-rewrite phase of an MCP env var rename. That
+// phase runs while the caller's transaction holds the configuration's variable rows locked
+// (the lock is what serialises concurrent renames), so it must not inherit the OpenChoreo
+// client's per-attempt timeout times its retries times the number of environments. On
+// expiry the rename fails and rolls back, releasing the lock; the rewrite is idempotent, so
+// a retry is safe. A var so tests can shorten it.
+var mcpRenameApplyTimeout = mcpRefreshTimeout
+
 // applyRenamedMCPEnvVars rewrites the agent's live MCP env vars under their new names. Every
 // environment the configuration has variable rows for is rebuilt from that environment's own
 // mapping — its own gateway URL and its own SecretReference — never copied from another
@@ -2818,6 +2826,9 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	newTemplates []EnvConfigTemplate,
 	changedOldKeys []string,
 ) error {
+	ctx, cancel := context.WithTimeout(ctx, mcpRenameApplyTimeout)
+	defer cancel()
+
 	// Loaded through the mapping repository rather than read off config.EnvMCPMappings:
 	// its preloads include the proxy's endpoint → environment bindings, which is where
 	// each environment's gateway artifact is resolved from.
