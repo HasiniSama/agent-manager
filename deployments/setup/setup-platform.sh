@@ -47,8 +47,7 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
-# Check Node.js version: must be a release patched for CVE-2026-111497
-# (>=22.23.4, >=24.22.1 or >=26.12.1)
+# Check Node.js version: must be >=22.23.4, >=24.22.1 or >=26.12.1
 NODE_MAJOR=$(node -v | sed 's/^v//' | cut -d'.' -f1)
 NODE_MINOR=$(node -v | sed 's/^v//' | cut -d'.' -f2)
 NODE_PATCH=$(node -v | sed 's/^v//' | cut -d'.' -f3)
