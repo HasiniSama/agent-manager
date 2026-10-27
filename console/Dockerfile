@@ -3,7 +3,7 @@
 
 # Stage 1: Build stage
 # Use native platform for build to avoid QEMU emulation slowdown
-FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/node:20.19-slim AS builder
+FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/node:26.12.1-slim AS builder
 
 # Install necessary build tools
 RUN apt-get update && \
