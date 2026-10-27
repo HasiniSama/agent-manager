@@ -29,7 +29,6 @@ import (
 
 	amsvc "github.com/wso2/agent-manager/cli/pkg/clients/amsvc/gen"
 	"github.com/wso2/agent-manager/cli/pkg/clients/observersvc"
-	"github.com/wso2/agent-manager/cli/pkg/clierr"
 	"github.com/wso2/agent-manager/cli/pkg/iostreams"
 	"github.com/wso2/agent-manager/cli/pkg/render"
 )
@@ -48,7 +47,7 @@ func newBuildTestClient(t *testing.T, latestBuildName string) func(context.Conte
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/builds/"+missingBuildName):
 			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(amsvc.ErrorResponse{Code: "NOT_FOUND", Message: "build not found"})
+			_ = json.NewEncoder(w).Encode(amsvc.ErrorResponse{Code: "BUILD_NOT_FOUND", Message: "Build not found"})
 		case strings.Contains(r.URL.Path, "/builds/"):
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(amsvc.BuildDetailsResponse{AgentName: "my-agent", BuildName: path.Base(r.URL.Path)})
@@ -216,14 +215,15 @@ func TestBuildLogs_UnknownBuildReportsNotFound(t *testing.T) {
 	}
 	var envelope struct {
 		Error struct {
-			Code string `json:"code"`
+			Status int    `json:"status"`
+			Code   string `json:"code"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode envelope: %v\nbody=%s", err, out.String())
 	}
-	if envelope.Error.Code != clierr.NotFound {
-		t.Errorf("code = %q, want %s", envelope.Error.Code, clierr.NotFound)
+	if envelope.Error.Status != http.StatusNotFound || envelope.Error.Code != "BUILD_NOT_FOUND" {
+		t.Errorf("error = %d %q, want 404 BUILD_NOT_FOUND", envelope.Error.Status, envelope.Error.Code)
 	}
 }
 
