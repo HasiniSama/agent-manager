@@ -186,6 +186,12 @@ func (c *openChoreoClient) GetBuild(ctx context.Context, ouID, projectName, comp
 	if resp.JSON200 == nil {
 		return nil, fmt.Errorf("empty response from get build")
 	}
+	// Workflow runs are looked up by name across the whole namespace, so a
+	// build of another agent must not pass as one of this agent's.
+	labels := resp.JSON200.Metadata.Labels
+	if getLabel(labels, string(LabelKeyComponentName)) != componentName || getLabel(labels, string(LabelKeyProjectName)) != projectName {
+		return nil, fmt.Errorf("%w: build %q does not belong to agent %q", utils.ErrNotFound, buildName, componentName)
+	}
 
 	return toBuildDetailsResponse(resp.JSON200, componentName, projectName)
 }

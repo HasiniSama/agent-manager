@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/gen"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
 // A component created before routePath existed: spec.parameters carries the
@@ -328,4 +329,35 @@ func TestWithRunEnvVars_AddsToRunWithoutTouchingComponent(t *testing.T) {
 func TestWithRunEnvVars_NoVarsReturnsParamsUnchanged(t *testing.T) {
 	params := map[string]interface{}{workflowParamEnvironmentVariables: []interface{}{}}
 	assert.Equal(t, params, withRunEnvVars(params, nil))
+}
+
+// GetBuild looks workflow runs up by name across the namespace, so it must
+// reject a run labelled for another agent or project as not found rather than
+// presenting it as a build of the requested agent.
+func TestGetBuild_RejectsBuildOfAnotherAgent(t *testing.T) {
+	cases := map[string]struct {
+		labels  string
+		wantErr bool
+	}{
+		"own build":           {labels: `{"openchoreo.dev/project":"proj","openchoreo.dev/component":"agent"}`},
+		"other agent":         {labels: `{"openchoreo.dev/project":"proj","openchoreo.dev/component":"other"}`, wantErr: true},
+		"other project":       {labels: `{"openchoreo.dev/project":"other","openchoreo.dev/component":"agent"}`, wantErr: true},
+		"no ownership labels": {labels: `{}`, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, err := fmt.Fprintf(w, `{"metadata":{"name":"agent-1000","labels":%s}}`, tc.labels)
+				require.NoError(t, err)
+			}))
+
+			_, err := client.GetBuild(context.Background(), "acme", "proj", "agent", "agent-1000")
+			if tc.wantErr {
+				assert.ErrorIs(t, err, utils.ErrNotFound)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 }
