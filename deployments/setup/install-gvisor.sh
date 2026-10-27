@@ -253,14 +253,14 @@ if [ -f "$SCRIPT_DIR/../k8s/gvisor-runtimeclass.yaml" ]; then
     # Point at the copy already on disk: telling the reader to curl a different
     # one invites a version mismatch with the install they just ran.
     echo "     kubectl apply -f \"$SCRIPT_DIR/../k8s/gvisor-runtimeclass.yaml\""
-elif [ -n "${AMP_MANIFEST_BASE_URL:-}" ] || [ -n "${AMP_RELEASE_REF:-}" ]; then
-    echo "     kubectl apply -f ${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF:-}/deployments/k8s}/gvisor-runtimeclass.yaml"
 else
-    # Standalone run with no release ref: name a placeholder, not main, so the
-    # RuntimeClass comes from the same release as this script.
-    echo "     kubectl apply -f https://raw.githubusercontent.com/wso2/agent-manager/<release-tag>/deployments/k8s/gvisor-runtimeclass.yaml"
-    echo "     Replace <release-tag> with the release you downloaded this script from (for example"
-    echo "     amp/v1.0.0), or re-run with AMP_RELEASE_REF set to have it filled in."
+    # Standalone run: with no release ref, print a placeholder rather than main,
+    # so the RuntimeClass comes from the same release as this script.
+    echo "     kubectl apply -f ${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF:-<release-tag>}/deployments/k8s}/gvisor-runtimeclass.yaml"
+    if [ -z "${AMP_MANIFEST_BASE_URL:-}" ] && [ -z "${AMP_RELEASE_REF:-}" ]; then
+        echo "     Replace <release-tag> with the release you downloaded this script from (for example"
+        echo "     amp/v1.0.0), or re-run with AMP_RELEASE_REF set to have it filled in."
+    fi
 fi
 echo ""
 echo "  2. Label and taint this node (replace <node-name> with: kubectl get nodes):"
