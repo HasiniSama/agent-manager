@@ -4512,6 +4512,9 @@ type OrganizationListItem struct {
 	// DisplayName Display name of the organization
 	DisplayName string `json:"displayName"`
 
+	// Handle Human-readable handle of the organization (the caller's OU handle), used in console URLs. Omitted when it cannot be determined.
+	Handle *string `json:"handle,omitempty"`
+
 	// Name Name of the organization
 	Name string `json:"name"`
 }
@@ -4536,6 +4539,9 @@ type OrganizationResponse struct {
 
 	// DisplayName Display name of the organization
 	DisplayName string `json:"displayName"`
+
+	// Handle Human-readable handle of the organization (the caller's OU handle), used in console URLs. Omitted when it cannot be determined.
+	Handle *string `json:"handle,omitempty"`
 
 	// Name Name of the organization
 	Name string `json:"name"`

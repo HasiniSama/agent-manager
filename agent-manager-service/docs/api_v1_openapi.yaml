@@ -13479,6 +13479,9 @@ components:
         namespace:
           type: string
           description: Namespace of the organization
+        handle:
+          type: string
+          description: Human-readable handle of the organization (the caller's OU handle), used in console URLs. Omitted when it cannot be determined.
         createdAt:
           type: string
           format: date-time
@@ -13498,6 +13501,9 @@ components:
         displayName:
           type: string
           description: Display name of the organization
+        handle:
+          type: string
+          description: Human-readable handle of the organization (the caller's OU handle), used in console URLs. Omitted when it cannot be determined.
         createdAt:
           type: string
           format: date-time
