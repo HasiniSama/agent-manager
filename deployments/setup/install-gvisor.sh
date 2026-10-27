@@ -18,6 +18,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   curl -fsSL https://raw.githubusercontent.com/wso2/agent-manager/main/deployments/setup/install-gvisor.sh \
 #     | sudo bash
 #
+# When this script runs on its own (downloaded with curl), it cannot see the repository's
+# gvisor-runtimeclass.yaml. Set AMP_RELEASE_REF to the release you downloaded it from (for
+# example amp/v1.0.0), or AMP_MANIFEST_BASE_URL to a mirror of deployments/k8s, so the
+# printed next steps point at that release's RuntimeClass:
+#   sudo AMP_RELEASE_REF=amp/v1.0.0 bash install-gvisor.sh
+#
 # Optional: host-network passthrough for runsc (keeps syscall isolation but uses
 # the host network stack inside the pod netns). Use only if the default userspace
 # netstack cannot carry cross-node Service traffic on your CNI/overlay:
@@ -247,8 +253,14 @@ if [ -f "$SCRIPT_DIR/../k8s/gvisor-runtimeclass.yaml" ]; then
     # Point at the copy already on disk: telling the reader to curl a different
     # one invites a version mismatch with the install they just ran.
     echo "     kubectl apply -f \"$SCRIPT_DIR/../k8s/gvisor-runtimeclass.yaml\""
+elif [ -n "${AMP_MANIFEST_BASE_URL:-}" ] || [ -n "${AMP_RELEASE_REF:-}" ]; then
+    echo "     kubectl apply -f ${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF:-}/deployments/k8s}/gvisor-runtimeclass.yaml"
 else
-    echo "     kubectl apply -f ${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF:-main}/deployments/k8s}/gvisor-runtimeclass.yaml"
+    # Standalone run with no release ref: name a placeholder, not main, so the
+    # RuntimeClass comes from the same release as this script.
+    echo "     kubectl apply -f https://raw.githubusercontent.com/wso2/agent-manager/<release-tag>/deployments/k8s/gvisor-runtimeclass.yaml"
+    echo "     Replace <release-tag> with the release you downloaded this script from (for example"
+    echo "     amp/v1.0.0), or re-run with AMP_RELEASE_REF set to have it filled in."
 fi
 echo ""
 echo "  2. Label and taint this node (replace <node-name> with: kubectl get nodes):"
