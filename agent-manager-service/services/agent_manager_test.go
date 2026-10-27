@@ -682,6 +682,33 @@ func TestUpdateAgentConfigurations_RejectsUnownedSecretRef(t *testing.T) {
 	assert.False(t, overridesReplaced, "the victim's secretRef must never reach the workload override rewrite for an unrelated agent")
 }
 
+// A system-managed secret env var echoed back with its secretRef must keep the secret
+// property it was issued under. MCP and LLM proxy secrets store the key under "api-key";
+// re-emitting it under the env var's own name points the binding at a property that does
+// not exist and fails rendering (wso2/agent-manager#2164).
+func TestProcessEnvVars_PreservesSystemManagedSecretKey(t *testing.T) {
+	const proxySecretRef = "github-default-github-proxy-secrets"
+
+	ocClient := &clientmocks.OpenChoreoClientMock{
+		GetComponentConfigurationsFunc: func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+			return []models.EnvVars{{Key: "GITHUB_API_KEY", IsSensitive: true, SecretRef: proxySecretRef, SecretKey: "api-key"}}, nil
+		},
+	}
+	s := &agentManagerService{ocClient: ocClient, logger: discardLogger()}
+
+	echoed := spec.EnvironmentVariable{Key: "GITHUB_API_KEY"}
+	echoed.SetIsSensitive(true)
+	echoed.SetValue("")
+	echoed.SetSecretRef(proxySecretRef)
+
+	written, err := s.processEnvVars(context.Background(), "acme", "proj1", "stage", "it-support",
+		[]spec.EnvironmentVariable{echoed}, nil)
+	require.NoError(t, err)
+	require.Len(t, written, 1)
+	require.NotNil(t, written[0].ValueFrom)
+	assert.Equal(t, client.SecretKeyRef{Name: proxySecretRef, Key: "api-key"}, *written[0].ValueFrom.SecretKeyRef)
+}
+
 // stubAgentConfigurationServiceForPromote implements AgentConfigurationService
 // by embedding the (nil) interface and overriding only the methods PromoteAgent
 // actually calls — any other method call panics on the nil embed, which is fine

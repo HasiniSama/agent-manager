@@ -142,6 +142,8 @@ func (r *agentConfigurationRepository) GetByUUID(ctx context.Context, configUUID
 		Preload("EnvMCPMappings.Artifact").
 		Preload("EnvMCPMappings.MCPProxy").
 		Preload("EnvMCPMappings.MCPProxy.Artifact").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints.Environments").
 		Preload("EnvVariables").
 		Where("uuid = ? AND ou_id = ?", configUUID, ouID).
 		First(&config).Error
@@ -163,6 +165,8 @@ func (r *agentConfigurationRepository) GetByAgentID(ctx context.Context, agentID
 		Preload("EnvMCPMappings.Artifact").
 		Preload("EnvMCPMappings.MCPProxy").
 		Preload("EnvMCPMappings.MCPProxy.Artifact").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints.Environments").
 		Preload("EnvVariables").
 		Where("agent_id = ? AND ou_id = ?", agentID, ouID).
 		First(&config).Error
@@ -182,6 +186,8 @@ func (r *agentConfigurationRepository) ListMCPConfigsByAgent(ctx context.Context
 		Preload("EnvMCPMappings.Artifact").
 		Preload("EnvMCPMappings.MCPProxy").
 		Preload("EnvMCPMappings.MCPProxy.Artifact").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints.Environments").
 		Where("ou_id = ? AND project_name = ? AND agent_id = ? AND type_id = ?", ouID, projectName, agentID, models.AgentConfigTypeIDMCP).
 		Find(&configs).Error
 	return configs, err
@@ -197,6 +203,8 @@ func (r *agentConfigurationRepository) ListMCPConfigsByProxy(ctx context.Context
 		Preload("EnvMCPMappings.Artifact").
 		Preload("EnvMCPMappings.MCPProxy").
 		Preload("EnvMCPMappings.MCPProxy.Artifact").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints").
+		Preload("EnvMCPMappings.MCPProxy.Endpoints.Environments").
 		Preload("EnvVariables").
 		Joins("JOIN agent_mcp_config_proxy p ON p.config_uuid = agent_configurations.uuid").
 		Where("agent_configurations.ou_id = ? AND agent_configurations.type_id = ? AND p.mcp_proxy_uuid = ?",
