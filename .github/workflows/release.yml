@@ -184,6 +184,15 @@ jobs:
           TARGET_RELEASE: ${{ inputs.target_version }}
         shell: bash
 
+      - name: Update install-gvisor.sh
+        run: |
+          bash .github/scripts/update-install-helpers.sh \
+            "$TARGET_RELEASE" \
+            "./deployments/setup/install-gvisor.sh"
+        env:
+          TARGET_RELEASE: ${{ inputs.target_version }}
+        shell: bash
+
       - name: Commit version updates
         id: commit-changes
         run: |
