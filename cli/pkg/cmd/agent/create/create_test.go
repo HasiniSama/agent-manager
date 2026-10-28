@@ -861,8 +861,6 @@ func externalA2AAgentRoutes() map[string]routeResponse {
 	}
 }
 
-func ptr[T any](v T) *T { return &v }
-
 const testCardURL = "https://a.example/.well-known/agent-card.json"
 
 // An external agent is created without a subtype; --card-url alone makes it an A2A agent.
