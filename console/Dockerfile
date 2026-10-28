@@ -45,7 +45,7 @@ RUN pnpm build
 FROM public.ecr.aws/docker/library/nginx:1.30.1-alpine  AS production
 
 # Install runtime dependencies
-RUN apk add --no-cache 'ca-certificates>=20261020' tzdata
+RUN apk add --no-cache 'ca-certificates>=20261020' 'ca-certificates-bundle>=20261020' tzdata
 
 # Create a non-root user for running nginx
 RUN addgroup -g 1001 -S nginx-app && \
