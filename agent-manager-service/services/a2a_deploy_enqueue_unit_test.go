@@ -197,7 +197,7 @@ func TestRepublishA2AAgentQueuesAProxiedExternalAgentAsExternal(t *testing.T) {
 	}
 	svc := a2aPublishingAgentService(pubs, proxies)
 
-	require.NoError(t, svc.republishA2AAgent(context.Background(), externalA2AAgent(), "org-1", "checkout", "weather", "dev", uuid.New().String(), uuid.New()))
+	require.NoError(t, svc.republishA2AAgent(context.Background(), externalAgent(), "org-1", "checkout", "weather", "dev", uuid.New().String(), uuid.New()))
 
 	require.Len(t, enqueued, 1)
 	assert.Equal(t, models.A2APublicationSourceExternal, enqueued[0].Source)
@@ -212,7 +212,7 @@ func TestRepublishA2AAgentSkipsADirectExternalAgent(t *testing.T) {
 	}
 	svc := a2aPublishingAgentService(pubs, proxies)
 
-	require.NoError(t, svc.republishA2AAgent(context.Background(), externalA2AAgent(), "org-1", "checkout", "weather", "dev", uuid.New().String(), uuid.New()))
+	require.NoError(t, svc.republishA2AAgent(context.Background(), externalAgent(), "org-1", "checkout", "weather", "dev", uuid.New().String(), uuid.New()))
 	assert.Empty(t, pubs.EnqueueCalls())
 }
 

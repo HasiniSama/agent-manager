@@ -212,13 +212,13 @@ func getAgent(ctx context.Context, oc client.OpenChoreoClient, ouID, projectName
 	return agent, nil
 }
 
-// getA2AAgent is getAgent refusing a non-A2A agent with utils.ErrAgentNotA2A.
+// getA2AAgent is getAgent refusing an agent that cannot serve A2A with utils.ErrAgentNotA2A.
 func getA2AAgent(ctx context.Context, oc client.OpenChoreoClient, ouID, projectName, agentName string) (*models.AgentResponse, error) {
 	agent, err := getAgent(ctx, oc, ouID, projectName, agentName)
 	if err != nil {
 		return nil, err
 	}
-	if !utils.IsA2AAgentSubType(agent.Type.SubType) {
+	if !a2aCapable(agent) {
 		return nil, utils.ErrAgentNotA2A
 	}
 	return agent, nil
@@ -252,6 +252,12 @@ func agentGoneOrReplaced(ctx context.Context, oc client.OpenChoreoClient, ouID, 
 
 func isExternalProvisioned(agent *models.AgentResponse) bool {
 	return agent.Provisioning.Type == string(utils.ExternalAgent)
+}
+
+// a2aCapable is true for every external agent, which serves A2A wherever it registers a card URL, and for an
+// internal agent built as an A2A agent.
+func a2aCapable(agent *models.AgentResponse) bool {
+	return isExternalProvisioned(agent) || utils.IsA2AAgentSubType(agent.Type.SubType)
 }
 
 // validateCardSourceURL wraps every rejection in utils.ErrInvalidURL.

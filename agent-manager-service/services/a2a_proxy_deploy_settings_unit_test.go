@@ -34,14 +34,14 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
-// deploySettingsService wires UpdateAgentDeploySettings for the external A2A agent in externalA2AAgent.
+// deploySettingsService wires UpdateAgentDeploySettings for the external agent in externalAgent.
 func deploySettingsService(configs *repomocks.AgentConfigRepositoryMock, publisher *A2APublisher) *agentManagerService {
 	oc := &clientmocks.OpenChoreoClientMock{
 		GetOrganizationFunc: func(_ context.Context, name string) (*models.OrganizationResponse, error) {
 			return &models.OrganizationResponse{Name: name}, nil
 		},
 		GetComponentFunc: func(context.Context, string, string, string) (*models.AgentResponse, error) {
-			return externalA2AAgent(), nil
+			return externalAgent(), nil
 		},
 		GetEnvironmentFunc: func(_ context.Context, _, name string) (*models.EnvironmentResponse, error) {
 			return &models.EnvironmentResponse{Name: name, UUID: proxyTestEnvUUID}, nil
@@ -114,6 +114,30 @@ func TestUpdateAgentDeploySettingsRepublishesAProxiedExternalAgent(t *testing.T)
 	assert.False(t, txConfigs.UpsertCalls()[0].Config.EnableApiKeySecurity)
 	assert.Equal(t, []string{"read-proxy", "lock", "read-proxy", "enqueue:external"}, steps,
 		"the pre-check reads unlocked; the save re-decides under the lock and queues the republish in its transaction")
+}
+
+// A proxied external agent takes A2A CORS whatever subtype it was created with.
+func TestUpdateAgentDeploySettingsAppliesA2ACORSToAProxiedExternalAgent(t *testing.T) {
+	m := deploySettingsMocks(t)
+	m.txPubs.EnqueueFunc = func(context.Context, *models.A2APublication) error { return nil }
+	m.proxies.GetByEnvUUIDFunc = func(context.Context, string, string, string, uuid.UUID) (*models.A2AProxy, error) {
+		return &models.A2AProxy{}, nil
+	}
+	configs, txConfigs := savedConfigs(t)
+	svc := deploySettingsService(configs, m.publisher())
+	enabled, inherit := true, false
+
+	err := svc.UpdateAgentDeploySettings(tierGrantedCtx(t), "org-1", "checkout", "weather",
+		&spec.UpdateAgentDeploySettingsRequest{
+			EnvironmentName:     "dev",
+			AgentCardCorsConfig: &spec.AgentCardCORSConfig{Inherit: &inherit, Enabled: &enabled, AllowOrigin: []string{"https://app.example.com"}},
+		})
+
+	require.NoError(t, err)
+	require.Len(t, txConfigs.UpsertCalls(), 1)
+	saved := txConfigs.UpsertCalls()[0].Config
+	assert.Contains(t, saved.CORSAllowHeaders, a2aVersionHeader)
+	assert.Equal(t, []string{"https://app.example.com"}, saved.CardCORSAllowOrigins)
 }
 
 // A switch to direct that lands after the pre-check is seen under the lock: the settings are saved, nothing is queued.

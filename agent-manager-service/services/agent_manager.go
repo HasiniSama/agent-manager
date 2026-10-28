@@ -2953,7 +2953,7 @@ func (s *agentManagerService) DeleteAgent(ctx context.Context, ouID string, proj
 			"agentName", agentName, "error", compErr)
 	} else {
 		isExternalAgent = agentComp.Provisioning.Type == string(utils.ExternalAgent)
-		isA2AAgent = utils.IsA2AAgentSubType(agentComp.Type.SubType)
+		isA2AAgent = a2aCapable(agentComp)
 	}
 
 	// Recheck immediately before the actual delete call (the commit point) rather
@@ -3163,7 +3163,7 @@ func (s *agentManagerService) cleanupAgentMonitors(ctx context.Context, ouID, pr
 // Order matters: publication and proxy rows go first so the reconciler cannot re-publish,
 // gateway targets are read before the artifact delete cascades the deployment
 // rows away, and the broadcast goes last so a gateway re-fetching the Agent
-// finds nothing left to serve. isA2AAgent is false when the subtype is unknown;
+// finds nothing left to serve. isA2AAgent is false when the agent could not be read;
 // deployment rows then stand in for it.
 func (s *agentManagerService) deleteAgentAPIArtifact(ctx context.Context, ouID, projectName, agentName string, isA2AAgent bool) error {
 	err := s.cleanUpAgentAPIArtifacts(ctx, ouID, projectName, agentName, isA2AAgent)
@@ -5503,7 +5503,7 @@ func (s *agentManagerService) UpdateAgentDeploySettings(ctx context.Context, ouI
 	}
 	tracingCfg := resolveTracingConfig(existingConfig, req.EnableAutoInstrumentation, false)
 	apiCfg := resolveAPIConfig(existingConfig, req.EnableApiKeySecurity, req.CorsConfig, req.EnableOAuthSecurity, req.OauthConfig, false)
-	isA2AAgent := utils.IsA2AAgentSubType(agent.Type.SubType)
+	isA2AAgent := a2aCapable(agent)
 	if isA2AAgent {
 		apiCfg = withA2AVersionHeader(apiCfg)
 	}
@@ -5566,12 +5566,9 @@ func (s *agentManagerService) UpdateAgentDeploySettings(ctx context.Context, ouI
 	return nil
 }
 
-// deploySettingsApplyTo is true for API agents and for external A2A agents, whose proxied environments take inbound auth and CORS at the gateway.
+// deploySettingsApplyTo is true for API agents and for external agents, whose proxied environments take inbound auth and CORS at the gateway.
 func deploySettingsApplyTo(agent *models.AgentResponse) bool {
-	if isExternalProvisioned(agent) {
-		return utils.IsA2AAgentSubType(agent.Type.SubType)
-	}
-	return agent.Type.Type == string(utils.AgentTypeAPI)
+	return isExternalProvisioned(agent) || agent.Type.Type == string(utils.AgentTypeAPI)
 }
 
 // applyReleaseBindingSettings writes the settings to the release binding in one pod-rolling update and returns the instrumentation version to persist.
@@ -6751,7 +6748,7 @@ func (s *agentManagerService) a2aRepublicationKey(
 	agent *models.AgentResponse,
 	ouID, projectName, agentName, environmentName, environmentUUID string,
 ) (a2aPublicationKey, bool, error) {
-	if s.a2aPublisher == nil || !utils.IsA2AAgentSubType(agent.Type.SubType) {
+	if s.a2aPublisher == nil || !a2aCapable(agent) {
 		return a2aPublicationKey{}, false, nil
 	}
 	envUUID, err := uuid.Parse(environmentUUID)
