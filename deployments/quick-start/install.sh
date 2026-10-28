@@ -809,7 +809,7 @@ if helm upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/chart
     --kube-context ${CLUSTER_CONTEXT} \
     --namespace openchoreo-control-plane \
     --create-namespace \
-    --version v2.2.1 \
+    --version v2.3.11 \
     --timeout 180s &>/dev/null; then
     log_success "kgateway CRDs installed successfully"
 else
@@ -823,7 +823,7 @@ if helm upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kga
     --kube-context ${CLUSTER_CONTEXT} \
     --namespace openchoreo-control-plane \
     --create-namespace \
-    --version v2.2.1 \
+    --version v2.3.11 \
     --set controller.extraEnv.KGW_ENABLE_GATEWAY_API_EXPERIMENTAL_FEATURES=true \
     --timeout 180s &>/dev/null; then
     log_success "kgateway installed successfully"
