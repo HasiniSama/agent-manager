@@ -2807,15 +2807,16 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 // phase runs while the caller's transaction holds the configuration's variable rows locked
 // (the lock is what serialises concurrent renames), so it must not inherit the OpenChoreo
 // client's per-attempt timeout times its retries times the number of environments. On
-// expiry the rename fails and rolls back, releasing the lock; the rewrite is idempotent, so
-// a retry is safe. A var so tests can shorten it.
+// expiry the rename compensates attempted writes with a separate bounded deadline, then
+// rolls back the DB and releases the lock. A var so tests can shorten it.
 var mcpRenameApplyTimeout = mcpRefreshTimeout
 
 // applyRenamedMCPEnvVars rewrites the agent's live MCP env vars under their new names. Every
 // environment the configuration has variable rows for is rebuilt from that environment's own
 // mapping — its own gateway URL and its own SecretReference — never copied from another
 // environment. Every value is resolved before the first write, so a resolution failure leaves
-// the Component CR and all ReleaseBindings untouched.
+// the Component CR and all ReleaseBindings untouched. If a write fails, attempted live
+// rewrites are compensated with the persisted names before the caller rolls the DB back.
 func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	ctx context.Context,
 	config *models.AgentConfiguration,
@@ -2825,7 +2826,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	vars []models.AgentEnvConfigVariable,
 	newTemplates []EnvConfigTemplate,
 	changedOldKeys []string,
-) error {
+) (applyErr error) {
 	ctx, cancel := context.WithTimeout(ctx, mcpRenameApplyTimeout)
 	defer cancel()
 
@@ -2841,8 +2842,13 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 		mappingByEnv[mappings[i].EnvironmentUUID] = &mappings[i]
 	}
 	secretRefByEnv := make(map[uuid.UUID]string)
+	oldTemplatesByEnv := make(map[uuid.UUID][]EnvConfigTemplate)
 	envUUIDs := make([]uuid.UUID, 0)
 	for _, v := range vars {
+		oldTemplatesByEnv[v.EnvironmentUUID] = append(oldTemplatesByEnv[v.EnvironmentUUID], EnvConfigTemplate{
+			Key: v.VariableKey, Name: v.VariableName, IsSecret: v.VariableKey == "apikey",
+			Value: "", SecretReference: "",
+		})
 		if _, seen := secretRefByEnv[v.EnvironmentUUID]; !seen {
 			envUUIDs = append(envUUIDs, v.EnvironmentUUID)
 			secretRefByEnv[v.EnvironmentUUID] = ""
@@ -2855,6 +2861,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	type envRewrite struct {
 		envName string
 		envVars []client.EnvVar
+		oldVars []client.EnvVar
 	}
 	rewrites := make([]envRewrite, 0, len(envUUIDs))
 	for _, envUUID := range envUUIDs {
@@ -2872,13 +2879,58 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 		rewrites = append(rewrites, envRewrite{
 			envName: envName,
 			envVars: buildRenamedMCPEnvVars(newTemplates, proxyURL, secretRefByEnv[envUUID]),
+			oldVars: buildRenamedMCPEnvVars(oldTemplatesByEnv[envUUID], proxyURL, secretRefByEnv[envUUID]),
 		})
 	}
 
-	if err := s.ocClient.RemoveComponentEnvironmentVariables(ctx, ouID, projectName, agentName, changedOldKeys); err != nil {
-		return fmt.Errorf("failed to remove old MCP env vars from Component: %w", err)
+	newKeys := make([]string, 0, len(newTemplates))
+	for _, template := range newTemplates {
+		newKeys = append(newKeys, template.Name)
+	}
+	firstRewrite := -1
+	for i, rw := range rewrites {
+		if firstEnvName != "" && rw.envName == firstEnvName {
+			firstRewrite = i
+			break
+		}
+	}
+	attemptedBindings := 0
+	componentTouched := false
+	defer func() {
+		if applyErr == nil {
+			return
+		}
+		// A failed request may already have reached OpenChoreo. Restore every attempted
+		// write, including the one that failed, before the caller rolls the DB back.
+		// Use a fresh deadline so request cancellation cannot disable compensation.
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), mcpRenameApplyTimeout)
+		defer rollbackCancel()
+		for i := attemptedBindings - 1; i >= 0; i-- {
+			rw := rewrites[i]
+			if err := s.ocClient.ReplaceReleaseBindingEnvVars(rollbackCtx, ouID, projectName, agentName, rw.envName, newKeys, rw.oldVars); err != nil {
+				applyErr = errors.Join(applyErr, fmt.Errorf("failed to restore MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err))
+			}
+		}
+		if componentTouched {
+			if err := s.ocClient.RemoveComponentEnvironmentVariables(rollbackCtx, ouID, projectName, agentName, newKeys); err != nil {
+				applyErr = errors.Join(applyErr, fmt.Errorf("failed to remove renamed MCP env vars from Component during rollback: %w", err))
+			}
+			if err := s.ocClient.UpdateComponentEnvVars(rollbackCtx, ouID, projectName, agentName, rewrites[firstRewrite].oldVars); err != nil {
+				applyErr = errors.Join(applyErr, fmt.Errorf("failed to restore MCP env vars in Component: %w", err))
+			}
+		}
+	}()
+
+	// Only the first environment supplies the Component base. Without its variable
+	// rows there is no Component rewrite to apply (or restore).
+	if firstRewrite >= 0 {
+		componentTouched = true
+		if err := s.ocClient.RemoveComponentEnvironmentVariables(ctx, ouID, projectName, agentName, changedOldKeys); err != nil {
+			return fmt.Errorf("failed to remove old MCP env vars from Component: %w", err)
+		}
 	}
 	for _, rw := range rewrites {
+		attemptedBindings++
 		if err := s.ocClient.ReplaceReleaseBindingEnvVars(ctx, ouID, projectName, agentName, rw.envName, changedOldKeys, rw.envVars); err != nil {
 			return fmt.Errorf("failed to replace MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err)
 		}

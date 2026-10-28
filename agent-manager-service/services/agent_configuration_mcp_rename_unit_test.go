@@ -223,3 +223,130 @@ func TestApplyRenamedMCPEnvVars_HungOpenChoreoCallTimesOut(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(start), 5*time.Second, "the rewrite must give up at its own deadline, not wait on the hung call")
 }
+
+// A later write can fail after earlier environments have already restarted with the
+// new names. Restore those names and values before the DB transaction rolls back.
+func TestApplyRenamedMCPEnvVars_PartialFailureRestoresLiveValues(t *testing.T) {
+	for _, cancelRequest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "write failure", true: "request canceled"}[cancelRequest], func(t *testing.T) {
+			f := newMCPURLTestFixture()
+			configUUID, stageEnv := uuid.New(), uuid.New()
+			oldVars := []client.EnvVar{
+				{Key: "GITHUB_MCP_URL", Value: "https://gw.example.com/proxy-ctx/mcp"},
+				{Key: "GITHUB_MCP_API_KEY", ValueFrom: &client.EnvVarValueFrom{
+					SecretKeyRef: &client.SecretKeyRef{Name: "default-secrets", Key: "api-key"},
+				}},
+			}
+			stageVars := []client.EnvVar{{Key: "GITHUB_MCP_URL"}, {Key: "GITHUB_MCP_API_KEY"}}
+			unrelated := client.EnvVar{Key: "UNRELATED", Value: "keep"}
+			component := append(append([]client.EnvVar{}, oldVars...), unrelated)
+			bindings := map[string][]client.EnvVar{
+				"default": append(append([]client.EnvVar{}, oldVars...), unrelated),
+				"stage":   append(append([]client.EnvVar{}, stageVars...), unrelated),
+			}
+			merge := func(current []client.EnvVar, remove []string, add []client.EnvVar) []client.EnvVar {
+				values := map[string]client.EnvVar{}
+				for _, v := range current {
+					values[v.Key] = v
+				}
+				for _, key := range remove {
+					delete(values, key)
+				}
+				for _, v := range add {
+					values[v.Key] = v
+				}
+				result := make([]client.EnvVar, 0, len(values))
+				for _, v := range values {
+					result = append(result, v)
+				}
+				return result
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			writeErr := errors.New("stage update failed")
+			failed := false
+			oc := &clientmocks.OpenChoreoClientMock{
+				RemoveComponentEnvironmentVariablesFunc: func(ctx context.Context, _, _, _ string, keys []string) error {
+					require.NoError(t, ctx.Err(), "rollback must survive request cancellation")
+					component = merge(component, keys, nil)
+					return nil
+				},
+				UpdateComponentEnvVarsFunc: func(ctx context.Context, _, _, _ string, vars []client.EnvVar) error {
+					require.NoError(t, ctx.Err())
+					component = merge(component, nil, vars)
+					return nil
+				},
+				ReplaceReleaseBindingEnvVarsFunc: func(ctx context.Context, _, _, _, env string, keys []string, vars []client.EnvVar) error {
+					require.NoError(t, ctx.Err())
+					bindings[env] = merge(bindings[env], keys, vars)
+					if env == "stage" && !failed {
+						failed = true
+						if cancelRequest {
+							cancel()
+						}
+						// Model an ambiguous failure: the server applied the write, but
+						// the client failed to receive its response.
+						return writeErr
+					}
+					return nil
+				},
+			}
+			svc := f.newService()
+			svc.ocClient = oc
+			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{
+				ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
+					return []models.EnvAgentMCPMapping{f.mapping}, nil
+				},
+			}
+			config := &models.AgentConfiguration{UUID: configUUID, OUID: f.ouID, ProjectName: "default", AgentID: "agent", Name: "github"}
+			vars := append(renameVarRows(configUUID, f.envUUID, "default-secrets"), renameVarRows(configUUID, stageEnv, "")...)
+			err := svc.applyRenamedMCPEnvVars(ctx, config, f.ouID, "default", "agent",
+				map[string]string{f.envUUID.String(): "default", stageEnv.String(): "stage"}, "default",
+				vars, renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+			require.ErrorIs(t, err, writeErr)
+			require.True(t, failed)
+			require.ElementsMatch(t, append(oldVars, unrelated), component)
+			require.ElementsMatch(t, append(oldVars, unrelated), bindings["default"])
+			require.ElementsMatch(t, append(stageVars, unrelated), bindings["stage"])
+		})
+	}
+}
+
+// A failed compensation must be reported alongside the original write failure,
+// while restoration of the remaining resources still proceeds.
+func TestApplyRenamedMCPEnvVars_RollbackFailureStillRestoresOtherResources(t *testing.T) {
+	f := newMCPURLTestFixture()
+	configUUID, stageEnv := uuid.New(), uuid.New()
+	writeErr, rollbackErr := errors.New("write failed"), errors.New("rollback failed")
+	rec := &mcpRenameRecorder{}
+	oc := rec.ocClient()
+	recordBinding := oc.ReplaceReleaseBindingEnvVarsFunc
+	stageCalls := 0
+	oc.ReplaceReleaseBindingEnvVarsFunc = func(ctx context.Context, org, project, agent, env string, keys []string, vars []client.EnvVar) error {
+		if env == "stage" {
+			stageCalls++
+			if stageCalls == 1 {
+				return writeErr
+			}
+			return rollbackErr
+		}
+		return recordBinding(ctx, org, project, agent, env, keys, vars)
+	}
+	svc := f.newService()
+	svc.ocClient = oc
+	svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{
+		ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
+			return []models.EnvAgentMCPMapping{f.mapping}, nil
+		},
+	}
+	config := &models.AgentConfiguration{UUID: configUUID, OUID: f.ouID, ProjectName: "default", AgentID: "agent", Name: "github"}
+	vars := append(renameVarRows(configUUID, f.envUUID, "default-secrets"), renameVarRows(configUUID, stageEnv, "")...)
+	err := svc.applyRenamedMCPEnvVars(context.Background(), config, f.ouID, "default", "agent",
+		map[string]string{f.envUUID.String(): "default", stageEnv.String(): "stage"}, "default",
+		vars, renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+	require.ErrorIs(t, err, writeErr)
+	require.ErrorIs(t, err, rollbackErr)
+	require.Equal(t, 2, stageCalls)
+	require.Equal(t, "https://gw.example.com/proxy-ctx/mcp", envVarByKey(t, rec.bindingVars["default"], "GITHUB_MCP_URL").Value)
+	require.Equal(t, rec.bindingVars["default"], rec.componentVars)
+}
