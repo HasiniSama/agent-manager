@@ -229,6 +229,10 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
 
+      # install.sh pulls public charts; a saved (expired) login breaks them.
+      - name: Clear saved Helm registry logins
+        run: rm -f ~/.config/helm/registry/config.json
+
       - name: Setup Go
         uses: ./.github/actions/setup-go
 
