@@ -282,6 +282,20 @@ jobs:
           TARGET_VERSION: ${{ inputs.target_version }}
         shell: bash
 
+      # update-install-helpers.sh skips a missing file, and only replaces 0.0.0-dev, so
+      # this is a no-op on a source release cut before these installers carried it.
+      - name: Update the isolation installers
+        run: |
+          bash .github/scripts/update-install-helpers.sh \
+            "$TARGET_VERSION" \
+            "./deployments/setup/install-gvisor.sh"
+          bash .github/scripts/update-install-helpers.sh \
+            "$TARGET_VERSION" \
+            "./deployments/setup/install-kata.sh"
+        env:
+          TARGET_VERSION: ${{ inputs.target_version }}
+        shell: bash
+
       # A promotion that stamped nothing means the placeholders were already
       # consumed, which resolve-source-commit.sh is supposed to make impossible.
       - name: Commit version updates

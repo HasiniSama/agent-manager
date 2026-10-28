@@ -184,6 +184,18 @@ jobs:
           TARGET_RELEASE: ${{ inputs.target_version }}
         shell: bash
 
+      - name: Update the isolation installers
+        run: |
+          bash .github/scripts/update-install-helpers.sh \
+            "$TARGET_RELEASE" \
+            "./deployments/setup/install-gvisor.sh"
+          bash .github/scripts/update-install-helpers.sh \
+            "$TARGET_RELEASE" \
+            "./deployments/setup/install-kata.sh"
+        env:
+          TARGET_RELEASE: ${{ inputs.target_version }}
+        shell: bash
+
       - name: Commit version updates
         id: commit-changes
         run: |
