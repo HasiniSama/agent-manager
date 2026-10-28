@@ -22,6 +22,7 @@ import { absoluteRouteMap } from "@agent-management-platform/types";
 import { Navigate, useLocation, generatePath, useParams } from "react-router-dom";
 import { useEffect } from "react";
 import {
+    orgRouteId,
     useListOrganizations,
     useListProjects,
     setTelemetryTokenProvider,
@@ -70,6 +71,7 @@ export const Protected = ({ children }: { children: React.ReactNode }) => {
     // first organization. We only resolve this once organizations have loaded;
     // the project list query stays skipped (empty orgName) until then.
     const targetOrg = organizations?.organizations?.[0]?.name;
+    const targetOrgId = orgRouteId(organizations?.organizations?.[0]);
     const shouldResolveLanding =
         isAuthenticated && !isLoadingOrganizations && !!targetOrg && !orgId;
     const { data: projectList, isLoading: isLoadingProjects } = useListProjects({
@@ -133,10 +135,10 @@ export const Protected = ({ children }: { children: React.ReactNode }) => {
         const landingProject = projects.find((p) => p.name === "default") ?? projects[0];
         const landingPath = landingProject
             ? generatePath(absoluteRouteMap.children.org.children.projects.path, {
-                orgId: targetOrg,
+                orgId: targetOrgId,
                 projectId: landingProject.name,
             })
-            : generatePath(absoluteRouteMap.children.org.path, { orgId: targetOrg });
+            : generatePath(absoluteRouteMap.children.org.path, { orgId: targetOrgId });
         return <Navigate to={landingPath} state={navigationState} />;
     }
 
