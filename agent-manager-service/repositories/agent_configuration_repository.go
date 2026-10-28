@@ -130,6 +130,8 @@ func (r *agentConfigurationRepository) Create(ctx context.Context, tx *gorm.DB, 
 	return nil
 }
 
+// GetByUUID loads one configuration with its LLM and MCP mappings. MCP mappings carry their
+// proxy's endpoint → environment bindings, which per-environment gateway resolution reads.
 func (r *agentConfigurationRepository) GetByUUID(ctx context.Context, configUUID uuid.UUID, ouID string) (*models.AgentConfiguration, error) {
 	var config models.AgentConfiguration
 	err := r.db.WithContext(ctx).
@@ -153,6 +155,7 @@ func (r *agentConfigurationRepository) GetByUUID(ctx context.Context, configUUID
 	return &config, err
 }
 
+// GetByAgentID loads an agent's configuration with the same relations as GetByUUID.
 func (r *agentConfigurationRepository) GetByAgentID(ctx context.Context, agentID, ouID string) (*models.AgentConfiguration, error) {
 	var config models.AgentConfiguration
 	err := r.db.WithContext(ctx).
@@ -176,6 +179,8 @@ func (r *agentConfigurationRepository) GetByAgentID(ctx context.Context, agentID
 	return &config, err
 }
 
+// ListMCPConfigsByAgent lists an agent's MCP configurations with their mappings, proxies and
+// the proxies' endpoint → environment bindings.
 func (r *agentConfigurationRepository) ListMCPConfigsByAgent(ctx context.Context, ouID, projectName, agentID string) ([]models.AgentConfiguration, error) {
 	var configs []models.AgentConfiguration
 	err := r.db.WithContext(ctx).
@@ -193,6 +198,8 @@ func (r *agentConfigurationRepository) ListMCPConfigsByAgent(ctx context.Context
 	return configs, err
 }
 
+// ListMCPConfigsByProxy lists the MCP configurations bound to the given proxy, with the same
+// relations as ListMCPConfigsByAgent plus their env var rows.
 func (r *agentConfigurationRepository) ListMCPConfigsByProxy(ctx context.Context, ouID string, proxyUUID uuid.UUID) ([]models.AgentConfiguration, error) {
 	var configs []models.AgentConfiguration
 	err := r.db.WithContext(ctx).

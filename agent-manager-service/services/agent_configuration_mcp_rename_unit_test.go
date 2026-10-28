@@ -42,6 +42,7 @@ type mcpRenameRecorder struct {
 	writes               int
 }
 
+// ocClient returns an OpenChoreo mock whose rename-path writes are recorded on r.
 func (r *mcpRenameRecorder) ocClient() *clientmocks.OpenChoreoClientMock {
 	r.bindingRemoved = map[string][]string{}
 	r.bindingVars = map[string][]client.EnvVar{}
@@ -65,6 +66,7 @@ func (r *mcpRenameRecorder) ocClient() *clientmocks.OpenChoreoClientMock {
 	}
 }
 
+// renamedTemplates is the env var templates after renaming to GITHUB_URL / GITHUB_API_KEY.
 func renamedTemplates() []EnvConfigTemplate {
 	return []EnvConfigTemplate{
 		{Key: "url", Name: "GITHUB_URL"},
@@ -72,6 +74,7 @@ func renamedTemplates() []EnvConfigTemplate {
 	}
 }
 
+// renameVarRows builds one environment's url + apikey rows under the pre-rename names.
 func renameVarRows(configUUID, envUUID uuid.UUID, secretRef string) []models.AgentEnvConfigVariable {
 	return []models.AgentEnvConfigVariable{
 		{ConfigUUID: configUUID, EnvironmentUUID: envUUID, VariableKey: "url", VariableName: "GITHUB_MCP_URL"},
@@ -79,6 +82,7 @@ func renameVarRows(configUUID, envUUID uuid.UUID, secretRef string) []models.Age
 	}
 }
 
+// envVarByKey returns the env var named key, failing the test if it is absent.
 func envVarByKey(t *testing.T, vars []client.EnvVar, key string) client.EnvVar {
 	t.Helper()
 	for _, v := range vars {
