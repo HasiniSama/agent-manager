@@ -18,8 +18,9 @@ AMP_RELEASE_REF="${AMP_RELEASE_REF:-amp/v0.0.0-dev}"
 # Usage:
 #   sudo bash install-gvisor.sh
 #
-# Or pipe directly from the repo:
-#   curl -fsSL https://raw.githubusercontent.com/wso2/agent-manager/main/deployments/setup/install-gvisor.sh \
+# Or pipe directly from the release you are installing (replace <release-tag>, for
+# example amp/v1.0.0):
+#   curl -fsSL https://raw.githubusercontent.com/wso2/agent-manager/<release-tag>/deployments/setup/install-gvisor.sh \
 #     | sudo bash
 #
 # When this script runs on its own (downloaded with curl), it cannot see the repository's

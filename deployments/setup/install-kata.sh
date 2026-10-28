@@ -25,8 +25,10 @@ set -euo pipefail
 #   # already labeled kata=true).
 #
 # When this script runs on its own (downloaded with curl), it cannot see the repository's
-# kata-runtimeclass.yaml. Set AMP_RELEASE_REF to the release you downloaded it from (for
-# example amp/v1.0.0), or AMP_MANIFEST_BASE_URL to a mirror of deployments/k8s.
+# kata-runtimeclass.yaml, so it applies the RuntimeClass of the release it ships with. A
+# copy taken from main has no release and stops before installing: set AMP_RELEASE_REF to
+# the release you want (for example amp/v1.0.0), or AMP_MANIFEST_BASE_URL to a mirror of
+# deployments/k8s.
 #
 # Requirements for each Kata node:
 #   - /dev/kvm (bare metal, or a VM with nested virtualization; NOT E2/AMD-N2D/COS on GKE)
@@ -41,6 +43,9 @@ echo "=== Installing Kata Containers (kata-qemu) isolation tier ==="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source shared vars when run from inside the repo; fall back to sane defaults when piped.
 if [ -f "$SCRIPT_DIR/env.sh" ]; then source "$SCRIPT_DIR/env.sh"; fi
+# The release this script ships with. The release workflow stamps the version it
+# tags into this default, so a copy downloaded from a release tag knows its release.
+AMP_RELEASE_REF="${AMP_RELEASE_REF:-amp/v0.0.0-dev}"
 KATA_VERSION="${KATA_VERSION:-4.2.0}"
 KATA_CHART="${KATA_CHART:-oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy}"
 KATA_HELM_RELEASE="${KATA_HELM_RELEASE:-kata-deploy}"
@@ -88,13 +93,19 @@ fi
 # a release ref fails here rather than after Kata is already installed.
 RUNTIMECLASS_MANIFEST="$SCRIPT_DIR/../k8s/kata-runtimeclass.yaml"
 if [ ! -f "$RUNTIMECLASS_MANIFEST" ]; then
-    if [ -z "${AMP_MANIFEST_BASE_URL:-}" ] && [ -z "${AMP_RELEASE_REF:-}" ]; then
+    # A copy from main still carries the unstamped ref. The pattern avoids spelling out
+    # the placeholder, because the release workflow rewrites every occurrence of it here.
+    UNSTAMPED=false
+    case "$AMP_RELEASE_REF" in
+        amp/v0.0.0-de[v]) UNSTAMPED=true ;;
+    esac
+    if [ -z "${AMP_MANIFEST_BASE_URL:-}" ] && [ "$UNSTAMPED" = true ]; then
         echo "❌ Cannot find kata-runtimeclass.yaml next to this script."
         echo "   Set AMP_RELEASE_REF to the release you downloaded the script from, for example:"
         echo "     AMP_RELEASE_REF=amp/v1.0.0 KATA_NODES=\"<node>\" bash install-kata.sh"
         exit 1
     fi
-    RUNTIMECLASS_MANIFEST="${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF:-}/deployments/k8s}/kata-runtimeclass.yaml"
+    RUNTIMECLASS_MANIFEST="${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF}/deployments/k8s}/kata-runtimeclass.yaml"
 fi
 
 # --- 1. Label the target node(s) so kata-deploy + Kata pods land only there ---
