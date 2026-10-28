@@ -1,8 +1,7 @@
 name: Teardown self-hosted runner state
 description: >
-  Removes what a run leaves on a self-hosted runner (k3d clusters,
-  containers, volumes, networks and images) so the next run starts clean.
-  Use with `if: always()`. It never fails the job.
+  Cleans up after a run so the next run starts clean. Use with
+  `if: always()`. It never fails the job.
 
 inputs:
   prune-images:

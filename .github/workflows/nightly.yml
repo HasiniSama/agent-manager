@@ -2,17 +2,8 @@ name: Nightly Dev Build
 
 run-name: Nightly Dev Build #${{ github.run_number }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
-# Job order:
-#
-#   compute-version ─┬─> build-images ─> package-charts ─> e2e ─┬─> publish-dev-tag    (only if e2e passed; never on a dry run)
-#   load-config ─────┘                                          ├─> cleanup-images     (only if e2e passed; always on a dry run)
-#                                                               └─> notify-google-chat (always; never on a dry run)
-#
-# Old nightly images and the git tag are replaced only after e2e passes.
-#
-# Manual runs are dry runs by default: they use a temporary version that is
-# deleted at the end, with no git tag, image cleanup or notification.
-# Scheduled runs are never dry runs.
+# Builds the images and charts, runs the e2e tests, and publishes the nightly
+# tag only when they pass. Manual runs are dry runs by default.
 
 on:
   schedule:
@@ -21,8 +12,7 @@ on:
     inputs:
       dry_run:
         description: >-
-          Dry run: test only. Pushes throwaway images/charts, runs E2E, then
-          deletes them. No git tag, no nightly image cleanup, no Chat message.
+          Test only: uses a temporary version that is deleted at the end.
         required: false
         default: true
         type: boolean
@@ -72,7 +62,7 @@ jobs:
           echo "dry-run=$DRY_RUN" >> "$GITHUB_OUTPUT"
           echo "✅ Dev version: $DEV_VERSION (dry run: $DRY_RUN)"
 
-  # Load release-config.json and emit job matrices (mirrors release.yml pattern).
+  # Build matrices from release-config.json.
   load-config:
     name: Load Config
     runs-on: [self-hosted, amp-nightly-e2e]
@@ -186,8 +176,7 @@ jobs:
         env:
           DEV_VERSION: ${{ needs.compute-version.outputs.dev-version }}
         run: |
-          # Substitute 0.0.0-dev image tags with the dated nightly tag.
-          # Unlike release.yml (which prepends v), nightly images have no v prefix.
+          # Use the nightly version as the image tag.
           find ./deployments/helm-charts -name "values.yaml" -type f | while read -r f; do
             sed -i.bak "s|tag: \"0\.0\.0-dev\"|tag: \"${DEV_VERSION}\"|g" "$f"
             rm -f "${f}.bak"
@@ -220,8 +209,6 @@ jobs:
     name: E2E
     needs: [compute-version, package-charts]
     runs-on: [self-hosted, amp-nightly-e2e]
-    # Larger than the step timeouts combined, so the log steps still run if a
-    # step times out.
     timeout-minutes: 260
     permissions:
       contents: read
@@ -470,7 +457,7 @@ jobs:
         run: |
           TAG="amp/v${DEV_VERSION}"
           COMMIT_SHA=$(git rev-parse HEAD)
-          # Delete existing tag if present locally or remotely (idempotent — safe to re-run same day)
+          # Replace the tag if it already exists.
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             git tag -d "$TAG"
           fi
@@ -486,8 +473,7 @@ jobs:
   cleanup-images:
     name: Cleanup Nightly Images
     needs: [compute-version, e2e]
-    # Talks to the GHCR packages API directly, so it only applies when the
-    # registry is GHCR. A build publishing elsewhere has nothing to clean here.
+    # GHCR only.
     if: >-
       ${{ (vars.AMP_REGISTRY == '' || vars.AMP_REGISTRY == 'ghcr.io') && (
         (always() && needs.compute-version.outputs.dry-run == 'true') ||
@@ -514,11 +500,7 @@ jobs:
           - wso2-amp-evaluation-extension
           - wso2-amp-api-platform-gateway-extension
     steps:
-      # The package may not exist yet (e.g. right after an image is renamed,
-      # before its first build/push creates the GHCR package), in which case
-      # ghcr-cleanup-action 404s and fails the job. Probe existence first so
-      # we can skip cleanup in that specific case without masking real
-      # failures (auth errors, GHCR outages) from the cleanup step itself.
+      # Skip packages that do not exist yet.
       - name: Check if package ${{ matrix.package }} exists
         id: check-package
         env:
