@@ -34,6 +34,7 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories/repomocks"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
 // mcpRenameRecorder captures every OpenChoreo write the rename makes, so a test can assert
@@ -462,7 +463,7 @@ func (tx *mcpRenameCommitTx) Rollback() error {
 }
 
 func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues(t *testing.T) {
-	for _, scenario := range []string{"commit succeeds", "commit fails", "later rename commits", "commit response lost"} {
+	for _, scenario := range []string{"commit succeeds", "commit fails", "later rename commits", "later rename preserves targets", "other config claims target", "commit response lost"} {
 		failCommit := scenario != "commit succeeds"
 		t.Run(scenario, func(t *testing.T) {
 			f := newMCPURLTestFixture()
@@ -470,7 +471,12 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 			rec := &mcpRenameRecorder{}
 			tx := &mcpRenameCommitTx{onCommit: func() {
 				require.Equal(t, "GITHUB_URL", rec.componentVars[0].Key, "live rewrite must complete before commit")
-				if scenario == "later rename commits" {
+				if scenario == "other config claims target" {
+					winner := []client.EnvVar{{Key: "GITHUB_URL", Value: "winning-other-config"}}
+					rec.componentVars = mergeRenameTestVars(rec.componentVars, nil, winner)
+					rec.bindingVars["default"] = mergeRenameTestVars(rec.bindingVars["default"], nil, winner)
+				}
+				if scenario == "later rename commits" || scenario == "later rename preserves targets" {
 					// Model the next request winning the row lock after this transaction ends.
 					next := []client.EnvVar{{Key: "NEXT_URL", Value: "https://next/mcp"}, {Key: "NEXT_API_KEY", ValueFrom: &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: "next-secret", Key: "api-key"}}}}
 					rec.componentVars = append(rec.componentVars, next...)
@@ -510,6 +516,25 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				return nil
 			}
 
+			// Model the client's actual remove-then-upsert behavior, retaining unrelated keys.
+			oc.UpdateComponentEnvVarsFunc = func(_ context.Context, _, _, _ string, values []client.EnvVar) error {
+				rec.componentVars = mergeRenameTestVars(rec.componentVars, nil, values)
+				return nil
+			}
+			oc.ReplaceReleaseBindingEnvVarsFunc = func(_ context.Context, _, _, _, env string, keys []string, values []client.EnvVar) error {
+				rec.bindingRemoved[env] = keys
+				rec.bindingVars[env] = mergeRenameTestVars(rec.bindingVars[env], keys, values)
+				return nil
+			}
+			if scenario == "later rename preserves targets" {
+				oc.GetComponentBaseEnvVarsFunc = func(context.Context, string, string) ([]client.EnvVar, error) {
+					return []client.EnvVar{{Key: "GITHUB_URL", Value: "saved-component"}}, nil
+				}
+				oc.GetComponentConfigurationsFunc = func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+					return []models.EnvVars{{Key: "GITHUB_URL", IsSensitive: true, SecretRef: "saved-binding", SecretKey: "original-property"}}, nil
+				}
+			}
+
 			lockReads := 0
 			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{
 				ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
@@ -520,7 +545,7 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				ListByConfigForUpdateFunc: func(context.Context, *gorm.DB, uuid.UUID) ([]models.AgentEnvConfigVariable, error) {
 					lockReads++
 					rows := renameVarRows(configUUID, f.envUUID, "default-secrets")
-					if lockReads > 1 && (scenario == "later rename commits" || scenario == "commit response lost") {
+					if lockReads > 1 && ((scenario == "later rename commits" || scenario == "later rename preserves targets") || scenario == "commit response lost") {
 						for i := range rows {
 							if scenario == "commit response lost" {
 								rows[i].VariableName = map[string]string{"url": "GITHUB_URL", "apikey": "GITHUB_API_KEY"}[rows[i].VariableKey]
@@ -537,23 +562,38 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 					return nil
 				},
 			}
+			variableRepo := svc.envVariableRepo.(*repomocks.AgentEnvConfigVariableRepositoryMock)
+			variableRepo.LockAndListByAgentFunc = func(ctx context.Context, tx *gorm.DB, _, _, _ string) ([]models.AgentEnvConfigVariable, error) {
+				rows, readErr := variableRepo.ListByConfigForUpdateFunc(ctx, tx, configUUID)
+				if lockReads > 1 && scenario == "other config claims target" {
+					rows = append(rows, models.AgentEnvConfigVariable{ConfigUUID: uuid.New(), VariableName: "GITHUB_URL"})
+				}
+				lockReads--
+				return rows, readErr
+			}
 			config := &models.AgentConfiguration{UUID: configUUID, OUID: f.ouID, ProjectName: "default", AgentID: "agent", Name: "github"}
 			err = svc.updateMCPConfigEnvironmentVariableNames(context.Background(), config, f.ouID, "default", "agent",
 				map[string]string{f.envUUID.String(): "default"}, false, "default", []models.EnvironmentVariableConfig{
 					{Key: "url", Name: "GITHUB_URL"}, {Key: "apikey", Name: "GITHUB_API_KEY"},
 				})
 			require.Equal(t, 1, tx.commits)
-			if scenario == "later rename commits" || scenario == "commit response lost" {
+			if (scenario == "later rename commits" || scenario == "later rename preserves targets") || scenario == "commit response lost" {
 				require.ErrorIs(t, err, tx.commitErr)
 				require.Equal(t, 2, lockReads)
 				expected := "GITHUB_URL"
-				if scenario == "later rename commits" {
+				if scenario == "later rename commits" || scenario == "later rename preserves targets" {
 					expected = "NEXT_URL"
 				}
 				require.Equal(t, expected, rec.componentVars[0].Key, "recovery must not restore stale names after revision advances")
-				require.Len(t, rec.componentVars, 2, "orphaned attempt keys must be removed")
-				require.Len(t, rec.bindingVars["default"], 2)
-				if scenario == "later rename commits" {
+				expectedCount := 2
+				if scenario == "later rename preserves targets" {
+					expectedCount++
+					require.Equal(t, "saved-component", envVarByKey(t, rec.componentVars, "GITHUB_URL").Value)
+					require.Equal(t, client.SecretKeyRef{Name: "saved-binding", Key: "original-property"}, *envVarByKey(t, rec.bindingVars["default"], "GITHUB_URL").ValueFrom.SecretKeyRef)
+				}
+				require.Len(t, rec.componentVars, expectedCount, "only unsaved orphaned keys must be removed")
+				require.Len(t, rec.bindingVars["default"], expectedCount)
+				if scenario == "later rename commits" || scenario == "later rename preserves targets" {
 					require.Equal(t, "https://next/mcp", envVarByKey(t, rec.componentVars, "NEXT_URL").Value)
 					require.Equal(t, "next-secret", envVarByKey(t, rec.componentVars, "NEXT_API_KEY").ValueFrom.SecretKeyRef.Name)
 				}
@@ -561,7 +601,13 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 			} else if failCommit {
 				require.ErrorIs(t, err, tx.commitErr)
 				require.Equal(t, 1, tx.rollbacks)
-				require.ElementsMatch(t, []string{"GITHUB_URL", "GITHUB_API_KEY"}, rec.bindingRemoved["default"])
+				if scenario == "other config claims target" {
+					require.Equal(t, []string{"GITHUB_API_KEY"}, rec.bindingRemoved["default"])
+					require.Equal(t, "winning-other-config", envVarByKey(t, rec.componentVars, "GITHUB_URL").Value)
+					require.Len(t, rec.componentVars, 3)
+				} else {
+					require.ElementsMatch(t, []string{"GITHUB_URL", "GITHUB_API_KEY"}, rec.bindingRemoved["default"])
+				}
 				require.Equal(t, "https://gw.example.com/proxy-ctx/mcp", envVarByKey(t, rec.componentVars, "GITHUB_MCP_URL").Value)
 				require.Equal(t, "default-secrets", envVarByKey(t, rec.componentVars, "GITHUB_MCP_API_KEY").ValueFrom.SecretKeyRef.Name)
 			} else {
@@ -569,7 +615,9 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				require.Zero(t, tx.rollbacks)
 				require.ElementsMatch(t, []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"}, rec.bindingRemoved["default"])
 			}
-			require.ElementsMatch(t, rec.componentVars, rec.bindingVars["default"])
+			if scenario != "later rename preserves targets" {
+				require.ElementsMatch(t, rec.componentVars, rec.bindingVars["default"])
+			}
 		})
 	}
 }
@@ -618,7 +666,7 @@ func TestApplyRenamedMCPEnvVars_MissingFirstEnvironmentPreservesComponentValues(
 	require.Len(t, rec.componentVars, 2)
 	require.Equal(t, "https://saved-base/mcp", envVarByKey(t, rec.componentVars, "GITHUB_URL").Value)
 	require.Equal(t, "saved-secret", envVarByKey(t, rec.componentVars, "GITHUB_API_KEY").ValueFrom.SecretKeyRef.Name)
-	require.NoError(t, undo())
+	require.NoError(t, undo.undo())
 	require.ElementsMatch(t, oldVars, rec.componentVars)
 }
 
@@ -782,4 +830,77 @@ func TestRenamedMCPProxyURL_ConfirmedMissingEndpointIsEmpty(t *testing.T) {
 	url, err := svc.renamedMCPProxyURL(context.Background(), &models.AgentConfiguration{Name: "github"}, &f.mapping, "default", f.ouID)
 	require.NoError(t, err)
 	require.Empty(t, url)
+}
+
+// mergeRenameTestVars mirrors OpenChoreo's key-based merge rather than replacing
+// the whole slice, so unrelated and orphaned values remain visible to assertions.
+func mergeRenameTestVars(existing []client.EnvVar, removed []string, values []client.EnvVar) []client.EnvVar {
+	keys := make(map[string]bool)
+	for _, key := range removed {
+		keys[key] = true
+	}
+	for _, v := range values {
+		keys[v.Key] = true
+	}
+	result := make([]client.EnvVar, 0, len(existing)+len(values))
+	for _, v := range existing {
+		if !keys[v.Key] {
+			result = append(result, v)
+		}
+	}
+	return append(result, values...)
+}
+
+func TestUpdateMCPConfigEnvironmentVariableNames_RejectsOtherConfigOwnership(t *testing.T) {
+	for _, scenario := range []string{"collision", "ownership read fails", "own names allowed"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newMCPURLTestFixture()
+			configID := uuid.New()
+			tx := &mcpRenameCommitTx{onCommit: func() {}}
+			database, err := gorm.Open(postgres.New(postgres.Config{Conn: &mcpRenameCommitPool{tx: tx}}), &gorm.Config{DisableAutomaticPing: true})
+			require.NoError(t, err)
+			svc := f.newService()
+			svc.db = database
+			readErr := errors.New("ownership read failed")
+			locked := false
+			repo := &repomocks.AgentEnvConfigVariableRepositoryMock{
+				LockAndListByAgentFunc: func(_ context.Context, _ *gorm.DB, org, project, agent string) ([]models.AgentEnvConfigVariable, error) {
+					require.Equal(t, []string{f.ouID, "project", "agent"}, []string{org, project, agent})
+					locked = true
+					if scenario == "ownership read fails" {
+						return nil, readErr
+					}
+					owner := uuid.New()
+					if scenario == "own names allowed" {
+						owner = configID
+					}
+					return []models.AgentEnvConfigVariable{{ConfigUUID: owner, VariableName: "GITHUB_URL"}}, nil
+				},
+				ListByConfigForUpdateFunc: func(context.Context, *gorm.DB, uuid.UUID) ([]models.AgentEnvConfigVariable, error) {
+					require.True(t, locked, "agent ownership lock must precede row locks")
+					return renameVarRows(configID, f.envUUID, "secret"), nil
+				},
+			}
+			svc.envVariableRepo = repo
+			if scenario == "own names allowed" {
+				repo.UpdateVariableNamesFunc = func(context.Context, *gorm.DB, uuid.UUID, map[string]string) error { return nil }
+			}
+			// No client methods are configured: rejected requests must never write live values.
+			svc.ocClient = &clientmocks.OpenChoreoClientMock{}
+			err = svc.updateMCPConfigEnvironmentVariableNames(context.Background(), &models.AgentConfiguration{UUID: configID, Name: "github"}, f.ouID, "project", "agent", nil, scenario == "own names allowed", "default", []models.EnvironmentVariableConfig{{Key: "url", Name: "GITHUB_URL"}})
+			switch scenario {
+			case "collision":
+				require.ErrorIs(t, err, utils.ErrInvalidInput)
+			case "ownership read fails":
+				require.ErrorIs(t, err, readErr)
+				require.NotErrorIs(t, err, utils.ErrInvalidInput)
+			default:
+				require.NoError(t, err)
+			}
+			if scenario != "own names allowed" {
+				require.Empty(t, repo.UpdateVariableNamesCalls())
+				require.Zero(t, tx.commits)
+			}
+		})
+	}
 }

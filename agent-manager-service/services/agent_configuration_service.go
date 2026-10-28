@@ -2739,10 +2739,14 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 	firstEnvName string,
 	overrides []models.EnvironmentVariableConfig,
 ) error {
-	var rollbackLive func() error
+	var recovery *mcpRenameRecovery
 	var originalVars []models.AgentEnvConfigVariable
 	var attemptedTemplates []EnvConfigTemplate
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		agentVars, err := s.envVariableRepo.LockAndListByAgent(ctx, tx, ouID, projectName, agentName)
+		if err != nil {
+			return fmt.Errorf("failed to lock agent variable names: %w", err)
+		}
 		vars, err := s.envVariableRepo.ListByConfigForUpdate(ctx, tx, config.UUID)
 		if err != nil {
 			return fmt.Errorf("failed to load existing variable names: %w", err)
@@ -2782,6 +2786,14 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 			return nil
 		}
 
+		for _, template := range newTemplates {
+			for _, v := range agentVars {
+				if v.ConfigUUID != config.UUID && v.VariableName == template.Name {
+					return fmt.Errorf("%w: environment variable name %q belongs to another configuration", utils.ErrInvalidInput, template.Name)
+				}
+			}
+		}
+
 		originalVars = vars
 		attemptedTemplates = newTemplates
 		keyNameMap := make(map[string]string, len(overrides))
@@ -2801,24 +2813,34 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 			return nil
 		}
 		var applyErr error
-		rollbackLive, applyErr = s.applyRenamedMCPEnvVars(ctx, config, ouID, projectName, agentName, uuidToEnvName, firstEnvName,
+		recovery, applyErr = s.applyRenamedMCPEnvVars(ctx, config, ouID, projectName, agentName, uuidToEnvName, firstEnvName,
 			vars, newTemplates, changedOldKeys)
 		return applyErr
 	}); err != nil {
 		// The callback can succeed while COMMIT fails. Keep the undo plan until
 		// transaction completion; apply failures already compensate inside the callback.
-		if rollbackLive != nil {
+		if recovery != nil {
 			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mcpRenameApplyTimeout)
 			defer cancel()
 			recoveryErr := s.db.WithContext(recoveryCtx).Transaction(func(tx *gorm.DB) error {
+				agentVars, lockErr := s.envVariableRepo.LockAndListByAgent(recoveryCtx, tx, ouID, projectName, agentName)
+				if lockErr != nil {
+					return lockErr
+				}
 				currentVars, lockErr := s.envVariableRepo.ListByConfigForUpdate(recoveryCtx, tx, config.UUID)
 				if lockErr != nil {
 					return lockErr
 				}
+				recovery.protectedNames = make(map[string]bool)
+				for _, v := range agentVars {
+					if v.ConfigUUID != config.UUID {
+						recovery.protectedNames[v.VariableName] = true
+					}
+				}
 				// Only undo while the persisted mapping still matches the pre-rename state.
 				// A later rename or an ambiguously successful COMMIT owns its live values.
 				if len(currentVars) != len(originalVars) {
-					return s.removeOrphanedMCPRenameKeys(recoveryCtx, ouID, projectName, agentName, uuidToEnvName, originalVars, currentVars, attemptedTemplates)
+					return s.removeOrphanedMCPRenameKeys(recoveryCtx, ouID, projectName, agentName, uuidToEnvName, originalVars, agentVars, attemptedTemplates, recovery)
 				}
 				for _, old := range originalVars {
 					matched := false
@@ -2829,10 +2851,10 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 						}
 					}
 					if !matched {
-						return s.removeOrphanedMCPRenameKeys(recoveryCtx, ouID, projectName, agentName, uuidToEnvName, originalVars, currentVars, attemptedTemplates)
+						return s.removeOrphanedMCPRenameKeys(recoveryCtx, ouID, projectName, agentName, uuidToEnvName, originalVars, agentVars, attemptedTemplates, recovery)
 					}
 				}
-				return rollbackLive()
+				return recovery.undo()
 			})
 			err = errors.Join(err, recoveryErr)
 		}
@@ -2844,7 +2866,7 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 // removeOrphanedMCPRenameKeys runs under the recovery row locks. Later renames own
 // current values; remove only this attempt's keys that are no longer persisted.
 func (s *agentConfigurationService) removeOrphanedMCPRenameKeys(ctx context.Context, ouID, projectName, agentName string,
-	envNames map[string]string, original, current []models.AgentEnvConfigVariable, templates []EnvConfigTemplate,
+	envNames map[string]string, original, current []models.AgentEnvConfigVariable, templates []EnvConfigTemplate, recovery *mcpRenameRecovery,
 ) error {
 	used := make(map[string]bool)
 	for _, v := range current {
@@ -2859,9 +2881,24 @@ func (s *agentConfigurationService) removeOrphanedMCPRenameKeys(ctx context.Cont
 	if len(keys) == 0 {
 		return nil
 	}
+	// Restore only abandoned targets; persisted names belong to the winning rename.
+	filterSaved := func(saved []client.EnvVar) []client.EnvVar {
+		result := make([]client.EnvVar, 0, len(saved))
+		for _, v := range saved {
+			if !used[v.Key] {
+				result = append(result, v)
+			}
+		}
+		return result
+	}
 	steps := []func(context.Context) error{func(stepCtx context.Context) error {
 		if err := s.ocClient.RemoveComponentEnvironmentVariables(stepCtx, ouID, projectName, agentName, keys); err != nil {
 			return fmt.Errorf("failed to remove orphaned MCP Component keys: %w", err)
+		}
+		return nil
+	}, func(stepCtx context.Context) error {
+		if saved := filterSaved(recovery.componentTargets); len(saved) > 0 {
+			return s.ocClient.UpdateComponentEnvVars(stepCtx, ouID, projectName, agentName, saved)
 		}
 		return nil
 	}}
@@ -2873,13 +2910,21 @@ func (s *agentConfigurationService) removeOrphanedMCPRenameKeys(ctx context.Cont
 		}
 		seen[env] = true
 		steps = append(steps, func(stepCtx context.Context) error {
-			if err := s.ocClient.RemoveReleaseBindingEnvVars(stepCtx, ouID, projectName, agentName, env, keys); err != nil {
+			if err := s.ocClient.ReplaceReleaseBindingEnvVars(stepCtx, ouID, projectName, agentName, env, keys, filterSaved(recovery.bindingTargets[env])); err != nil {
 				return fmt.Errorf("failed to remove orphaned MCP keys in environment %s: %w", env, err)
 			}
 			return nil
 		})
 	}
 	return s.rollbackMCPEnvVarRename(ctx, steps)
+}
+
+// mcpRenameRecovery retains the undo plan and pre-existing rename targets through COMMIT.
+type mcpRenameRecovery struct {
+	undo             func() error
+	componentTargets []client.EnvVar
+	bindingTargets   map[string][]client.EnvVar
+	protectedNames   map[string]bool
 }
 
 // mcpRenameApplyTimeout bounds the whole live-rewrite phase of an MCP env var rename. That
@@ -2906,7 +2951,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	vars []models.AgentEnvConfigVariable,
 	newTemplates []EnvConfigTemplate,
 	changedOldKeys []string,
-) (rollback func() error, applyErr error) {
+) (recovery *mcpRenameRecovery, applyErr error) {
 	ctx, cancel := context.WithTimeout(ctx, mcpRenameApplyTimeout)
 	defer cancel()
 
@@ -2991,6 +3036,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			targetNames[template.Name] = true
 		}
 	}
+	targets := &mcpRenameRecovery{undo: nil, componentTargets: nil, bindingTargets: make(map[string][]client.EnvVar), protectedNames: nil}
 	for i := range rewrites {
 		rw := &rewrites[i]
 		liveVars, err := s.ocClient.GetComponentConfigurations(ctx, ouID, projectName, agentName, rw.envName)
@@ -3006,6 +3052,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 				saved.ValueFrom = &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: v.SecretRef, Key: v.SecretKey}}
 			}
 			rw.oldVars = append(rw.oldVars, saved)
+			targets.bindingTargets[rw.envName] = append(targets.bindingTargets[rw.envName], saved)
 		}
 	}
 	var componentOldVars, componentNewVars []client.EnvVar
@@ -3036,6 +3083,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	for _, v := range baseVars {
 		if targetNames[v.Key] {
 			componentOldVars = append(componentOldVars, v)
+			targets.componentTargets = append(targets.componentTargets, v)
 		}
 	}
 	componentNewKeys := make([]string, 0, len(componentNewVars))
@@ -3045,13 +3093,33 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	attemptedBindings := 0
 	componentTouched := false
 	rollbackLive := func() error {
+		// A different configuration may claim an abandoned target after a failed
+		// COMMIT. Recovery must preserve that winner even when our rows are unchanged.
+		filterKeys := func(keys []string) []string {
+			result := make([]string, 0, len(keys))
+			for _, key := range keys {
+				if !targets.protectedNames[key] {
+					result = append(result, key)
+				}
+			}
+			return result
+		}
+		filterVars := func(values []client.EnvVar) []client.EnvVar {
+			result := make([]client.EnvVar, 0, len(values))
+			for _, v := range values {
+				if !targets.protectedNames[v.Key] {
+					result = append(result, v)
+				}
+			}
+			return result
+		}
 		// A failed request may already have reached OpenChoreo. Include the failed
 		// write in compensation, and retain this plan through database COMMIT.
 		steps := make([]func(context.Context) error, 0, attemptedBindings+2)
 		for i := attemptedBindings - 1; i >= 0; i-- {
 			rw := rewrites[i]
 			steps = append(steps, func(rollbackCtx context.Context) error {
-				if err := s.ocClient.ReplaceReleaseBindingEnvVars(rollbackCtx, ouID, projectName, agentName, rw.envName, newKeys, rw.oldVars); err != nil {
+				if err := s.ocClient.ReplaceReleaseBindingEnvVars(rollbackCtx, ouID, projectName, agentName, rw.envName, filterKeys(newKeys), filterVars(rw.oldVars)); err != nil {
 					return fmt.Errorf("failed to restore MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err)
 				}
 				return nil
@@ -3059,12 +3127,12 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 		}
 		if componentTouched {
 			steps = append(steps, func(rollbackCtx context.Context) error {
-				if err := s.ocClient.RemoveComponentEnvironmentVariables(rollbackCtx, ouID, projectName, agentName, componentNewKeys); err != nil {
+				if err := s.ocClient.RemoveComponentEnvironmentVariables(rollbackCtx, ouID, projectName, agentName, filterKeys(componentNewKeys)); err != nil {
 					return fmt.Errorf("failed to remove renamed MCP env vars from Component during rollback: %w", err)
 				}
 				return nil
 			}, func(rollbackCtx context.Context) error {
-				if err := s.ocClient.UpdateComponentEnvVars(rollbackCtx, ouID, projectName, agentName, componentOldVars); err != nil {
+				if err := s.ocClient.UpdateComponentEnvVars(rollbackCtx, ouID, projectName, agentName, filterVars(componentOldVars)); err != nil {
 					return fmt.Errorf("failed to restore MCP env vars in Component: %w", err)
 				}
 				return nil
@@ -3101,7 +3169,8 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			}
 		}
 	}
-	return rollbackLive, nil
+	targets.undo = rollbackLive
+	return targets, nil
 }
 
 // rollbackMCPEnvVarRename gives each remaining restoration attempt a share of a
