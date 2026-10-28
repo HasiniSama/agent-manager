@@ -2741,6 +2741,7 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 ) error {
 	var rollbackLive func() error
 	var originalVars []models.AgentEnvConfigVariable
+	var attemptedTemplates []EnvConfigTemplate
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		vars, err := s.envVariableRepo.ListByConfigForUpdate(ctx, tx, config.UUID)
 		if err != nil {
@@ -2782,6 +2783,7 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 		}
 
 		originalVars = vars
+		attemptedTemplates = newTemplates
 		keyNameMap := make(map[string]string, len(overrides))
 		for _, ev := range overrides {
 			keyNameMap[ev.Key] = ev.Name
@@ -2816,7 +2818,7 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 				// Only undo while the persisted mapping still matches the pre-rename state.
 				// A later rename or an ambiguously successful COMMIT owns its live values.
 				if len(currentVars) != len(originalVars) {
-					return nil
+					return s.removeOrphanedMCPRenameKeys(recoveryCtx, ouID, projectName, agentName, uuidToEnvName, originalVars, currentVars, attemptedTemplates)
 				}
 				for _, old := range originalVars {
 					matched := false
@@ -2827,7 +2829,7 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 						}
 					}
 					if !matched {
-						return nil
+						return s.removeOrphanedMCPRenameKeys(recoveryCtx, ouID, projectName, agentName, uuidToEnvName, originalVars, currentVars, attemptedTemplates)
 					}
 				}
 				return rollbackLive()
@@ -2837,6 +2839,47 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 		return fmt.Errorf("failed to update MCP environment variable names: %w", err)
 	}
 	return nil
+}
+
+// removeOrphanedMCPRenameKeys runs under the recovery row locks. Later renames own
+// current values; remove only this attempt's keys that are no longer persisted.
+func (s *agentConfigurationService) removeOrphanedMCPRenameKeys(ctx context.Context, ouID, projectName, agentName string,
+	envNames map[string]string, original, current []models.AgentEnvConfigVariable, templates []EnvConfigTemplate,
+) error {
+	used := make(map[string]bool)
+	for _, v := range current {
+		used[v.VariableName] = true
+	}
+	keys := make([]string, 0, len(templates))
+	for _, t := range templates {
+		if !used[t.Name] {
+			keys = append(keys, t.Name)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	steps := []func(context.Context) error{func(stepCtx context.Context) error {
+		if err := s.ocClient.RemoveComponentEnvironmentVariables(stepCtx, ouID, projectName, agentName, keys); err != nil {
+			return fmt.Errorf("failed to remove orphaned MCP Component keys: %w", err)
+		}
+		return nil
+	}}
+	seen := make(map[string]bool)
+	for _, v := range original {
+		env := envNames[v.EnvironmentUUID.String()]
+		if env == "" || seen[env] {
+			continue
+		}
+		seen[env] = true
+		steps = append(steps, func(stepCtx context.Context) error {
+			if err := s.ocClient.RemoveReleaseBindingEnvVars(stepCtx, ouID, projectName, agentName, env, keys); err != nil {
+				return fmt.Errorf("failed to remove orphaned MCP keys in environment %s: %w", env, err)
+			}
+			return nil
+		})
+	}
+	return s.rollbackMCPEnvVarRename(ctx, steps)
 }
 
 // mcpRenameApplyTimeout bounds the whole live-rewrite phase of an MCP env var rename. That

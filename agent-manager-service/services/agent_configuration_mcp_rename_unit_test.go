@@ -465,8 +465,8 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				if scenario == "later rename commits" {
 					// Model the next request winning the row lock after this transaction ends.
 					next := []client.EnvVar{{Key: "NEXT_URL", Value: "https://next/mcp"}, {Key: "NEXT_API_KEY", ValueFrom: &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: "next-secret", Key: "api-key"}}}}
-					rec.componentVars = next
-					rec.bindingVars["default"] = next
+					rec.componentVars = append(rec.componentVars, next...)
+					rec.bindingVars["default"] = append(rec.bindingVars["default"], next...)
 				}
 			}}
 			if failCommit {
@@ -476,6 +476,32 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 			require.NoError(t, err)
 			svc := f.newService()
 			svc.db, svc.ocClient = database, rec.ocClient()
+			removeKeys := func(vars []client.EnvVar, keys []string) []client.EnvVar {
+				result := make([]client.EnvVar, 0, len(vars))
+				for _, v := range vars {
+					remove := false
+					for _, key := range keys {
+						if v.Key == key {
+							remove = true
+						}
+					}
+					if !remove {
+						result = append(result, v)
+					}
+				}
+				return result
+			}
+			oc := svc.ocClient.(*clientmocks.OpenChoreoClientMock)
+			recordRemove := oc.RemoveComponentEnvironmentVariablesFunc
+			oc.RemoveComponentEnvironmentVariablesFunc = func(ctx context.Context, org, project, agent string, keys []string) error {
+				rec.componentVars = removeKeys(rec.componentVars, keys)
+				return recordRemove(ctx, org, project, agent, keys)
+			}
+			oc.RemoveReleaseBindingEnvVarsFunc = func(_ context.Context, _, _, _, env string, keys []string) error {
+				rec.bindingVars[env] = removeKeys(rec.bindingVars[env], keys)
+				return nil
+			}
+
 			lockReads := 0
 			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{
 				ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
@@ -488,7 +514,11 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 					rows := renameVarRows(configUUID, f.envUUID, "default-secrets")
 					if lockReads > 1 && (scenario == "later rename commits" || scenario == "commit response lost") {
 						for i := range rows {
-							rows[i].VariableName = "NEW_" + rows[i].VariableName
+							if scenario == "commit response lost" {
+								rows[i].VariableName = map[string]string{"url": "GITHUB_URL", "apikey": "GITHUB_API_KEY"}[rows[i].VariableKey]
+							} else {
+								rows[i].VariableName = map[string]string{"url": "NEXT_URL", "apikey": "NEXT_API_KEY"}[rows[i].VariableKey]
+							}
 						}
 					}
 					return rows, nil
@@ -513,6 +543,12 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 					expected = "NEXT_URL"
 				}
 				require.Equal(t, expected, rec.componentVars[0].Key, "recovery must not restore stale names after revision advances")
+				require.Len(t, rec.componentVars, 2, "orphaned attempt keys must be removed")
+				require.Len(t, rec.bindingVars["default"], 2)
+				if scenario == "later rename commits" {
+					require.Equal(t, "https://next/mcp", envVarByKey(t, rec.componentVars, "NEXT_URL").Value)
+					require.Equal(t, "next-secret", envVarByKey(t, rec.componentVars, "NEXT_API_KEY").ValueFrom.SecretKeyRef.Name)
+				}
 				require.Len(t, svc.envVariableRepo.(*repomocks.AgentEnvConfigVariableRepositoryMock).ListByConfigForUpdateCalls(), 2)
 			} else if failCommit {
 				require.ErrorIs(t, err, tx.commitErr)
