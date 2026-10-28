@@ -2739,6 +2739,8 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 	firstEnvName string,
 	overrides []models.EnvironmentVariableConfig,
 ) error {
+	var rollbackLive func() error
+	var originalVars []models.AgentEnvConfigVariable
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		vars, err := s.envVariableRepo.ListByConfigForUpdate(ctx, tx, config.UUID)
 		if err != nil {
@@ -2779,6 +2781,7 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 			return nil
 		}
 
+		originalVars = vars
 		keyNameMap := make(map[string]string, len(overrides))
 		for _, ev := range overrides {
 			keyNameMap[ev.Key] = ev.Name
@@ -2795,9 +2798,42 @@ func (s *agentConfigurationService) updateMCPConfigEnvironmentVariableNames(
 		if isExternalAgent {
 			return nil
 		}
-		return s.applyRenamedMCPEnvVars(ctx, config, ouID, projectName, agentName, uuidToEnvName, firstEnvName,
+		var applyErr error
+		rollbackLive, applyErr = s.applyRenamedMCPEnvVars(ctx, config, ouID, projectName, agentName, uuidToEnvName, firstEnvName,
 			vars, newTemplates, changedOldKeys)
+		return applyErr
 	}); err != nil {
+		// The callback can succeed while COMMIT fails. Keep the undo plan until
+		// transaction completion; apply failures already compensate inside the callback.
+		if rollbackLive != nil {
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mcpRenameApplyTimeout)
+			defer cancel()
+			recoveryErr := s.db.WithContext(recoveryCtx).Transaction(func(tx *gorm.DB) error {
+				currentVars, lockErr := s.envVariableRepo.ListByConfigForUpdate(recoveryCtx, tx, config.UUID)
+				if lockErr != nil {
+					return lockErr
+				}
+				// Only undo while the persisted mapping still matches the pre-rename state.
+				// A later rename or an ambiguously successful COMMIT owns its live values.
+				if len(currentVars) != len(originalVars) {
+					return nil
+				}
+				for _, old := range originalVars {
+					matched := false
+					for _, current := range currentVars {
+						if old.EnvironmentUUID == current.EnvironmentUUID && old.VariableKey == current.VariableKey && old.VariableName == current.VariableName && old.SecretReference == current.SecretReference {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						return nil
+					}
+				}
+				return rollbackLive()
+			})
+			err = errors.Join(err, recoveryErr)
+		}
 		return fmt.Errorf("failed to update MCP environment variable names: %w", err)
 	}
 	return nil
@@ -2817,6 +2853,7 @@ var mcpRenameApplyTimeout = mcpRefreshTimeout
 // environment. Every value is resolved before the first write, so a resolution failure leaves
 // the Component CR and all ReleaseBindings untouched. If a write fails, attempted live
 // rewrites are compensated with the persisted names before the caller rolls the DB back.
+// On success the returned undo function remains available until the DB commit succeeds.
 func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	ctx context.Context,
 	config *models.AgentConfiguration,
@@ -2826,7 +2863,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	vars []models.AgentEnvConfigVariable,
 	newTemplates []EnvConfigTemplate,
 	changedOldKeys []string,
-) (applyErr error) {
+) (rollback func() error, applyErr error) {
 	ctx, cancel := context.WithTimeout(ctx, mcpRenameApplyTimeout)
 	defer cancel()
 
@@ -2835,7 +2872,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 	// each environment's gateway artifact is resolved from.
 	mappings, err := s.envMCPMappingRepo.ListByConfig(ctx, config.UUID)
 	if err != nil {
-		return fmt.Errorf("failed to list MCP env mappings: %w", err)
+		return nil, fmt.Errorf("failed to list MCP env mappings: %w", err)
 	}
 	mappingByEnv := make(map[uuid.UUID]*models.EnvAgentMCPMapping, len(mappings))
 	for i := range mappings {
@@ -2873,7 +2910,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 		if mapping, ok := mappingByEnv[envUUID]; ok {
 			proxyURL, err = s.renamedMCPProxyURL(ctx, config, mapping, envName, ouID)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 		rewrites = append(rewrites, envRewrite{
@@ -2894,53 +2931,112 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			break
 		}
 	}
+	var componentOldVars, componentNewVars []client.EnvVar
+	if firstRewrite >= 0 {
+		componentOldVars, componentNewVars = rewrites[firstRewrite].oldVars, rewrites[firstRewrite].envVars
+	} else {
+		baseVars, err := s.ocClient.GetComponentBaseEnvVars(ctx, ouID, agentName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read Component MCP variables: %w", err)
+		}
+		renames := make(map[string]string)
+		for _, v := range vars {
+			for _, template := range newTemplates {
+				if v.VariableKey == template.Key && v.VariableName != template.Name {
+					renames[v.VariableName] = template.Name
+				}
+			}
+		}
+		for _, v := range baseVars {
+			if name, ok := renames[v.Key]; ok {
+				componentOldVars = append(componentOldVars, v)
+				v.Key = name
+				componentNewVars = append(componentNewVars, v)
+			}
+		}
+	}
+	componentNewKeys := make([]string, 0, len(componentNewVars))
+	for _, v := range componentNewVars {
+		componentNewKeys = append(componentNewKeys, v.Key)
+	}
 	attemptedBindings := 0
 	componentTouched := false
-	defer func() {
-		if applyErr == nil {
-			return
-		}
-		// A failed request may already have reached OpenChoreo. Restore every attempted
-		// write, including the one that failed, before the caller rolls the DB back.
-		// Use a fresh deadline so request cancellation cannot disable compensation.
-		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), mcpRenameApplyTimeout)
-		defer rollbackCancel()
+	rollbackLive := func() error {
+		// A failed request may already have reached OpenChoreo. Include the failed
+		// write in compensation, and retain this plan through database COMMIT.
+		steps := make([]func(context.Context) error, 0, attemptedBindings+2)
 		for i := attemptedBindings - 1; i >= 0; i-- {
 			rw := rewrites[i]
-			if err := s.ocClient.ReplaceReleaseBindingEnvVars(rollbackCtx, ouID, projectName, agentName, rw.envName, newKeys, rw.oldVars); err != nil {
-				applyErr = errors.Join(applyErr, fmt.Errorf("failed to restore MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err))
-			}
+			steps = append(steps, func(rollbackCtx context.Context) error {
+				if err := s.ocClient.ReplaceReleaseBindingEnvVars(rollbackCtx, ouID, projectName, agentName, rw.envName, newKeys, rw.oldVars); err != nil {
+					return fmt.Errorf("failed to restore MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err)
+				}
+				return nil
+			})
 		}
 		if componentTouched {
-			if err := s.ocClient.RemoveComponentEnvironmentVariables(rollbackCtx, ouID, projectName, agentName, newKeys); err != nil {
-				applyErr = errors.Join(applyErr, fmt.Errorf("failed to remove renamed MCP env vars from Component during rollback: %w", err))
-			}
-			if err := s.ocClient.UpdateComponentEnvVars(rollbackCtx, ouID, projectName, agentName, rewrites[firstRewrite].oldVars); err != nil {
-				applyErr = errors.Join(applyErr, fmt.Errorf("failed to restore MCP env vars in Component: %w", err))
-			}
+			steps = append(steps, func(rollbackCtx context.Context) error {
+				if err := s.ocClient.RemoveComponentEnvironmentVariables(rollbackCtx, ouID, projectName, agentName, componentNewKeys); err != nil {
+					return fmt.Errorf("failed to remove renamed MCP env vars from Component during rollback: %w", err)
+				}
+				return nil
+			}, func(rollbackCtx context.Context) error {
+				if err := s.ocClient.UpdateComponentEnvVars(rollbackCtx, ouID, projectName, agentName, componentOldVars); err != nil {
+					return fmt.Errorf("failed to restore MCP env vars in Component: %w", err)
+				}
+				return nil
+			})
+		}
+		return s.rollbackMCPEnvVarRename(ctx, steps)
+	}
+	defer func() {
+		if applyErr != nil {
+			applyErr = errors.Join(applyErr, rollbackLive())
 		}
 	}()
 
-	// Only the first environment supplies the Component base. Without its variable
-	// rows there is no Component rewrite to apply (or restore).
-	if firstRewrite >= 0 {
+	// Preserve the saved base values when the first environment has been removed.
+	if len(componentNewVars) > 0 {
 		componentTouched = true
 		if err := s.ocClient.RemoveComponentEnvironmentVariables(ctx, ouID, projectName, agentName, changedOldKeys); err != nil {
-			return fmt.Errorf("failed to remove old MCP env vars from Component: %w", err)
+			return nil, fmt.Errorf("failed to remove old MCP env vars from Component: %w", err)
+		}
+	}
+	if firstRewrite < 0 && componentTouched {
+		if err := s.ocClient.UpdateComponentEnvVars(ctx, ouID, projectName, agentName, componentNewVars); err != nil {
+			return nil, fmt.Errorf("failed to rename saved Component MCP variables: %w", err)
 		}
 	}
 	for _, rw := range rewrites {
 		attemptedBindings++
 		if err := s.ocClient.ReplaceReleaseBindingEnvVars(ctx, ouID, projectName, agentName, rw.envName, changedOldKeys, rw.envVars); err != nil {
-			return fmt.Errorf("failed to replace MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err)
+			return nil, fmt.Errorf("failed to replace MCP env vars in ReleaseBinding for environment %s: %w", rw.envName, err)
 		}
 		if firstEnvName != "" && rw.envName == firstEnvName {
 			if err := s.ocClient.UpdateComponentEnvVars(ctx, ouID, projectName, agentName, rw.envVars); err != nil {
-				return fmt.Errorf("failed to update Component with renamed MCP env vars: %w", err)
+				return nil, fmt.Errorf("failed to update Component with renamed MCP env vars: %w", err)
 			}
 		}
 	}
-	return nil
+	return rollbackLive, nil
+}
+
+// rollbackMCPEnvVarRename gives each remaining restoration attempt a share of a
+// fixed total budget. A hung environment cannot consume the time reserved for
+// healthy bindings or the Component. Cancellation of the original request does
+// not cancel recovery.
+func (s *agentConfigurationService) rollbackMCPEnvVarRename(ctx context.Context, steps []func(context.Context) error) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mcpRenameApplyTimeout)
+	defer cancel()
+	deadline, _ := rollbackCtx.Deadline()
+	var restoreErr error
+	for i, step := range steps {
+		stepCtx, stepCancel := context.WithTimeout(rollbackCtx, time.Until(deadline)/time.Duration(len(steps)-i))
+		err := step(stepCtx)
+		stepCancel()
+		restoreErr = errors.Join(restoreErr, err)
+	}
+	return restoreErr
 }
 
 // renamedMCPProxyURL resolves the gateway URL a mapping's environment serves the proxy on.

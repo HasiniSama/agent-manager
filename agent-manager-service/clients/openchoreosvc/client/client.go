@@ -96,6 +96,7 @@ type OpenChoreoClient interface {
 	DetachTrait(ctx context.Context, ouID, projectName, componentName string, traitType TraitType) error
 	HasTrait(ctx context.Context, ouID, projectName, componentName string, traitType TraitType) (bool, error)
 	UpdateComponentDeploymentConfig(ctx context.Context, ouID, projectName, componentName string, req ComponentDeploymentConfigRequest) error
+	GetComponentBaseEnvVars(ctx context.Context, ouID, componentName string) ([]EnvVar, error)
 	UpdateComponentEnvVars(ctx context.Context, ouID, projectName, componentName string, envVars []EnvVar) error
 	ReplaceComponentEnvVars(ctx context.Context, ouID, projectName, componentName string, envVars []EnvVar) error
 	ReplaceComponentFileMounts(ctx context.Context, ouID, projectName, componentName string, files []FileVar) error
