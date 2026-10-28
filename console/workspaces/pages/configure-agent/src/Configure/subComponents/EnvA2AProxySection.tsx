@@ -90,7 +90,7 @@ function GatewayUrl({ url }: { url: string }) {
   );
 }
 
-/** Gateway routing for one environment of an external A2A agent that has a registered card URL. */
+/** Gateway routing for one environment of an external agent that has a registered card URL. */
 export function EnvA2AProxySection({
   params, cardUrl, proxy, saving = false,
 }: EnvA2AProxySectionProps) {

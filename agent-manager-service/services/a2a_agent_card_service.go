@@ -117,7 +117,7 @@ func (s *a2aAgentCardService) requireDeployed(ctx context.Context, ouID, agentNa
 func (s *a2aAgentCardService) SetA2ACardSource(
 	ctx context.Context, ouID, projectName, agentName, envName, sourceURL string,
 ) error {
-	agent, err := getExternalA2AAgent(ctx, s.ocClient, ouID, projectName, agentName, utils.ErrAgentCardSourceNotExternal)
+	agent, err := getExternalAgent(ctx, s.ocClient, ouID, projectName, agentName, utils.ErrAgentCardSourceNotExternal)
 	if err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func (s *a2aAgentCardService) SetA2ACardSource(
 func (s *a2aAgentCardService) DeleteA2ACardSource(
 	ctx context.Context, ouID, projectName, agentName, envName string,
 ) error {
-	agent, err := getExternalA2AAgent(ctx, s.ocClient, ouID, projectName, agentName, utils.ErrAgentCardSourceNotExternal)
+	agent, err := getExternalAgent(ctx, s.ocClient, ouID, projectName, agentName, utils.ErrAgentCardSourceNotExternal)
 	if err != nil {
 		return err
 	}
@@ -224,11 +224,11 @@ func getA2AAgent(ctx context.Context, oc client.OpenChoreoClient, ouID, projectN
 	return agent, nil
 }
 
-// getExternalA2AAgent is getA2AAgent refusing a platform-provisioned agent with notExternalErr.
-func getExternalA2AAgent(
+// getExternalAgent fetches an agent, refusing a platform-provisioned one with notExternalErr.
+func getExternalAgent(
 	ctx context.Context, oc client.OpenChoreoClient, ouID, projectName, agentName string, notExternalErr error,
 ) (*models.AgentResponse, error) {
-	agent, err := getA2AAgent(ctx, oc, ouID, projectName, agentName)
+	agent, err := getAgent(ctx, oc, ouID, projectName, agentName)
 	if err != nil {
 		return nil, err
 	}

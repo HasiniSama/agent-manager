@@ -2952,7 +2952,7 @@ func (s *agentManagerService) DeleteAgent(ctx context.Context, ouID string, proj
 		s.logger.Warn("Failed to determine agent type before deletion, assuming internal",
 			"agentName", agentName, "error", compErr)
 	} else {
-		isExternalAgent = agentComp.Provisioning.Type == string(utils.ExternalAgent)
+		isExternalAgent = isExternalProvisioned(agentComp)
 		isA2AAgent = a2aCapable(agentComp)
 	}
 

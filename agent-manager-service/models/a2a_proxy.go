@@ -22,7 +22,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// A2AProxy marks an external A2A agent's environment as published through the
+// A2AProxy marks an external agent's environment as published through the
 // environment's ingress gateway; the row existing is what makes it proxied.
 type A2AProxy struct {
 	ID              uuid.UUID `gorm:"column:id;primaryKey;type:uuid;default:gen_random_uuid()"`

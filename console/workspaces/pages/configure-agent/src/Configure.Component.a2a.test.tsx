@@ -63,7 +63,10 @@ import { ConfigureComponent } from "./Configure.Component";
 
 const mockAgent = (subType: string, provisioning = "internal") =>
   vi.mocked(useGetAgent).mockReturnValue({
-    data: { agentType: { type: "agent-api", subType }, provisioning: { type: provisioning } },
+    data: {
+      agentType: { type: provisioning === "external" ? "external-agent-api" : "agent-api", subType },
+      provisioning: { type: provisioning },
+    },
   } as unknown as ReturnType<typeof useGetAgent>);
 
 function SearchProbe() {

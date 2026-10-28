@@ -576,15 +576,11 @@ func TestSetA2AProxyRejectsAnInternalAgent(t *testing.T) {
 			Name: "weather", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "chat-api"},
 		},
 	}
-	want := map[string]error{
-		"an internal A2A agent":     utils.ErrA2AProxyAgentNotExternal,
-		"an internal non-A2A agent": utils.ErrAgentNotA2A,
-	}
 	for name, agent := range cases {
 		t.Run(name, func(t *testing.T) {
 			h := newProxyHarness(t)
 			h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) { return agent, nil }
-			assert.ErrorIs(t, h.svc.SetA2AProxy(tierGrantedCtx(t), "org-1", "checkout", "weather", "dev", nil), want[name])
+			assert.ErrorIs(t, h.svc.SetA2AProxy(tierGrantedCtx(t), "org-1", "checkout", "weather", "dev", nil), utils.ErrA2AProxyAgentNotExternal)
 		})
 	}
 }

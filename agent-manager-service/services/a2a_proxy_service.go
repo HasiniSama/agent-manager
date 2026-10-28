@@ -59,7 +59,7 @@ type A2AProxyHooks interface {
 	RefreshCardSource(ctx context.Context, agent *models.AgentResponse, ouID, projectName string, env *models.EnvironmentResponse) error
 }
 
-// A2AProxyService publishes external A2A agents through their environment's ingress gateway.
+// A2AProxyService publishes external agents over A2A through their environment's ingress gateway.
 type A2AProxyService interface {
 	A2AProxyHooks
 	GetA2AProxy(ctx context.Context, ouID, projectName, agentName, envName string) (*models.A2AProxyStatus, error)
@@ -291,9 +291,9 @@ func (s *a2aProxyService) RefreshCardSource(
 	return s.republish(ctx, t, requeueCardFetch)
 }
 
-// target resolves an external A2A agent and an environment the caller may act on.
+// target resolves an external agent and an environment the caller may act on.
 func (s *a2aProxyService) target(ctx context.Context, ouID, projectName, agentName, envName string) (a2aProxyTarget, error) {
-	agent, err := getExternalA2AAgent(ctx, s.ocClient, ouID, projectName, agentName, utils.ErrA2AProxyAgentNotExternal)
+	agent, err := getExternalAgent(ctx, s.ocClient, ouID, projectName, agentName, utils.ErrA2AProxyAgentNotExternal)
 	if err != nil {
 		return a2aProxyTarget{}, err
 	}

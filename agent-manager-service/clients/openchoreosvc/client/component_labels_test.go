@@ -385,7 +385,8 @@ func TestBuildExternalAgentComponentRequestBody_SubTypeNeverLabelled(t *testing.
 	}
 }
 
-func TestConvertComponentFromTyped_ExternalA2ASubType(t *testing.T) {
+// An external agent labelled when A2A was an external subtype reads back with none.
+func TestConvertComponentFromTyped_ExternalIgnoresLegacySubType(t *testing.T) {
 	labels := map[string]string{
 		string(LabelKeyProvisioningType): "external",
 		string(LabelKeyAgentSubType):     "a2a-agent",
@@ -405,5 +406,5 @@ func TestConvertComponentFromTyped_ExternalA2ASubType(t *testing.T) {
 	agent, err := convertComponentFromTyped(comp)
 	require.NoError(t, err)
 	assert.Equal(t, "external", agent.Provisioning.Type)
-	assert.Equal(t, "a2a-agent", agent.Type.SubType)
+	assert.Empty(t, agent.Type.SubType)
 }
