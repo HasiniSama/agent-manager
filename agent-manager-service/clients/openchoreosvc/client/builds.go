@@ -168,8 +168,34 @@ func (c *openChoreoClient) TriggerBuild(ctx context.Context, ouID, projectName, 
 }
 
 func (c *openChoreoClient) GetBuild(ctx context.Context, ouID, projectName, componentName, buildName string) (*models.BuildDetailsResponse, error) {
-	namespaceName := c.NamespaceFor(ouID)
-	resp, err := c.ocClient.GetWorkflowRunWithResponse(ctx, namespaceName, buildName)
+	run, err := c.getWorkflowRun(ctx, ouID, buildName)
+	if err != nil {
+		return nil, err
+	}
+	// Workflow runs are looked up by name across the whole namespace, so a
+	// build of another agent must not pass as one of this agent's.
+	labels := run.Metadata.Labels
+	if getLabel(labels, string(LabelKeyComponentName)) != componentName || getLabel(labels, string(LabelKeyProjectName)) != projectName {
+		return nil, fmt.Errorf("%w: build %q does not belong to agent %q", utils.ErrNotFound, buildName, componentName)
+	}
+
+	return toBuildDetailsResponse(run, componentName, projectName)
+}
+
+// GetBuildByName looks a build up by name alone. Use it only when the caller
+// does not know which agent ran the build, as with a kind version, which
+// records just the build name.
+func (c *openChoreoClient) GetBuildByName(ctx context.Context, ouID, buildName string) (*models.BuildDetailsResponse, error) {
+	run, err := c.getWorkflowRun(ctx, ouID, buildName)
+	if err != nil {
+		return nil, err
+	}
+	labels := run.Metadata.Labels
+	return toBuildDetailsResponse(run, getLabel(labels, string(LabelKeyComponentName)), getLabel(labels, string(LabelKeyProjectName)))
+}
+
+func (c *openChoreoClient) getWorkflowRun(ctx context.Context, ouID, buildName string) (*gen.WorkflowRun, error) {
+	resp, err := c.ocClient.GetWorkflowRunWithResponse(ctx, c.NamespaceFor(ouID), buildName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get build: %w", err)
 	}
@@ -186,14 +212,7 @@ func (c *openChoreoClient) GetBuild(ctx context.Context, ouID, projectName, comp
 	if resp.JSON200 == nil {
 		return nil, fmt.Errorf("empty response from get build")
 	}
-	// Workflow runs are looked up by name across the whole namespace, so a
-	// build of another agent must not pass as one of this agent's.
-	labels := resp.JSON200.Metadata.Labels
-	if getLabel(labels, string(LabelKeyComponentName)) != componentName || getLabel(labels, string(LabelKeyProjectName)) != projectName {
-		return nil, fmt.Errorf("%w: build %q does not belong to agent %q", utils.ErrNotFound, buildName, componentName)
-	}
-
-	return toBuildDetailsResponse(resp.JSON200, componentName, projectName)
+	return resp.JSON200, nil
 }
 
 func (c *openChoreoClient) ListBuilds(ctx context.Context, ouID, projectName, componentName string) ([]*models.BuildResponse, error) {

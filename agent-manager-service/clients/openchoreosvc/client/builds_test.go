@@ -361,3 +361,18 @@ func TestGetBuild_RejectsBuildOfAnotherAgent(t *testing.T) {
 		})
 	}
 }
+
+// GetBuildByName serves callers that know only the build name, so it reports
+// the owning agent from the run's labels instead of checking them.
+func TestGetBuildByName_ReportsOwnerFromLabels(t *testing.T) {
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, err := fmt.Fprint(w, `{"metadata":{"name":"agent-1000","labels":{"openchoreo.dev/project":"proj","openchoreo.dev/component":"agent"}}}`)
+		require.NoError(t, err)
+	}))
+
+	build, err := client.GetBuildByName(context.Background(), "acme", "agent-1000")
+	require.NoError(t, err)
+	assert.Equal(t, "proj", build.ProjectName)
+	assert.Equal(t, "agent", build.AgentName)
+}

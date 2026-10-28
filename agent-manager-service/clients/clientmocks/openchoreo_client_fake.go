@@ -99,6 +99,9 @@ import (
 //			GetBuildFunc: func(ctx context.Context, ouID string, projectName string, componentName string, buildName string) (*models.BuildDetailsResponse, error) {
 //				panic("mock out the GetBuild method")
 //			},
+//			GetBuildByNameFunc: func(ctx context.Context, ouID string, buildName string) (*models.BuildDetailsResponse, error) {
+//				panic("mock out the GetBuildByName method")
+//			},
 //			GetComponentFunc: func(ctx context.Context, ouID string, projectName string, componentName string) (*models.AgentResponse, error) {
 //				panic("mock out the GetComponent method")
 //			},
@@ -345,6 +348,9 @@ type OpenChoreoClientMock struct {
 
 	// GetBuildFunc mocks the GetBuild method.
 	GetBuildFunc func(ctx context.Context, ouID string, projectName string, componentName string, buildName string) (*models.BuildDetailsResponse, error)
+
+	// GetBuildByNameFunc mocks the GetBuildByName method.
+	GetBuildByNameFunc func(ctx context.Context, ouID string, buildName string) (*models.BuildDetailsResponse, error)
 
 	// GetComponentFunc mocks the GetComponent method.
 	GetComponentFunc func(ctx context.Context, ouID string, projectName string, componentName string) (*models.AgentResponse, error)
@@ -797,6 +803,15 @@ type OpenChoreoClientMock struct {
 			ProjectName string
 			// ComponentName is the componentName argument value.
 			ComponentName string
+			// BuildName is the buildName argument value.
+			BuildName string
+		}
+		// GetBuildByName holds details about calls to the GetBuildByName method.
+		GetBuildByName []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
 			// BuildName is the buildName argument value.
 			BuildName string
 		}
@@ -1433,6 +1448,7 @@ type OpenChoreoClientMock struct {
 	lockEnsureReleaseBindingRuntimeClass       sync.RWMutex
 	lockExpireWorkflowRun                      sync.RWMutex
 	lockGetBuild                               sync.RWMutex
+	lockGetBuildByName                         sync.RWMutex
 	lockGetComponent                           sync.RWMutex
 	lockGetComponentConfigurations             sync.RWMutex
 	lockGetComponentEndpoints                  sync.RWMutex
@@ -2665,6 +2681,46 @@ func (mock *OpenChoreoClientMock) GetBuildCalls() []struct {
 	mock.lockGetBuild.RLock()
 	calls = mock.calls.GetBuild
 	mock.lockGetBuild.RUnlock()
+	return calls
+}
+
+// GetBuildByName calls GetBuildByNameFunc.
+func (mock *OpenChoreoClientMock) GetBuildByName(ctx context.Context, ouID string, buildName string) (*models.BuildDetailsResponse, error) {
+	if mock.GetBuildByNameFunc == nil {
+		panic("OpenChoreoClientMock.GetBuildByNameFunc: method is nil but OpenChoreoClient.GetBuildByName was just called")
+	}
+	callInfo := struct {
+		Ctx       context.Context
+		OuID      string
+		BuildName string
+	}{
+		Ctx:       ctx,
+		OuID:      ouID,
+		BuildName: buildName,
+	}
+	mock.lockGetBuildByName.Lock()
+	mock.calls.GetBuildByName = append(mock.calls.GetBuildByName, callInfo)
+	mock.lockGetBuildByName.Unlock()
+	return mock.GetBuildByNameFunc(ctx, ouID, buildName)
+}
+
+// GetBuildByNameCalls gets all the calls that were made to GetBuildByName.
+// Check the length with:
+//
+//	len(mockedOpenChoreoClient.GetBuildByNameCalls())
+func (mock *OpenChoreoClientMock) GetBuildByNameCalls() []struct {
+	Ctx       context.Context
+	OuID      string
+	BuildName string
+} {
+	var calls []struct {
+		Ctx       context.Context
+		OuID      string
+		BuildName string
+	}
+	mock.lockGetBuildByName.RLock()
+	calls = mock.calls.GetBuildByName
+	mock.lockGetBuildByName.RUnlock()
 	return calls
 }
 

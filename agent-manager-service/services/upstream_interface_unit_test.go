@@ -89,9 +89,9 @@ func TestEffectiveUpstreamInterface(t *testing.T) {
 	// the published image may never have served.
 	t.Run("falls back to the build its kind version was published from", func(t *testing.T) {
 		oc := &clientmocks.OpenChoreoClientMock{
-			GetBuildFunc: func(_ context.Context, _, projectName, componentName, buildName string) (*models.BuildDetailsResponse, error) {
-				assert.Equal(t, "source-proj", projectName)
-				assert.Equal(t, "source-agent", componentName)
+			// By name alone: AddVersion accepts a build from an agent other than
+			// the kind's, so a lookup scoped to the kind's agent would miss it.
+			GetBuildByNameFunc: func(_ context.Context, _, buildName string) (*models.BuildDetailsResponse, error) {
 				assert.Equal(t, "build-1", buildName)
 				return &models.BuildDetailsResponse{
 					InputInterface: &models.InputInterface{Port: 8084, BasePath: "/tasks"},
@@ -118,7 +118,7 @@ func TestEffectiveUpstreamInterface(t *testing.T) {
 	// request whenever two versions serve different interfaces.
 	t.Run("uses the interface of the version being deployed, not the agent's label", func(t *testing.T) {
 		oc := &clientmocks.OpenChoreoClientMock{
-			GetBuildFunc: func(_ context.Context, _, _, _, buildName string) (*models.BuildDetailsResponse, error) {
+			GetBuildByNameFunc: func(_ context.Context, _, buildName string) (*models.BuildDetailsResponse, error) {
 				require.Equal(t, "build-2", buildName, "must read the deployed version's build")
 				return &models.BuildDetailsResponse{
 					InputInterface: &models.InputInterface{Port: 9090, BasePath: "/v2"},
@@ -142,7 +142,7 @@ func TestEffectiveUpstreamInterface(t *testing.T) {
 	// deleted) leaves the label as the only thing left to go on.
 	t.Run("an unpublished image falls back to the agent's recorded version", func(t *testing.T) {
 		oc := &clientmocks.OpenChoreoClientMock{
-			GetBuildFunc: func(_ context.Context, _, _, _, buildName string) (*models.BuildDetailsResponse, error) {
+			GetBuildByNameFunc: func(_ context.Context, _, buildName string) (*models.BuildDetailsResponse, error) {
 				require.Equal(t, "build-1", buildName)
 				return &models.BuildDetailsResponse{
 					InputInterface: &models.InputInterface{Port: 8084, BasePath: "/tasks"},
@@ -164,7 +164,7 @@ func TestEffectiveUpstreamInterface(t *testing.T) {
 
 	t.Run("a build that can no longer be read leaves the defaults", func(t *testing.T) {
 		oc := &clientmocks.OpenChoreoClientMock{
-			GetBuildFunc: func(_ context.Context, _, _, _, _ string) (*models.BuildDetailsResponse, error) {
+			GetBuildByNameFunc: func(_ context.Context, _, _ string) (*models.BuildDetailsResponse, error) {
 				return nil, errors.New("workflow run not found")
 			},
 		}
@@ -193,7 +193,7 @@ func TestEffectiveUpstreamInterface(t *testing.T) {
 
 		assert.Equal(t, defaultPort, port)
 		assert.Equal(t, defaultBasePath, basePath)
-		require.Empty(t, oc.GetBuildCalls())
+		require.Empty(t, oc.GetBuildByNameCalls())
 	})
 
 	// A source-built agent must never trigger a kind lookup.
@@ -205,6 +205,6 @@ func TestEffectiveUpstreamInterface(t *testing.T) {
 
 		assert.Equal(t, defaultPort, port)
 		assert.Equal(t, defaultBasePath, basePath)
-		require.Empty(t, oc.GetBuildCalls())
+		require.Empty(t, oc.GetBuildByNameCalls())
 	})
 }
