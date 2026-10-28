@@ -37,6 +37,8 @@ type fakeObservabilityClient struct {
 	// GetMetrics issues alongside the grid query.
 	tipMetricsResp *observer.ResourceMetricsTimeSeries
 	tipMetricsErr  error
+	// nilMetrics makes every QueryMetrics call return (nil, nil).
+	nilMetrics bool
 
 	lastLogsReq observer.LogsQueryRequest
 
@@ -70,6 +72,9 @@ func (f *fakeObservabilityClient) QueryLogs(_ context.Context, req observer.Logs
 func (f *fakeObservabilityClient) QueryMetrics(_ context.Context, req observer.MetricsQueryRequest) (*observer.ResourceMetricsTimeSeries, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.nilMetrics {
+		return nil, nil
+	}
 	if req.StartTime.Equal(req.EndTime) {
 		f.tipMetricsReqs = append(f.tipMetricsReqs, req)
 		if f.tipMetricsErr != nil {
@@ -546,5 +551,23 @@ func TestGetMetrics_TipQueryErrorIsReturned(t *testing.T) {
 	})
 	if !errors.Is(err, tipErr) {
 		t.Errorf("err = %v, want %v", err, tipErr)
+	}
+}
+
+// (j) An upstream that answers without a series or an error yields empty
+// series rather than a nil dereference when the grid and tip are merged.
+func TestGetMetrics_NilUpstreamResponseYieldsEmptySeries(t *testing.T) {
+	end := time.Date(2026, 10, 27, 12, 29, 0, 0, time.UTC)
+	c := NewObservabilityController(&fakeObservabilityClient{nilMetrics: true})
+
+	resp, err := c.GetMetrics(context.Background(), MetricsQueryParams{
+		StartTime: end.Add(-24 * time.Hour),
+		EndTime:   end,
+	})
+	if err != nil {
+		t.Fatalf("GetMetrics returned error: %v", err)
+	}
+	if resp.CpuUsage == nil || len(resp.CpuUsage) != 0 {
+		t.Errorf("CpuUsage = %#v, want non-nil empty slice", resp.CpuUsage)
 	}
 }

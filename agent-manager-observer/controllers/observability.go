@@ -203,8 +203,10 @@ type metricsResult struct {
 	err  error
 }
 
+// queryMetrics never returns a nil series without an error, so callers can
+// read the grid and tip responses unguarded.
 func (c *ObservabilityController) queryMetrics(ctx context.Context, params MetricsQueryParams, start, end time.Time, step time.Duration) (*observer.ResourceMetricsTimeSeries, error) {
-	return c.observerClient.QueryMetrics(ctx, observer.MetricsQueryRequest{
+	resp, err := c.observerClient.QueryMetrics(ctx, observer.MetricsQueryRequest{
 		StartTime: start,
 		EndTime:   end,
 		Metric:    "resource",
@@ -216,6 +218,10 @@ func (c *ObservabilityController) queryMetrics(ctx context.Context, params Metri
 			Environment: &params.Environment,
 		},
 	})
+	if err == nil && resp == nil {
+		resp = &observer.ResourceMetricsTimeSeries{}
+	}
+	return resp, err
 }
 
 func toMetricsResponse(resp *observer.ResourceMetricsTimeSeries) *MetricsResponse {
