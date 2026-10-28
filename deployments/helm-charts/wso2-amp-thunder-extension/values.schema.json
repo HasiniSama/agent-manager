@@ -125,7 +125,7 @@
                   "type": "string"
                 },
                 "tag": {
-                  "default": "1.0.1",
+                  "default": "1.0.2",
                   "description": "Container image tag. Define either tag or digest, not both.",
                   "title": "tag",
                   "type": "string"
