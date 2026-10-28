@@ -91,11 +91,11 @@ const (
 	ActionAgentConfigUpdate Action = "agent-config:update"
 	ActionAgentConfigDelete Action = "agent-config:delete"
 
-	// A2A agent card source (external A2A agents).
+	// A2A agent card source (external agents).
 	ActionAgentSetCardSource    Action = "agent:set-card-source"
 	ActionAgentRemoveCardSource Action = "agent:remove-card-source"
 
-	// A2A proxy (external A2A agents published through the ingress gateway).
+	// A2A proxy (external agents published through the ingress gateway).
 	ActionAgentSetA2AProxy    Action = "agent:set-a2a-proxy"
 	ActionAgentRemoveA2AProxy Action = "agent:remove-a2a-proxy"
 

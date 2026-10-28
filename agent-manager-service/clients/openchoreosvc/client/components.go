@@ -174,10 +174,7 @@ func buildExternalAgentComponentRequestBody(namespaceName, projectName string, r
 	labels := map[string]string{
 		string(LabelKeyProvisioningType): string(req.ProvisioningType),
 	}
-	// Only the subtype AMS acts on is labelled; other external subtypes stay free-form.
-	if utils.IsA2AAgentSubType(req.AgentType.SubType) {
-		labels[string(LabelKeyAgentSubType)] = req.AgentType.SubType
-	}
+	// No subtype is labelled: an external agent serves A2A in whichever environments it registers a card URL for.
 	addUserLabels(labels, req.Labels)
 	componentTypeKind := gen.ComponentSpecComponentTypeKindComponentType
 	componentType, err := getOpenChoreoComponentType(string(req.ProvisioningType), req.AgentType.Type)

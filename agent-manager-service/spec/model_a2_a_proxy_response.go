@@ -17,7 +17,7 @@ import (
 // checks if the A2AProxyResponse type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &A2AProxyResponse{}
 
-// A2AProxyResponse How an external A2A agent is published through the environment's ingress gateway.
+// A2AProxyResponse How an external agent is published through the environment's ingress gateway.
 type A2AProxyResponse struct {
 	// The gateway publication's state.
 	Status string `json:"status"`

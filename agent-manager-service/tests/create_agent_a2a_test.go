@@ -113,8 +113,8 @@ func TestCreateA2AAgentOmitsAPIConfigurationTrait(t *testing.T) {
 		"the instrumentation traits are still attached")
 }
 
-// An external A2A agent gets no gateway route trait and no publication; only its subtype is recorded.
-func TestCreateExternalA2AAgentGetsNoGatewayPublication(t *testing.T) {
+// An external agent sent with the old a2a-agent subtype is created like any external agent: no trait, no publication.
+func TestCreateExternalAgentWithA2ASubTypeGetsNoGatewayPublication(t *testing.T) {
 	authMiddleware := jwtassertion.NewMockMiddleware(t)
 	openChoreoClient := apitestutils.CreateMockOpenChoreoClient()
 	testClients := wiring.TestClients{
@@ -140,7 +140,6 @@ func TestCreateExternalA2AAgentGetsNoGatewayPublication(t *testing.T) {
 
 	created := openChoreoClient.CreateComponentCalls()
 	require.Len(t, created, 1)
-	require.Equal(t, "a2a-agent", created[0].Req.AgentType.SubType)
 	require.Empty(t, openChoreoClient.AttachTraitsCalls(), "no a2a-gateway-route or any other trait")
 
 	var queued int64

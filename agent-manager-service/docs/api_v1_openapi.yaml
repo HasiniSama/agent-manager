@@ -8017,8 +8017,8 @@ paths:
     put:
       tags:
         - Agent Card
-      summary: Register an external A2A agent's card URL for an environment
-      description: Sets the URL the platform fetches the card from and queues a fetch. External A2A agents only.
+      summary: Register an external agent's card URL for an environment
+      description: Sets the URL the platform fetches the card from and queues a fetch. External agents only.
       operationId: setAgentCardSource
       requestBody:
         required: true
@@ -8031,7 +8031,7 @@ paths:
           description: Source saved and fetch queued
         "400":
           description: >-
-            Invalid URL, the agent is not an external A2A agent, or the environment routes the agent
+            Invalid URL, the agent is not an external agent, or the environment routes the agent
             through its gateway and the gateway cannot fetch the card from this URL (it must end in
             /.well-known/agent-card.json with no query)
           content:
@@ -8067,14 +8067,14 @@ paths:
     delete:
       tags:
         - Agent Card
-      summary: Remove an external A2A agent's card source for an environment
-      description: Deletes the stored card and its source. Idempotent. External A2A agents only.
+      summary: Remove an external agent's card source for an environment
+      description: Deletes the stored card and its source. Idempotent. External agents only.
       operationId: deleteAgentCardSource
       responses:
         "204":
           description: Source removed
         "400":
-          description: The agent is not an external A2A agent
+          description: The agent is not an external agent
           content:
             application/json:
               schema:
@@ -8109,7 +8109,7 @@ paths:
     get:
       tags:
         - A2A Proxy
-      summary: Get how an external A2A agent is routed through the environment's gateway
+      summary: Get how an external agent is routed through the environment's gateway
       description: >-
         Reports the gateway publication of a proxied environment. The upstream secret is never
         returned; a non-empty upstreamAuthHeader means one is stored.
@@ -8142,11 +8142,11 @@ paths:
     put:
       tags:
         - A2A Proxy
-      summary: Route an external A2A agent through the environment's gateway, or change its upstream auth
+      summary: Route an external agent through the environment's gateway, or change its upstream auth
       description: >-
         Publishes the agent through the environment's ingress gateway, with routes derived from its
         registered card URL. Omitting upstreamAuth clears the stored credential; upstreamAuth without
-        a value keeps the stored secret; a value replaces it. External A2A agents only.
+        a value keeps the stored secret; a value replaces it. External agents only.
       operationId: setA2AProxy
       requestBody:
         required: true
@@ -8159,7 +8159,7 @@ paths:
           description: Saved; the gateway publication is queued
         "400":
           description: >-
-            Invalid upstream auth, the agent is not an external A2A agent, or the gateway cannot fetch
+            Invalid upstream auth, the agent is not an external agent, or the gateway cannot fetch
             the card from the registered URL (it must end in /.well-known/agent-card.json with no query)
           content:
             application/json:
@@ -8198,7 +8198,7 @@ paths:
     delete:
       tags:
         - A2A Proxy
-      summary: Stop routing an external A2A agent through the environment's gateway
+      summary: Stop routing an external agent through the environment's gateway
       description: >-
         Removes the agent from the gateway, discards the stored upstream secret and fetches the
         agent's own card again. The environment's API keys are kept.
@@ -8207,7 +8207,7 @@ paths:
         "204":
           description: The environment is direct again
         "400":
-          description: The agent is not an external A2A agent
+          description: The agent is not an external agent
           content:
             application/json:
               schema:
@@ -8248,7 +8248,7 @@ paths:
         "202":
           description: Republish queued; the card is fetched again once it lands
         "400":
-          description: The agent is not an external A2A agent
+          description: The agent is not an external agent
           content:
             application/json:
               schema:
@@ -12275,7 +12275,7 @@ components:
           description: Public http(s) URL of the agent card, normally ending in /.well-known/agent-card.json.
     A2AProxyResponse:
       type: object
-      description: How an external A2A agent is published through the environment's ingress gateway.
+      description: How an external agent is published through the environment's ingress gateway.
       required:
         - status
         - lastError

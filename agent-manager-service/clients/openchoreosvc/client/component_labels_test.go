@@ -369,32 +369,20 @@ func TestConvertComponentFromTyped_KindVersion(t *testing.T) {
 	})
 }
 
-// An external A2A agent's subtype is what the card API and M3 search filter on.
-func TestBuildExternalAgentComponentRequestBody_A2ASubTypeLabel(t *testing.T) {
-	req := CreateComponentRequest{
-		Name:             "agent-1",
-		DisplayName:      "Agent 1",
-		ProvisioningType: "external",
-		AgentType:        AgentTypeConfig{Type: "external-agent-api", SubType: "a2a-agent"},
+// An external agent is A2A by its registered card URLs, so no subtype is ever labelled.
+func TestBuildExternalAgentComponentRequestBody_SubTypeNeverLabelled(t *testing.T) {
+	for _, subType := range []string{"a2a-agent", "custom-api", "My Custom Agent!"} {
+		req := CreateComponentRequest{
+			Name:             "agent-1",
+			DisplayName:      "Agent 1",
+			ProvisioningType: "external",
+			AgentType:        AgentTypeConfig{Type: "external-agent-api", SubType: subType},
+		}
+		body, err := buildExternalAgentComponentRequestBody("ns", "proj", req)
+		require.NoError(t, err)
+		_, has := (*body.Metadata.Labels)[string(LabelKeyAgentSubType)]
+		assert.False(t, has, subType)
 	}
-	body, err := buildExternalAgentComponentRequestBody("ns", "proj", req)
-	require.NoError(t, err)
-	labels := *body.Metadata.Labels
-	assert.Equal(t, "a2a-agent", labels[string(LabelKeyAgentSubType)])
-}
-
-// Other external subtypes stay free-form and are never validated as label values.
-func TestBuildExternalAgentComponentRequestBody_FreeFormSubTypeNotLabelled(t *testing.T) {
-	req := CreateComponentRequest{
-		Name:             "agent-1",
-		DisplayName:      "Agent 1",
-		ProvisioningType: "external",
-		AgentType:        AgentTypeConfig{Type: "external-agent-api", SubType: "My Custom Agent!"},
-	}
-	body, err := buildExternalAgentComponentRequestBody("ns", "proj", req)
-	require.NoError(t, err)
-	_, has := (*body.Metadata.Labels)[string(LabelKeyAgentSubType)]
-	assert.False(t, has)
 }
 
 func TestConvertComponentFromTyped_ExternalA2ASubType(t *testing.T) {
