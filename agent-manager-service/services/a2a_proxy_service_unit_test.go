@@ -570,10 +570,10 @@ func TestRefreshA2AProxyQueuesAPublicationNeverARequeue(t *testing.T) {
 func TestSetA2AProxyRejectsAnInternalAgent(t *testing.T) {
 	cases := map[string]*models.AgentResponse{
 		"an internal A2A agent": {
-			Name: "weather", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "a2a-agent"},
+			Name: "weather", ProjectName: "checkout", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "a2a-agent"},
 		},
 		"an internal non-A2A agent": {
-			Name: "weather", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "chat-api"},
+			Name: "weather", ProjectName: "checkout", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "chat-api"},
 		},
 	}
 	for name, agent := range cases {
@@ -868,4 +868,16 @@ func TestA2AProxyWritesRefuseWhenTheAuditSinkFails(t *testing.T) {
 			h.assertNothingWritten(t)
 		})
 	}
+}
+
+func TestSetA2AProxyRejectsAnAgentFromAnotherProject(t *testing.T) {
+	h := newProxyHarness(t)
+	h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) {
+		agent := externalAgent()
+		agent.ProjectName = "other"
+		return agent, nil
+	}
+	err := h.svc.SetA2AProxy(tierGrantedCtx(t), "org-1", "checkout", "weather", "dev", nil)
+	assert.ErrorIs(t, err, utils.ErrAgentNotFound)
+	assert.Zero(t, h.transactions)
 }

@@ -204,10 +204,14 @@ func (s *a2aAgentCardService) dropIfAgentGone(
 }
 
 // getAgent reads the agent from OpenChoreo, reporting a miss as utils.ErrAgentNotFound.
+// The lookup is by name across the organization, so an agent in another project is a miss too.
 func getAgent(ctx context.Context, oc client.OpenChoreoClient, ouID, projectName, agentName string) (*models.AgentResponse, error) {
 	agent, err := oc.GetComponent(ctx, ouID, projectName, agentName)
 	if err != nil {
 		return nil, translateAgentError(err)
+	}
+	if agent.ProjectName != projectName {
+		return nil, utils.ErrAgentNotFound
 	}
 	return agent, nil
 }

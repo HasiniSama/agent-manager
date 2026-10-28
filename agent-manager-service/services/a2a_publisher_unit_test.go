@@ -110,7 +110,7 @@ func testA2AKey() a2aPublicationKey {
 // externalAgent carries no subtype: an external agent serves A2A wherever it registers a card URL.
 func externalAgent() *models.AgentResponse {
 	return &models.AgentResponse{
-		UUID: "agent-uuid", Name: "weather",
+		UUID: "agent-uuid", Name: "weather", ProjectName: "checkout",
 		Provisioning: models.Provisioning{Type: "external"},
 		Type:         models.AgentType{Type: "external-agent-api"},
 	}
