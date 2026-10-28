@@ -1,0 +1,43 @@
+name: Preflight for k3d-based jobs
+description: >
+  Checks that the runner can host the k3d cluster: enough CPU, memory and
+  disk, Docker is reachable, and the required ports are free.
+
+inputs:
+  required-ports:
+    description: >
+      Space-separated host ports that must be unbound. Defaults to the set
+      deployments/quick-start/k3d-config.yaml publishes.
+    required: false
+    default: '6550 8080 8443 10082 11080 11082 11085 19080 19443'
+  min-cpus:
+    description: vCPU count below which the job warns (does not fail).
+    required: false
+    default: '4'
+  min-memory-gb:
+    description: Total RAM in GiB below which the job warns (does not fail).
+    required: false
+    default: '16'
+  min-disk-gb:
+    description: Free space on / in GiB below which the job warns (does not fail).
+    required: false
+    default: '60'
+  enforce-capacity:
+    description: >
+      When 'true', a host below any min-* threshold fails the step instead of
+      warning. Use it for self-hosted runners.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Preflight checks
+      shell: bash
+      env:
+        REQUIRED_PORTS: ${{ inputs.required-ports }}
+        MIN_CPUS: ${{ inputs.min-cpus }}
+        MIN_MEM_GB: ${{ inputs.min-memory-gb }}
+        MIN_DISK_GB: ${{ inputs.min-disk-gb }}
+        ENFORCE_CAPACITY: ${{ inputs.enforce-capacity }}
+      run: bash "${GITHUB_ACTION_PATH}/preflight.sh"
