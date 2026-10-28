@@ -133,6 +133,8 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
           password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+          # Log out at the end of the job.
+          logout: true
 
       - name: Build and push ${{ matrix.image.name }}
         uses: ./.github/actions/build-docker-image
