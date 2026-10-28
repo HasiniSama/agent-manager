@@ -10,8 +10,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git gettext && \
     rm -rf /var/lib/apt/lists/*
 
-# corepack activates the pnpm version pinned in package.json's packageManager field
-RUN corepack enable
+# Node 25+ no longer bundles corepack. It then activates the pnpm version pinned in
+# package.json's packageManager field.
+RUN npm install -g corepack@0.36.0 && corepack enable
 
 WORKDIR /app
 
