@@ -205,7 +205,10 @@ jobs:
       # Log out after pushing the charts.
       - name: Log out of the Helm registry
         if: always()
-        run: helm registry logout "${HELM_REGISTRY#oci://}" || true
+        run: |
+          helm registry logout "${HELM_REGISTRY#oci://}" || true
+          # Newer Helm saves the login under the host only.
+          helm registry logout "$(echo "${HELM_REGISTRY#oci://}" | cut -d/ -f1)" || true
 
   e2e:
     name: E2E
@@ -223,6 +226,11 @@ jobs:
       # Start from a clean state.
       - name: Clean leftover state from a previous run
         uses: ./.github/actions/teardown-self-hosted
+        with:
+          registry: ${{ env.REGISTRY }}
+
+      - name: Clear saved Helm registry logins
+        run: rm -f ~/.config/helm/registry/config.json
 
       - name: Setup Go
         uses: ./.github/actions/setup-go
