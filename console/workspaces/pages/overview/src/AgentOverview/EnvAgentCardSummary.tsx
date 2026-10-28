@@ -21,7 +21,7 @@ import { ExternalLink, Plus } from "@wso2/oxygen-ui-icons-react";
 import { Link } from "react-router-dom";
 import { useGetAgent, useGetAgentCard } from "@agent-management-platform/api-client";
 import { OverviewSectionCard, validateEndpointUrl } from "@agent-management-platform/shared-component";
-import { buildConfigureTabHref, TextInput } from "@agent-management-platform/views";
+import { buildConfigureTabHref, servesA2A, TextInput } from "@agent-management-platform/views";
 
 interface EnvAgentCardSummaryProps {
   orgId: string;
@@ -120,7 +120,7 @@ export function EnvAgentCardSummary({
   orgId, projectId, agentId, envId, external,
 }: EnvAgentCardSummaryProps) {
   const { data: agent } = useGetAgent({ orgName: orgId, projName: projectId, agentName: agentId });
-  const isA2A = agent?.agentType?.subType === "a2a-agent";
+  const isA2A = servesA2A(agent);
   const { data, isLoading, isError } = useGetAgentCard(
     { orgName: orgId, projName: projectId, agentName: agentId, envId },
     { enabled: isA2A },

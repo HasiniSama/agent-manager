@@ -165,7 +165,7 @@ export function A2AAgentCardPanel({
       {noSource && (
         <Typography variant="body2" color="text.secondary">
           {external
-            ? "Register this agent's card URL for the environment to fetch its card."
+            ? "No agent card URL is registered for this environment. Register one to serve this agent over A2A."
             : "No agent card has been fetched for this environment yet."}
         </Typography>
       )}

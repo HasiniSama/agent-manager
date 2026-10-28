@@ -61,7 +61,7 @@ const renderPage = () =>
 
 const externalA2A = () =>
   vi.mocked(useGetAgent).mockReturnValue({
-    data: { provisioning: { type: "external" }, agentType: { type: "external-agent-api", subType: "a2a-agent" } },
+    data: { provisioning: { type: "external" }, agentType: { type: "external-agent-api" } },
     isLoading: false,
   } as unknown as ReturnType<typeof useGetAgent>);
 

@@ -18,7 +18,7 @@
 import React, { useMemo, useState } from "react";
 import { generatePath, useParams, useSearchParams } from "react-router-dom";
 import { Box, Card, Divider, Tab, Tabs } from "@wso2/oxygen-ui";
-import { PageLayout } from "@agent-management-platform/views";
+import { PageLayout, servesA2A } from "@agent-management-platform/views";
 import {
   BUILD_IN_PROGRESS_REASON,
   useHasBuildInProgress,
@@ -177,7 +177,7 @@ export const ConfigureComponent: React.FC = () => {
     projName: projectId,
     agentName: agentId,
   });
-  const isA2AAgent = agent?.agentType?.subType === "a2a-agent";
+  const isA2AAgent = servesA2A(agent);
   const isExternal = agent?.provisioning?.type === "external";
   const visibleTabKeys = CONFIGURE_TAB_KEYS.filter(
     (key) => key !== "a2a" || isA2AAgent,

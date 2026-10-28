@@ -63,6 +63,15 @@ describe("EnvAgentCardSummary", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("offers to register a card URL on an external agent created without a subtype", () => {
+    vi.mocked(useGetAgent).mockReturnValue({
+      data: { agentType: { type: "external-agent-api" }, provisioning: { type: "external" } },
+    } as unknown as ReturnType<typeof useGetAgent>);
+    mockCard(notFound);
+    renderSummary(true);
+    expect(screen.getByRole("link", { name: /Register agent card URL/ })).toHaveAttribute("href", CONFIGURE_HREF);
+  });
+
   it("shows only the provider, interfaces and skill names of a fetched card", () => {
     mockCard({
       data: {
