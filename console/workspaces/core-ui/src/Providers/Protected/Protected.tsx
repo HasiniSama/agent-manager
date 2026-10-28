@@ -70,10 +70,11 @@ export const Protected = ({ children }: { children: React.ReactNode }) => {
     // When authenticated without an org in the URL, land the user inside their
     // first organization. We only resolve this once organizations have loaded;
     // the project list query stays skipped (empty orgName) until then.
-    const targetOrg = organizations?.organizations?.[0]?.name;
-    const targetOrgId = orgRouteId(organizations?.organizations?.[0]);
+    const firstOrg = organizations?.organizations?.[0];
+    const targetOrg = firstOrg?.name; // namespace, for API calls
+    const targetOrgId = orgRouteId(firstOrg); // handle (or name), for URLs
     const shouldResolveLanding =
-        isAuthenticated && !isLoadingOrganizations && !!targetOrg && !orgId;
+        isAuthenticated && !isLoadingOrganizations && !!targetOrg && !!targetOrgId && !orgId;
     const { data: projectList, isLoading: isLoadingProjects } = useListProjects({
         orgName: shouldResolveLanding ? targetOrg : "",
     });

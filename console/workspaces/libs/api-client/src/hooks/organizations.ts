@@ -38,9 +38,11 @@ import { useApiMutation, useApiQuery } from "./react-query-notifications";
  * The `:orgId` the console puts in its URLs for an org: the org handle when the
  * backend reports one, else the name (the OpenChoreo namespace), as before.
  */
-export function orgRouteId(
-  org: Pick<OrganizationListItem, 'name' | 'handle'> | undefined,
-): string | undefined {
+type OrgRouteSource = Pick<OrganizationListItem, 'name' | 'handle'>;
+
+export function orgRouteId(org: OrgRouteSource): string;
+export function orgRouteId(org: OrgRouteSource | undefined): string | undefined;
+export function orgRouteId(org: OrgRouteSource | undefined): string | undefined {
   return org?.handle || org?.name;
 }
 
