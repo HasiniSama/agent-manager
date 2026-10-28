@@ -118,9 +118,11 @@ if [ ! -f "$RUNTIMECLASS_MANIFEST" ]; then
         fi
         RUNTIMECLASS_MANIFEST="$(mktemp)"
         trap 'rm -f "$RUNTIMECLASS_MANIFEST"' EXIT
-        echo "📥 Downloading the RuntimeClass manifest from ${RUNTIMECLASS_URL}..."
+        # Print the URL without any user:password@ a mirror URL may carry.
+        RUNTIMECLASS_URL_SHOWN="$(printf '%s' "$RUNTIMECLASS_URL" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1#')"
+        echo "📥 Downloading the RuntimeClass manifest from ${RUNTIMECLASS_URL_SHOWN}..."
         if ! curl -fsSL --retry 3 "$RUNTIMECLASS_URL" -o "$RUNTIMECLASS_MANIFEST"; then
-            echo "❌ Cannot download kata-runtimeclass.yaml from ${RUNTIMECLASS_URL}."
+            echo "❌ Cannot download kata-runtimeclass.yaml from ${RUNTIMECLASS_URL_SHOWN}."
             echo "   Set AMP_MANIFEST_BASE_URL to a reachable copy of deployments/k8s, or run the script"
             echo "   from a checkout of the release so it finds ../k8s/kata-runtimeclass.yaml."
             exit 1
