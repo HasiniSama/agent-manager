@@ -30,7 +30,7 @@ spec:
   # description: <optional description>
   agentType:
     type: agent-api             # external provisioning: external-agent-api
-    subType: chat-api           # or: custom-api, a2a-agent (see inputInterface below)
+    subType: chat-api           # internal only: or custom-api, a2a-agent (see inputInterface below)
   provisioning:
     type: internal              # or: external (then omit repository, build,
                                 #     inputInterface and configurations)

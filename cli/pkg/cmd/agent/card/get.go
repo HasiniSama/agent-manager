@@ -119,10 +119,11 @@ func runGet(ctx context.Context, o *GetOptions) error {
 			cmdutil.FirstNonNil(agentResp.JSON404, agentResp.JSON500)))
 	}
 	agent := agentResp.JSON200
-	if agent.AgentType.SubType == nil || *agent.AgentType.SubType != a2aSubType {
+	// An external agent is A2A wherever it registers a card URL; an internal one only when built as a2a-agent.
+	external := agent.Provisioning.Type == amsvc.ProvisioningTypeExternal
+	if !external && (agent.AgentType.SubType == nil || *agent.AgentType.SubType != a2aSubType) {
 		return render.Error(o.IO, o.Scope, clierr.Newf(clierr.Validation, "agent %q is not an A2A agent", o.AgentName))
 	}
-	external := agent.Provisioning.Type == amsvc.ProvisioningTypeExternal
 
 	var status CardStatus
 	if external {
