@@ -51,6 +51,10 @@ func (r *mcpRenameRecorder) ocClient() *clientmocks.OpenChoreoClientMock {
 	r.bindingRemoved = map[string][]string{}
 	r.bindingVars = map[string][]client.EnvVar{}
 	return &clientmocks.OpenChoreoClientMock{
+		GetComponentBaseEnvVarsFunc: func(context.Context, string, string) ([]client.EnvVar, error) { return []client.EnvVar{}, nil },
+		GetComponentConfigurationsFunc: func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+			return []models.EnvVars{}, nil
+		},
 		RemoveComponentEnvironmentVariablesFunc: func(_ context.Context, _, _, _ string, keys []string) error {
 			r.writes++
 			r.removedFromComponent = keys
@@ -270,6 +274,10 @@ func TestApplyRenamedMCPEnvVars_PartialFailureRestoresLiveValues(t *testing.T) {
 			writeErr := errors.New("stage update failed")
 			failed := false
 			oc := &clientmocks.OpenChoreoClientMock{
+				GetComponentBaseEnvVarsFunc: func(context.Context, string, string) ([]client.EnvVar, error) { return []client.EnvVar{}, nil },
+				GetComponentConfigurationsFunc: func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+					return []models.EnvVars{}, nil
+				},
 				RemoveComponentEnvironmentVariablesFunc: func(ctx context.Context, _, _, _ string, keys []string) error {
 					require.NoError(t, ctx.Err(), "rollback must survive request cancellation")
 					component = merge(component, keys, nil)
@@ -624,6 +632,9 @@ func TestApplyRenamedMCPEnvVars_PartialRenameFailureKeepsUnchangedComponentKey(t
 	}
 	failure := errors.New("binding failed")
 	svc.ocClient = &clientmocks.OpenChoreoClientMock{
+		GetComponentConfigurationsFunc: func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+			return []models.EnvVars{}, nil
+		},
 		GetComponentBaseEnvVarsFunc: func(context.Context, string, string) ([]client.EnvVar, error) {
 			return []client.EnvVar{values["GITHUB_MCP_URL"], values["GITHUB_MCP_API_KEY"]}, nil
 		},
@@ -652,4 +663,123 @@ func TestApplyRenamedMCPEnvVars_PartialRenameFailureKeepsUnchangedComponentKey(t
 	require.Equal(t, "https://saved/mcp", values["GITHUB_MCP_URL"].Value)
 	require.NotNil(t, values["GITHUB_MCP_API_KEY"].ValueFrom)
 	require.Equal(t, "saved-secret", values["GITHUB_MCP_API_KEY"].ValueFrom.SecretKeyRef.Name)
+}
+
+func TestApplyRenamedMCPEnvVars_ProxyLookupFailureWritesNothing(t *testing.T) {
+	f := newMCPURLTestFixture()
+	f.mapping.MCPProxy.Endpoints = nil
+	svc := f.newService()
+	rec := &mcpRenameRecorder{}
+	svc.ocClient = rec.ocClient()
+	svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
+		return []models.EnvAgentMCPMapping{f.mapping}, nil
+	}}
+	failure := errors.New("proxy database unavailable")
+	svc.mcpProxyRepo = &repomocks.MCPProxyRepositoryMock{GetByUUIDFunc: func(context.Context, string, string) (*models.MCPProxy, error) { return nil, failure }}
+	id := uuid.New()
+	_, err := svc.applyRenamedMCPEnvVars(context.Background(), &models.AgentConfiguration{UUID: id, Name: "github"}, f.ouID, "default", "agent", map[string]string{f.envUUID.String(): "default"}, "default", renameVarRows(id, f.envUUID, "secret"), renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+	require.ErrorIs(t, err, failure)
+	require.Zero(t, rec.writes)
+}
+
+func TestApplyRenamedMCPEnvVars_RollbackPreservesExistingTargets(t *testing.T) {
+	for _, failAt := range []string{"component remove", "binding write"} {
+		t.Run(failAt, func(t *testing.T) {
+			f := newMCPURLTestFixture()
+			svc := f.newService()
+			rec := &mcpRenameRecorder{}
+			oc := rec.ocClient()
+			originalComponent := client.EnvVar{Key: "GITHUB_URL", Value: "https://component-existing"}
+			originalBinding := client.EnvVar{Key: "GITHUB_URL", ValueFrom: &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: "existing-secret", Key: "custom-property"}}}
+			component := map[string]client.EnvVar{originalComponent.Key: originalComponent}
+			binding := map[string]client.EnvVar{originalBinding.Key: originalBinding}
+			oc.GetComponentBaseEnvVarsFunc = func(context.Context, string, string) ([]client.EnvVar, error) {
+				return []client.EnvVar{originalComponent}, nil
+			}
+			oc.GetComponentConfigurationsFunc = func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+				return []models.EnvVars{{Key: "GITHUB_URL", IsSensitive: true, SecretRef: "existing-secret", SecretKey: "custom-property"}}, nil
+			}
+			failure := errors.New("live write failed")
+			failed := false
+			oc.RemoveComponentEnvironmentVariablesFunc = func(_ context.Context, _, _, _ string, keys []string) error {
+				if failAt == "component remove" && !failed {
+					failed = true
+					return failure
+				}
+				for _, k := range keys {
+					delete(component, k)
+				}
+				return nil
+			}
+			oc.UpdateComponentEnvVarsFunc = func(_ context.Context, _, _, _ string, vars []client.EnvVar) error {
+				for _, v := range vars {
+					component[v.Key] = v
+				}
+				return nil
+			}
+			oc.ReplaceReleaseBindingEnvVarsFunc = func(_ context.Context, _, _, _, _ string, keys []string, vars []client.EnvVar) error {
+				for _, k := range keys {
+					delete(binding, k)
+				}
+				for _, v := range vars {
+					binding[v.Key] = v
+				}
+				if failAt == "binding write" && !failed {
+					failed = true
+					return failure
+				}
+				return nil
+			}
+			svc.ocClient = oc
+			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
+				return []models.EnvAgentMCPMapping{f.mapping}, nil
+			}}
+			id := uuid.New()
+			_, err := svc.applyRenamedMCPEnvVars(context.Background(), &models.AgentConfiguration{UUID: id, Name: "github"}, f.ouID, "default", "agent", map[string]string{f.envUUID.String(): "default"}, "default", renameVarRows(id, f.envUUID, "secret"), renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+			require.ErrorIs(t, err, failure)
+			require.True(t, failed)
+			require.Equal(t, originalComponent, component[originalComponent.Key])
+			require.Equal(t, originalBinding, binding[originalBinding.Key])
+			// Pre-existing targets must not prevent retrying the same rename.
+			_, err = svc.applyRenamedMCPEnvVars(context.Background(), &models.AgentConfiguration{UUID: id, Name: "github"}, f.ouID, "default", "agent", map[string]string{f.envUUID.String(): "default"}, "default", renameVarRows(id, f.envUUID, "secret"), renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+			require.NoError(t, err)
+			require.Equal(t, "https://gw.example.com/proxy-ctx/mcp", component["GITHUB_URL"].Value)
+			require.Equal(t, component["GITHUB_URL"], binding["GITHUB_URL"])
+		})
+	}
+}
+
+func TestApplyRenamedMCPEnvVars_SnapshotFailureWritesNothing(t *testing.T) {
+	for _, location := range []string{"component", "binding"} {
+		t.Run(location, func(t *testing.T) {
+			f := newMCPURLTestFixture()
+			svc := f.newService()
+			rec := &mcpRenameRecorder{}
+			oc := rec.ocClient()
+			failure := errors.New("snapshot unavailable")
+			if location == "component" {
+				oc.GetComponentBaseEnvVarsFunc = func(context.Context, string, string) ([]client.EnvVar, error) { return nil, failure }
+			} else {
+				oc.GetComponentConfigurationsFunc = func(context.Context, string, string, string, string) ([]models.EnvVars, error) { return nil, failure }
+			}
+			svc.ocClient = oc
+			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
+				return []models.EnvAgentMCPMapping{f.mapping}, nil
+			}}
+			id := uuid.New()
+			_, err := svc.applyRenamedMCPEnvVars(context.Background(), &models.AgentConfiguration{UUID: id, Name: "github"}, f.ouID, "default", "agent", map[string]string{f.envUUID.String(): "default"}, "default", renameVarRows(id, f.envUUID, "secret"), renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
+			require.ErrorIs(t, err, failure)
+			require.Zero(t, rec.writes)
+		})
+	}
+}
+
+func TestRenamedMCPProxyURL_ConfirmedMissingEndpointIsEmpty(t *testing.T) {
+	f := newMCPURLTestFixture()
+	f.mapping.MCPProxy.Endpoints = nil
+	svc := f.newService()
+	svc.mcpProxyRepo = &repomocks.MCPProxyRepositoryMock{GetByUUIDFunc: func(context.Context, string, string) (*models.MCPProxy, error) { return f.mapping.MCPProxy, nil }}
+	url, err := svc.renamedMCPProxyURL(context.Background(), &models.AgentConfiguration{Name: "github"}, &f.mapping, "default", f.ouID)
+	require.NoError(t, err)
+	require.Empty(t, url)
 }

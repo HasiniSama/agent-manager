@@ -2974,14 +2974,49 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			break
 		}
 	}
+	// Save existing rename targets before any writes. They may belong to another
+	// setting, or remain from an earlier failed compensation; rollback must restore
+	// their values instead of deleting them, and a retry must remain possible.
+	baseVars, err := s.ocClient.GetComponentBaseEnvVars(ctx, ouID, agentName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Component MCP variables: %w", err)
+	}
+	ownedNames := make(map[string]bool, len(vars))
+	for _, v := range vars {
+		ownedNames[v.VariableName] = true
+	}
+	targetNames := make(map[string]bool, len(newTemplates))
+	for _, template := range newTemplates {
+		if !ownedNames[template.Name] {
+			targetNames[template.Name] = true
+		}
+	}
+	for i := range rewrites {
+		rw := &rewrites[i]
+		liveVars, err := s.ocClient.GetComponentConfigurations(ctx, ouID, projectName, agentName, rw.envName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to snapshot MCP rename targets in environment %s: %w", rw.envName, err)
+		}
+		for _, v := range liveVars {
+			if !targetNames[v.Key] {
+				continue
+			}
+			saved := client.EnvVar{Key: v.Key, Value: v.Value}
+			if v.IsSensitive && v.SecretRef != "" {
+				saved.ValueFrom = &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: v.SecretRef, Key: v.SecretKey}}
+			}
+			rw.oldVars = append(rw.oldVars, saved)
+		}
+	}
 	var componentOldVars, componentNewVars []client.EnvVar
 	if firstRewrite >= 0 {
-		componentOldVars, componentNewVars = rewrites[firstRewrite].oldVars, rewrites[firstRewrite].envVars
-	} else {
-		baseVars, err := s.ocClient.GetComponentBaseEnvVars(ctx, ouID, agentName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read Component MCP variables: %w", err)
+		componentNewVars = rewrites[firstRewrite].envVars
+		for _, v := range rewrites[firstRewrite].oldVars {
+			if !targetNames[v.Key] {
+				componentOldVars = append(componentOldVars, v)
+			}
 		}
+	} else {
 		renames := make(map[string]string)
 		for _, v := range vars {
 			for _, template := range newTemplates {
@@ -2996,6 +3031,11 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 				v.Key = name
 				componentNewVars = append(componentNewVars, v)
 			}
+		}
+	}
+	for _, v := range baseVars {
+		if targetNames[v.Key] {
+			componentOldVars = append(componentOldVars, v)
 		}
 	}
 	componentNewKeys := make([]string, 0, len(componentNewVars))
@@ -3093,7 +3133,16 @@ func (s *agentConfigurationService) renamedMCPProxyURL(
 	if mapping.MCPProxy == nil {
 		return "", fmt.Errorf("MCP proxy not found for mapping in environment %s", envName)
 	}
-	sharedArtifactUUID := s.resolveMCPMappingAPIID(ctx, mapping, ouID)
+	proxy := mapping.MCPProxy
+	sharedArtifactUUID := mcpProxyEnvArtifactUUID(proxy, mapping.EnvironmentUUID.String())
+	if sharedArtifactUUID == uuid.Nil && s.mcpProxyRepo != nil && mapping.MCPProxyUUID != uuid.Nil {
+		var err error
+		proxy, err = s.mcpProxyRepo.GetByUUID(ctx, mapping.MCPProxyUUID.String(), ouID)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve MCP proxy for environment %s: %w", envName, err)
+		}
+		sharedArtifactUUID = mcpProxyEnvArtifactUUID(proxy, mapping.EnvironmentUUID.String())
+	}
 	if sharedArtifactUUID == uuid.Nil {
 		s.logger.Warn("MCP proxy has no endpoint bound to environment; renamed URL env var will be empty", "environment", envName)
 		return "", nil
@@ -3103,7 +3152,7 @@ func (s *agentConfigurationService) renamedMCPProxyURL(
 		return "", fmt.Errorf("failed to resolve MCP gateway for environment %s: %w", envName, err)
 	}
 	handle := mcpMappingProxyName(config.ProjectName, config.AgentID, config.Name, envName)
-	deployedProxy := buildAgentMCPConfigProxy(config, mapping, mapping.MCPProxy, envName, ouID, handle)
+	deployedProxy := buildAgentMCPConfigProxy(config, mapping, proxy, envName, ouID, handle)
 	return buildMCPProxyURL(gateway, deployedProxy.Configuration), nil
 }
 
