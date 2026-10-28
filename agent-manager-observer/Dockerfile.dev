@@ -27,7 +27,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 FROM public.ecr.aws/docker/library/alpine:3.24
 
 # Install runtime dependencies for HTTPS and timezone support
-RUN apk add --no-cache 'ca-certificates>=20261020' tzdata
+RUN apk add --no-cache 'ca-certificates>=20261020' 'ca-certificates-bundle>=20261020' tzdata
 
 # Create a non-root user/group (UID:GID = 1000:1000)
 RUN addgroup -g 1000 app && adduser -D -u 1000 -G app app
