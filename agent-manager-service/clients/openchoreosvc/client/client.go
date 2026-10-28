@@ -127,6 +127,7 @@ type OpenChoreoClient interface {
 	// first environment's ReleaseBinding, so they don't change a binding that already exists.
 	TriggerBuild(ctx context.Context, ouID, projectName, componentName, commitID, workflowRunName string, runEnvVars []EnvVar) (*models.BuildResponse, error)
 	GetBuild(ctx context.Context, ouID, projectName, componentName, buildName string) (*models.BuildDetailsResponse, error)
+	GetBuildByName(ctx context.Context, ouID, buildName string) (*models.BuildDetailsResponse, error)
 	ListBuilds(ctx context.Context, ouID, projectName, componentName string) ([]*models.BuildResponse, error)
 	UpdateComponentBuildParameters(ctx context.Context, ouID, projectName, componentName string, req UpdateComponentBuildParametersRequest) error
 

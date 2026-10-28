@@ -750,7 +750,9 @@ func (s *agentManagerService) kindBuildInputInterface(ctx context.Context, ouID 
 	if kindVersion == nil || kindVersion.Kind == nil || kindVersion.BuildName == "" {
 		return nil
 	}
-	build, err := s.ocClient.GetBuild(ctx, ouID, kindVersion.Kind.ProjectName, kindVersion.Kind.AgentName, kindVersion.BuildName)
+	// A version's build may come from an agent other than the kind's own (see
+	// AddVersion), and the version records only the build name.
+	build, err := s.ocClient.GetBuildByName(ctx, ouID, kindVersion.BuildName)
 	if err != nil {
 		s.logger.Warn("Failed to read a kind version's build while resolving its input interface",
 			"kindName", kindVersion.Kind.Name, "kindVersion", kindVersion.Version,
