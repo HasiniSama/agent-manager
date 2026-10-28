@@ -537,20 +537,28 @@ func TestGetMetrics_SkipsTipWhenEndIsOnGrid(t *testing.T) {
 	}
 }
 
-// (i) A failed tip query fails the request rather than silently dropping the
-// newest data.
-func TestGetMetrics_TipQueryErrorIsReturned(t *testing.T) {
+// (i) A failed tip query still returns the grid, which holds nearly all the
+// data; only the newest point is lost.
+func TestGetMetrics_TipQueryErrorReturnsGrid(t *testing.T) {
 	end := time.Date(2026, 10, 27, 12, 29, 0, 0, time.UTC)
-	tipErr := errors.New("upstream unavailable")
-	fake := &fakeObservabilityClient{tipMetricsErr: tipErr}
+	gridPoint := time.Date(2026, 10, 27, 12, 20, 0, 0, time.UTC)
+	fake := &fakeObservabilityClient{
+		metricsResp: &observer.ResourceMetricsTimeSeries{
+			MemoryUsage: &[]observer.MetricsTimeSeriesItem{{Timestamp: timePtr(gridPoint), Value: floatPtr(1)}},
+		},
+		tipMetricsErr: errors.New("upstream unavailable"),
+	}
 	c := NewObservabilityController(fake)
 
-	_, err := c.GetMetrics(context.Background(), MetricsQueryParams{
+	resp, err := c.GetMetrics(context.Background(), MetricsQueryParams{
 		StartTime: end.Add(-24 * time.Hour),
 		EndTime:   end,
 	})
-	if !errors.Is(err, tipErr) {
-		t.Errorf("err = %v, want %v", err, tipErr)
+	if err != nil {
+		t.Fatalf("GetMetrics returned error: %v", err)
+	}
+	if len(resp.Memory) != 1 || resp.Memory[0].Value != 1 {
+		t.Errorf("Memory = %+v, want the grid point alone", resp.Memory)
 	}
 }
 

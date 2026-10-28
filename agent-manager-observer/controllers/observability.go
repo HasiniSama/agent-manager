@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wso2/agent-manager/agent-manager-observer/middleware/logger"
 	"github.com/wso2/agent-manager/agent-manager-observer/observer"
 )
 
@@ -189,11 +190,13 @@ func (c *ObservabilityController) GetMetrics(ctx context.Context, params Metrics
 		return nil, err
 	}
 	if tipCh != nil {
-		tip := <-tipCh
-		if tip.err != nil {
-			return nil, tip.err
+		// The tip only adds freshness, so losing it must not cost the grid.
+		if tip := <-tipCh; tip.err != nil {
+			logger.GetLogger(ctx).Warn("metrics tip query failed; returning the grid alone",
+				"organization", params.Organization, "project", params.Project, "agent", params.Agent, "err", tip.err)
+		} else {
+			grid = appendTip(grid, tip.resp)
 		}
-		grid = appendTip(grid, tip.resp)
 	}
 	return toMetricsResponse(grid), nil
 }
