@@ -105,7 +105,27 @@ if [ ! -f "$RUNTIMECLASS_MANIFEST" ]; then
         echo "     AMP_RELEASE_REF=amp/v1.0.0 KATA_NODES=\"<node>\" bash install-kata.sh"
         exit 1
     fi
-    RUNTIMECLASS_MANIFEST="${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF}/deployments/k8s}/kata-runtimeclass.yaml"
+    RUNTIMECLASS_URL="${AMP_MANIFEST_BASE_URL:-https://raw.githubusercontent.com/wso2/agent-manager/${AMP_RELEASE_REF}/deployments/k8s}/kata-runtimeclass.yaml"
+    if [ -f "$RUNTIMECLASS_URL" ]; then
+        # AMP_MANIFEST_BASE_URL can also name a local copy of deployments/k8s.
+        RUNTIMECLASS_MANIFEST="$RUNTIMECLASS_URL"
+    else
+        # Download it now and apply the downloaded copy later, so an unreachable URL stops
+        # the script before any node is labeled or an older Kata is removed.
+        if ! command -v curl &>/dev/null; then
+            echo "❌ curl not found. It downloads kata-runtimeclass.yaml when this script runs on its own."
+            exit 1
+        fi
+        RUNTIMECLASS_MANIFEST="$(mktemp)"
+        trap 'rm -f "$RUNTIMECLASS_MANIFEST"' EXIT
+        echo "📥 Downloading the RuntimeClass manifest from ${RUNTIMECLASS_URL}..."
+        if ! curl -fsSL --retry 3 "$RUNTIMECLASS_URL" -o "$RUNTIMECLASS_MANIFEST"; then
+            echo "❌ Cannot download kata-runtimeclass.yaml from ${RUNTIMECLASS_URL}."
+            echo "   Set AMP_MANIFEST_BASE_URL to a reachable copy of deployments/k8s, or run the script"
+            echo "   from a checkout of the release so it finds ../k8s/kata-runtimeclass.yaml."
+            exit 1
+        fi
+    fi
 fi
 
 # --- 1. Label the target node(s) so kata-deploy + Kata pods land only there ---
