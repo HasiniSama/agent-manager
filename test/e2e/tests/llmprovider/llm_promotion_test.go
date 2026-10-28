@@ -62,7 +62,7 @@ var _ = Describe("LLM provider configured across environments:", Label("llm-prov
 		invokeReq json.RawMessage
 	)
 
-	BeforeAll(func() {
+	BeforeAll(func(ctx SpecContext) {
 		Expect(Cfg.OpenAIAPIKey).NotTo(BeEmpty(), "OPENAI_API_KEY must be set")
 
 		suffix = uuid.New().String()[:8]
@@ -70,7 +70,7 @@ var _ = Describe("LLM provider configured across environments:", Label("llm-prov
 		providerID = framework.E2ELLMProviderPrefix + suffix
 
 		By("Provisioning two-env infrastructure (environment, pipeline, project)")
-		projectName, secondEnv = testsetup.EnsurePromotableInfra(Client, Cfg)
+		projectName, secondEnv = testsetup.EnsurePromotableInfra(ctx, Client, Cfg)
 		GinkgoWriter.Printf("Two-env infra ready: project=%s secondEnv=%s\n", projectName, secondEnv)
 
 		createReq = framework.NewITHelpdeskAgentRequest(
