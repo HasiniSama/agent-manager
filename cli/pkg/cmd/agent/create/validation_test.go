@@ -542,6 +542,8 @@ func TestValidateCardFlags(t *testing.T) {
 		{"internal", func(o *CreateOptions) { o.Provisioning = "internal"; o.CardURL = "https://a.example/c" }, reqMsg},
 		{"external", func(o *CreateOptions) { o.CardURL = "https://a.example/c" }, ""},
 		{"proxy without card-url", func(o *CreateOptions) { o.CardProxy = true }, "--proxy requires --card-url"},
+		{"non-http scheme", func(o *CreateOptions) { o.CardURL = "javascript:alert(1)" }, "--card-url must be an http(s) URL"},
+		{"no host", func(o *CreateOptions) { o.CardURL = "https:///card.json" }, "--card-url must be an http(s) URL"},
 		{"proxy bad path", func(o *CreateOptions) {
 			o.CardURL = "https://a.example/card.json"
 			o.CardProxy = true

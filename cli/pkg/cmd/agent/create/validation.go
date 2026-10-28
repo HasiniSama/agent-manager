@@ -112,8 +112,13 @@ func validateCardFlags(opts *CreateOptions) []string {
 	if opts.CardProxy && opts.CardURL == "" {
 		v = append(v, "--proxy requires --card-url")
 	}
-	if opts.CardProxy && opts.CardURL != "" {
-		if err := a2acard.CheckProxyableURL("--card-url", opts.CardURL); err != nil {
+	// The agent is created before its card URL is saved, so a URL the server would refuse is caught here.
+	check := a2acard.CheckCardURL
+	if opts.CardProxy {
+		check = a2acard.CheckProxyableURL
+	}
+	if opts.CardURL != "" {
+		if err := check("--card-url", opts.CardURL); err != nil {
 			v = append(v, err.Error())
 		}
 	}
