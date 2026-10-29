@@ -230,18 +230,18 @@ func (r *LLMProviderRepo) Update(ctx context.Context, p *models.LLMProvider, pro
 			return gorm.ErrRecordNotFound
 		}
 
-		// The displayed name (list + detail responses) is read from the artifacts
-		// table, not from configuration.name — keep them in sync or a rename is a
-		// silent no-op from the user's perspective.
-		if p.Configuration.Name != "" {
-			slog.Info("LLMProviderRepo.Update: updating artifact name", "handle", providerID)
+		// Reads and the uniqueness constraint use the artifact's name and version.
+		// Update both together so the constraint checks the requested pair.
+		if p.Configuration.Name != "" || p.Configuration.Version != "" {
+			slog.Info("LLMProviderRepo.Update: updating artifact name and version", "handle", providerID)
 			if err := r.artifactRepo.Update(tx.WithContext(ctx), &models.Artifact{
-				UUID: parsedUUID,
-				OUID: orgUUID,
-				Name: p.Configuration.Name,
+				UUID:    parsedUUID,
+				OUID:    orgUUID,
+				Name:    p.Configuration.Name,
+				Version: p.Configuration.Version,
 			}); err != nil {
-				slog.Error("LLMProviderRepo.Update: failed to update artifact name", "handle", providerID, "error", err)
-				return fmt.Errorf("failed to update artifact name: %w", err)
+				slog.Error("LLMProviderRepo.Update: failed to update artifact name and version", "handle", providerID, "error", err)
+				return fmt.Errorf("failed to update artifact name and version: %w", err)
 			}
 		}
 

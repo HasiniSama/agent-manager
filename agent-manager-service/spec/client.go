@@ -742,6 +742,13 @@ func formatErrorMessage(status string, v interface{}) string {
 		if field != (reflect.Value{}) {
 			str = fmt.Sprintf("%s (%s)", str, field.Interface())
 		}
+
+		// Agent Manager errors use Message rather than RFC 7807 Title/Detail.
+		if str == "" {
+			if field := metaValue.FieldByName("Message"); field.IsValid() && field.Kind() == reflect.String {
+				str = field.String()
+			}
+		}
 	}
 
 	return strings.TrimSpace(fmt.Sprintf("%s %s", status, str))
