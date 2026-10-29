@@ -2932,7 +2932,9 @@ type mcpRenameRecovery struct {
 // (the lock is what serialises concurrent renames), so it must not inherit the OpenChoreo
 // client's per-attempt timeout times its retries times the number of environments. On
 // expiry the rename compensates attempted writes with a separate bounded deadline, then
-// rolls back the DB and releases the lock. A var so tests can shorten it.
+// rolls back the DB and releases the lock. Apply and compensation each have this
+// budget: together they may hold the agent lock and DB connection for about 60s
+// at the default 30s timeout, excluding database work. A var so tests can shorten it.
 var mcpRenameApplyTimeout = mcpRefreshTimeout
 
 // applyRenamedMCPEnvVars rewrites the agent's live MCP env vars under their new names. Every
@@ -3019,9 +3021,9 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			break
 		}
 	}
-	// Save existing rename targets before any writes. They may belong to another
-	// setting, or remain from an earlier failed compensation; rollback must restore
-	// their values instead of deleting them, and a retry must remain possible.
+	// Reject occupied rename targets before any writes. Only names already owned
+	// by this configuration may be reused; agent-defined variables must survive
+	// both a rename and subsequent configuration deletion.
 	baseVars, err := s.ocClient.GetComponentBaseEnvVars(ctx, ouID, agentName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Component MCP variables: %w", err)
@@ -3036,6 +3038,11 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			targetNames[template.Name] = true
 		}
 	}
+	for _, v := range baseVars {
+		if targetNames[v.Key] {
+			return nil, fmt.Errorf("%w: environment variable %q already exists on the agent", utils.ErrInvalidInput, v.Key)
+		}
+	}
 	targets := &mcpRenameRecovery{undo: nil, componentTargets: nil, bindingTargets: make(map[string][]client.EnvVar), protectedNames: nil}
 	for i := range rewrites {
 		rw := &rewrites[i]
@@ -3047,12 +3054,7 @@ func (s *agentConfigurationService) applyRenamedMCPEnvVars(
 			if !targetNames[v.Key] {
 				continue
 			}
-			saved := client.EnvVar{Key: v.Key, Value: v.Value}
-			if v.IsSensitive && v.SecretRef != "" {
-				saved.ValueFrom = &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: v.SecretRef, Key: v.SecretKey}}
-			}
-			rw.oldVars = append(rw.oldVars, saved)
-			targets.bindingTargets[rw.envName] = append(targets.bindingTargets[rw.envName], saved)
+			return nil, fmt.Errorf("%w: environment variable %q already exists in environment %s", utils.ErrInvalidInput, v.Key, rw.envName)
 		}
 	}
 	var componentOldVars, componentNewVars []client.EnvVar

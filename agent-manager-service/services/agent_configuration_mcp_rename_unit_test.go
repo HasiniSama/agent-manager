@@ -463,7 +463,7 @@ func (tx *mcpRenameCommitTx) Rollback() error {
 }
 
 func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues(t *testing.T) {
-	for _, scenario := range []string{"commit succeeds", "commit fails", "later rename commits", "later rename preserves targets", "other config claims target", "commit response lost"} {
+	for _, scenario := range []string{"commit succeeds", "commit fails", "later rename commits", "other config claims target", "commit response lost"} {
 		failCommit := scenario != "commit succeeds"
 		t.Run(scenario, func(t *testing.T) {
 			f := newMCPURLTestFixture()
@@ -476,7 +476,7 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 					rec.componentVars = mergeRenameTestVars(rec.componentVars, nil, winner)
 					rec.bindingVars["default"] = mergeRenameTestVars(rec.bindingVars["default"], nil, winner)
 				}
-				if scenario == "later rename commits" || scenario == "later rename preserves targets" {
+				if scenario == "later rename commits" {
 					// Model the next request winning the row lock after this transaction ends.
 					next := []client.EnvVar{{Key: "NEXT_URL", Value: "https://next/mcp"}, {Key: "NEXT_API_KEY", ValueFrom: &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: "next-secret", Key: "api-key"}}}}
 					rec.componentVars = append(rec.componentVars, next...)
@@ -526,14 +526,6 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				rec.bindingVars[env] = mergeRenameTestVars(rec.bindingVars[env], keys, values)
 				return nil
 			}
-			if scenario == "later rename preserves targets" {
-				oc.GetComponentBaseEnvVarsFunc = func(context.Context, string, string) ([]client.EnvVar, error) {
-					return []client.EnvVar{{Key: "GITHUB_URL", Value: "saved-component"}}, nil
-				}
-				oc.GetComponentConfigurationsFunc = func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
-					return []models.EnvVars{{Key: "GITHUB_URL", IsSensitive: true, SecretRef: "saved-binding", SecretKey: "original-property"}}, nil
-				}
-			}
 
 			lockReads := 0
 			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{
@@ -545,7 +537,7 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				ListByConfigForUpdateFunc: func(context.Context, *gorm.DB, uuid.UUID) ([]models.AgentEnvConfigVariable, error) {
 					lockReads++
 					rows := renameVarRows(configUUID, f.envUUID, "default-secrets")
-					if lockReads > 1 && ((scenario == "later rename commits" || scenario == "later rename preserves targets") || scenario == "commit response lost") {
+					if lockReads > 1 && ((scenario == "later rename commits") || scenario == "commit response lost") {
 						for i := range rows {
 							if scenario == "commit response lost" {
 								rows[i].VariableName = map[string]string{"url": "GITHUB_URL", "apikey": "GITHUB_API_KEY"}[rows[i].VariableKey]
@@ -577,23 +569,18 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 					{Key: "url", Name: "GITHUB_URL"}, {Key: "apikey", Name: "GITHUB_API_KEY"},
 				})
 			require.Equal(t, 1, tx.commits)
-			if (scenario == "later rename commits" || scenario == "later rename preserves targets") || scenario == "commit response lost" {
+			if (scenario == "later rename commits") || scenario == "commit response lost" {
 				require.ErrorIs(t, err, tx.commitErr)
 				require.Equal(t, 2, lockReads)
 				expected := "GITHUB_URL"
-				if scenario == "later rename commits" || scenario == "later rename preserves targets" {
+				if scenario == "later rename commits" {
 					expected = "NEXT_URL"
 				}
 				require.Equal(t, expected, rec.componentVars[0].Key, "recovery must not restore stale names after revision advances")
 				expectedCount := 2
-				if scenario == "later rename preserves targets" {
-					expectedCount++
-					require.Equal(t, "saved-component", envVarByKey(t, rec.componentVars, "GITHUB_URL").Value)
-					require.Equal(t, client.SecretKeyRef{Name: "saved-binding", Key: "original-property"}, *envVarByKey(t, rec.bindingVars["default"], "GITHUB_URL").ValueFrom.SecretKeyRef)
-				}
 				require.Len(t, rec.componentVars, expectedCount, "only unsaved orphaned keys must be removed")
 				require.Len(t, rec.bindingVars["default"], expectedCount)
-				if scenario == "later rename commits" || scenario == "later rename preserves targets" {
+				if scenario == "later rename commits" {
 					require.Equal(t, "https://next/mcp", envVarByKey(t, rec.componentVars, "NEXT_URL").Value)
 					require.Equal(t, "next-secret", envVarByKey(t, rec.componentVars, "NEXT_API_KEY").ValueFrom.SecretKeyRef.Name)
 				}
@@ -615,9 +602,7 @@ func TestUpdateMCPConfigEnvironmentVariableNames_CommitFailureRestoresLiveValues
 				require.Zero(t, tx.rollbacks)
 				require.ElementsMatch(t, []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"}, rec.bindingRemoved["default"])
 			}
-			if scenario != "later rename preserves targets" {
-				require.ElementsMatch(t, rec.componentVars, rec.bindingVars["default"])
-			}
+			require.ElementsMatch(t, rec.componentVars, rec.bindingVars["default"])
 		})
 	}
 }
@@ -730,53 +715,21 @@ func TestApplyRenamedMCPEnvVars_ProxyLookupFailureWritesNothing(t *testing.T) {
 	require.Zero(t, rec.writes)
 }
 
-func TestApplyRenamedMCPEnvVars_RollbackPreservesExistingTargets(t *testing.T) {
-	for _, failAt := range []string{"component remove", "binding write"} {
-		t.Run(failAt, func(t *testing.T) {
+func TestApplyRenamedMCPEnvVars_RejectsExistingTargets(t *testing.T) {
+	for _, location := range []string{"component", "binding"} {
+		t.Run(location, func(t *testing.T) {
 			f := newMCPURLTestFixture()
 			svc := f.newService()
 			rec := &mcpRenameRecorder{}
 			oc := rec.ocClient()
-			originalComponent := client.EnvVar{Key: "GITHUB_URL", Value: "https://component-existing"}
-			originalBinding := client.EnvVar{Key: "GITHUB_URL", ValueFrom: &client.EnvVarValueFrom{SecretKeyRef: &client.SecretKeyRef{Name: "existing-secret", Key: "custom-property"}}}
-			component := map[string]client.EnvVar{originalComponent.Key: originalComponent}
-			binding := map[string]client.EnvVar{originalBinding.Key: originalBinding}
-			oc.GetComponentBaseEnvVarsFunc = func(context.Context, string, string) ([]client.EnvVar, error) {
-				return []client.EnvVar{originalComponent}, nil
-			}
-			oc.GetComponentConfigurationsFunc = func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
-				return []models.EnvVars{{Key: "GITHUB_URL", IsSensitive: true, SecretRef: "existing-secret", SecretKey: "custom-property"}}, nil
-			}
-			failure := errors.New("live write failed")
-			failed := false
-			oc.RemoveComponentEnvironmentVariablesFunc = func(_ context.Context, _, _, _ string, keys []string) error {
-				if failAt == "component remove" && !failed {
-					failed = true
-					return failure
+			if location == "component" {
+				oc.GetComponentBaseEnvVarsFunc = func(context.Context, string, string) ([]client.EnvVar, error) {
+					return []client.EnvVar{{Key: "GITHUB_URL", Value: "agent-value"}}, nil
 				}
-				for _, k := range keys {
-					delete(component, k)
+			} else {
+				oc.GetComponentConfigurationsFunc = func(context.Context, string, string, string, string) ([]models.EnvVars, error) {
+					return []models.EnvVars{{Key: "GITHUB_URL", IsSensitive: true, SecretRef: "agent-secret", SecretKey: "custom-property"}}, nil
 				}
-				return nil
-			}
-			oc.UpdateComponentEnvVarsFunc = func(_ context.Context, _, _, _ string, vars []client.EnvVar) error {
-				for _, v := range vars {
-					component[v.Key] = v
-				}
-				return nil
-			}
-			oc.ReplaceReleaseBindingEnvVarsFunc = func(_ context.Context, _, _, _, _ string, keys []string, vars []client.EnvVar) error {
-				for _, k := range keys {
-					delete(binding, k)
-				}
-				for _, v := range vars {
-					binding[v.Key] = v
-				}
-				if failAt == "binding write" && !failed {
-					failed = true
-					return failure
-				}
-				return nil
 			}
 			svc.ocClient = oc
 			svc.envMCPMappingRepo = &repomocks.EnvAgentMCPMappingRepositoryMock{ListByConfigFunc: func(context.Context, uuid.UUID) ([]models.EnvAgentMCPMapping, error) {
@@ -784,15 +737,8 @@ func TestApplyRenamedMCPEnvVars_RollbackPreservesExistingTargets(t *testing.T) {
 			}}
 			id := uuid.New()
 			_, err := svc.applyRenamedMCPEnvVars(context.Background(), &models.AgentConfiguration{UUID: id, Name: "github"}, f.ouID, "default", "agent", map[string]string{f.envUUID.String(): "default"}, "default", renameVarRows(id, f.envUUID, "secret"), renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
-			require.ErrorIs(t, err, failure)
-			require.True(t, failed)
-			require.Equal(t, originalComponent, component[originalComponent.Key])
-			require.Equal(t, originalBinding, binding[originalBinding.Key])
-			// Pre-existing targets must not prevent retrying the same rename.
-			_, err = svc.applyRenamedMCPEnvVars(context.Background(), &models.AgentConfiguration{UUID: id, Name: "github"}, f.ouID, "default", "agent", map[string]string{f.envUUID.String(): "default"}, "default", renameVarRows(id, f.envUUID, "secret"), renamedTemplates(), []string{"GITHUB_MCP_URL", "GITHUB_MCP_API_KEY"})
-			require.NoError(t, err)
-			require.Equal(t, "https://gw.example.com/proxy-ctx/mcp", component["GITHUB_URL"].Value)
-			require.Equal(t, component["GITHUB_URL"], binding["GITHUB_URL"])
+			require.ErrorIs(t, err, utils.ErrInvalidInput)
+			require.Zero(t, rec.writes, "collision validation must precede all live writes")
 		})
 	}
 }
