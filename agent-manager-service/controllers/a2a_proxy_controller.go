@@ -28,7 +28,7 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
-// A2AProxyController routes an external A2A agent through an environment's gateway.
+// A2AProxyController routes an external agent through an environment's gateway.
 type A2AProxyController interface {
 	GetA2AProxy(w http.ResponseWriter, r *http.Request)
 	SetA2AProxy(w http.ResponseWriter, r *http.Request)

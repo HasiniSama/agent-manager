@@ -118,16 +118,13 @@ func (p *A2APublisher) Enqueue(
 	return nil
 }
 
-// ShouldPublish is true for every internal A2A agent, and for an external one only while its environment is
+// ShouldPublish is true for every internal A2A agent, and for an external agent only while its environment is
 // proxied; a non-nil tx reads the proxy row inside the caller's transaction.
 func (p *A2APublisher) ShouldPublish(
 	ctx context.Context, tx *gorm.DB, agent *models.AgentResponse, ouID, projectName string, envUUID uuid.UUID,
 ) (bool, error) {
-	if !utils.IsA2AAgentSubType(agent.Type.SubType) {
-		return false, nil
-	}
 	if !isExternalProvisioned(agent) {
-		return true, nil
+		return utils.IsA2AAgentSubType(agent.Type.SubType), nil
 	}
 	_, err := p.proxies(tx).GetByEnvUUID(ctx, ouID, projectName, agent.Name, envUUID)
 	switch {

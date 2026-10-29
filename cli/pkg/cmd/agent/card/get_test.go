@@ -35,7 +35,13 @@ func a2aAgent(provisioning amsvc.ProvisioningType) amsvc.AgentResponse {
 	}
 }
 
-func a2aExternal() amsvc.AgentResponse { return a2aAgent(amsvc.ProvisioningTypeExternal) }
+// a2aExternal carries no subtype: an external agent is A2A wherever it registers a card URL.
+func a2aExternal() amsvc.AgentResponse {
+	return amsvc.AgentResponse{
+		AgentType:    amsvc.AgentType{Type: "external-agent-api"},
+		Provisioning: amsvc.Provisioning{Type: amsvc.ProvisioningTypeExternal},
+	}
+}
 func a2aInternal() amsvc.AgentResponse { return a2aAgent(amsvc.ProvisioningTypeInternal) }
 
 func getOpts(client func(context.Context) (*amsvc.ClientWithResponses, error), jsonMode bool) (*GetOptions, func() string) {
@@ -235,7 +241,10 @@ func Test_runGet_noCardJSON(t *testing.T) {
 
 func Test_runGet_notA2A(t *testing.T) {
 	sub := "chat-api"
-	agent := amsvc.AgentResponse{AgentType: amsvc.AgentType{Type: "agent-api", SubType: &sub}}
+	agent := amsvc.AgentResponse{
+		AgentType:    amsvc.AgentType{Type: "agent-api", SubType: &sub},
+		Provisioning: amsvc.Provisioning{Type: amsvc.ProvisioningTypeInternal},
+	}
 	o, _ := getOpts(newClient(t, map[string]route{agentKey: okJSON(agent)}), true)
 	err := runGet(context.Background(), o)
 	if err == nil {

@@ -107,12 +107,20 @@ func testA2AKey() a2aPublicationKey {
 	}
 }
 
-func externalA2AAgent() *models.AgentResponse {
+// externalAgent carries no subtype: an external agent serves A2A wherever it registers a card URL.
+func externalAgent() *models.AgentResponse {
 	return &models.AgentResponse{
-		UUID: "agent-uuid", Name: "weather",
+		UUID: "agent-uuid", Name: "weather", ProjectName: "checkout",
 		Provisioning: models.Provisioning{Type: "external"},
-		Type:         models.AgentType{Type: "external-agent-api", SubType: "a2a-agent"},
+		Type:         models.AgentType{Type: "external-agent-api"},
 	}
+}
+
+// legacyExternalA2AAgent was created when A2A was an external subtype; its label no longer matters.
+func legacyExternalA2AAgent() *models.AgentResponse {
+	agent := externalAgent()
+	agent.Type.SubType = "a2a-agent"
+	return agent
 }
 
 func TestA2APublisherShouldPublish(t *testing.T) {
@@ -130,13 +138,19 @@ func TestA2APublisherShouldPublish(t *testing.T) {
 		{name: "an internal A2A agent always, without a proxy lookup", agent: internal, want: true},
 		{name: "a non-A2A agent never", agent: chat, want: false},
 		{
-			name: "an external A2A agent in a direct environment", agent: externalA2AAgent(),
+			name: "an external agent in a direct environment", agent: externalAgent(),
 			lookup: func(context.Context, string, string, string, uuid.UUID) (*models.A2AProxy, error) {
 				return nil, repositories.ErrA2AProxyNotFound
 			},
 		},
 		{
-			name: "an external A2A agent in a proxied environment", agent: externalA2AAgent(), want: true,
+			name: "an external agent in a proxied environment", agent: externalAgent(), want: true,
+			lookup: func(context.Context, string, string, string, uuid.UUID) (*models.A2AProxy, error) {
+				return &models.A2AProxy{}, nil
+			},
+		},
+		{
+			name: "a legacy external A2A agent in a proxied environment", agent: legacyExternalA2AAgent(), want: true,
 			lookup: func(context.Context, string, string, string, uuid.UUID) (*models.A2AProxy, error) {
 				return &models.A2AProxy{}, nil
 			},
@@ -158,7 +172,7 @@ func TestA2APublisherShouldPublishDoesNotMaskALookupFailure(t *testing.T) {
 	m.proxies.GetByEnvUUIDFunc = func(context.Context, string, string, string, uuid.UUID) (*models.A2AProxy, error) {
 		return nil, assert.AnError
 	}
-	_, err := m.publisher().ShouldPublish(context.Background(), nil, externalA2AAgent(), "org-1", "checkout", uuid.New())
+	_, err := m.publisher().ShouldPublish(context.Background(), nil, externalAgent(), "org-1", "checkout", uuid.New())
 	assert.ErrorIs(t, err, assert.AnError)
 }
 
@@ -192,7 +206,7 @@ func TestA2APublisherSaveAndRepublishDoesNotSaveWhenTheLockFails(t *testing.T) {
 	m.proxies.LockAgentEnvFunc = func(context.Context, string, string, string, uuid.UUID) error { return assert.AnError }
 	saved := false
 
-	err := m.publisher().SaveAndRepublish(context.Background(), externalA2AAgent(), testA2AKey(), uuid.New(), func(*gorm.DB) error {
+	err := m.publisher().SaveAndRepublish(context.Background(), externalAgent(), testA2AKey(), uuid.New(), func(*gorm.DB) error {
 		saved = true
 		return nil
 	})

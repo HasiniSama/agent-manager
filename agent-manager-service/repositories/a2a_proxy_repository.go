@@ -32,7 +32,7 @@ import (
 // ErrA2AProxyNotFound means the agent's environment is not proxied.
 var ErrA2AProxyNotFound = errors.New("a2a proxy not found")
 
-// A2AProxyRepository stores which external A2A agent environments are published through their gateway.
+// A2AProxyRepository stores which external agent environments are published through their gateway.
 //
 //go:generate moq -rm -fmt goimports -skip-ensure -pkg repomocks -out repomocks/a2a_proxy_repository_mock.go . A2AProxyRepository:A2AProxyRepositoryMock
 type A2AProxyRepository interface {

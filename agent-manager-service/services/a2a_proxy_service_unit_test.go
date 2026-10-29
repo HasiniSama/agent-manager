@@ -104,7 +104,7 @@ func newProxyHarness(t *testing.T) *proxyHarness {
 	}
 	h.oc = &clientmocks.OpenChoreoClientMock{
 		GetComponentFunc: func(context.Context, string, string, string) (*models.AgentResponse, error) {
-			return externalA2AAgent(), nil
+			return externalAgent(), nil
 		},
 		GetEnvironmentFunc: func(_ context.Context, _, name string) (*models.EnvironmentResponse, error) {
 			return &models.EnvironmentResponse{UUID: proxyTestEnvUUID, Name: name}, nil
@@ -425,7 +425,7 @@ func TestA2AProxyTransitionsLockBeforeReadingTheProxy(t *testing.T) {
 		},
 		"card source stored": func(h *proxyHarness) error {
 			h.proxied("", "")
-			return h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(),
+			return h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(),
 				"https://agent.example/v2/.well-known/agent-card.json")
 		},
 	}
@@ -449,7 +449,7 @@ func TestStoreCardSourceQueuesADirectEnvironmentsURL(t *testing.T) {
 	h.acceptsWrites()
 	const url = "https://agent.example/card.json" // fine to fetch directly, though the gateway could not front it
 
-	require.NoError(t, h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(), url))
+	require.NoError(t, h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(), url))
 
 	written := h.txCards.EnqueueCalls()
 	require.Len(t, written, 1)
@@ -567,25 +567,20 @@ func TestRefreshA2AProxyQueuesAPublicationNeverARequeue(t *testing.T) {
 	assert.Len(t, h.txPubs.EnqueueCalls(), 1)
 }
 
-func TestSetA2AProxyRejectsAnInternalOrNonA2AAgent(t *testing.T) {
-	cases := map[string]struct {
-		agent *models.AgentResponse
-		want  error
-	}{
+func TestSetA2AProxyRejectsAnInternalAgent(t *testing.T) {
+	cases := map[string]*models.AgentResponse{
 		"an internal A2A agent": {
-			&models.AgentResponse{Name: "weather", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "a2a-agent"}},
-			utils.ErrA2AProxyAgentNotExternal,
+			Name: "weather", ProjectName: "checkout", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "a2a-agent"},
 		},
-		"an external non-A2A agent": {
-			&models.AgentResponse{Name: "weather", Provisioning: models.Provisioning{Type: "external"}, Type: models.AgentType{SubType: "custom"}},
-			utils.ErrAgentNotA2A,
+		"an internal non-A2A agent": {
+			Name: "weather", ProjectName: "checkout", Provisioning: models.Provisioning{Type: "internal"}, Type: models.AgentType{SubType: "chat-api"},
 		},
 	}
-	for name, tc := range cases {
+	for name, agent := range cases {
 		t.Run(name, func(t *testing.T) {
 			h := newProxyHarness(t)
-			h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) { return tc.agent, nil }
-			assert.ErrorIs(t, h.svc.SetA2AProxy(tierGrantedCtx(t), "org-1", "checkout", "weather", "dev", nil), tc.want)
+			h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) { return agent, nil }
+			assert.ErrorIs(t, h.svc.SetA2AProxy(tierGrantedCtx(t), "org-1", "checkout", "weather", "dev", nil), utils.ErrA2AProxyAgentNotExternal)
 		})
 	}
 }
@@ -609,7 +604,7 @@ func TestSetA2AProxyDropsItsWritesWhenTheAgentIsDeletedMeanwhile(t *testing.T) {
 	h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) {
 		lookups++
 		if lookups == 1 {
-			return externalA2AAgent(), nil
+			return externalAgent(), nil
 		}
 		return nil, utils.ErrNotFound
 	}
@@ -649,7 +644,7 @@ func TestSetA2AProxyAuditsTheRollbackWhenTheAgentIsDeletedMeanwhile(t *testing.T
 	h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) {
 		lookups++
 		if lookups == 1 {
-			return externalA2AAgent(), nil
+			return externalAgent(), nil
 		}
 		return nil, utils.ErrNotFound
 	}
@@ -671,7 +666,7 @@ func TestSetA2AProxyKeepsACommittedWriteWhenTheAgentCheckFails(t *testing.T) {
 	h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) {
 		lookups++
 		if lookups == 1 {
-			return externalA2AAgent(), nil
+			return externalAgent(), nil
 		}
 		return nil, assert.AnError
 	}
@@ -695,7 +690,7 @@ func TestStoreCardSourceStoresTheURLParksTheCardAndRepublishes(t *testing.T) {
 	h.proxied("", "")
 	newURL := "https://other.example/.well-known/agent-card.json"
 
-	require.NoError(t, h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(), newURL))
+	require.NoError(t, h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(), newURL))
 
 	written := h.txCards.EnqueueCalls()
 	require.Len(t, written, 1, "the URL is written inside the transaction, never on the plain repo")
@@ -717,7 +712,7 @@ func TestStoreCardSourceRefusesACardURLTheGatewayCannotFront(t *testing.T) {
 			h := newProxyHarness(t)
 			h.proxied("", "")
 
-			err := h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(), newURL)
+			err := h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(), newURL)
 
 			require.ErrorIs(t, err, utils.ErrA2ACardURLNotProxyable)
 			h.assertNothingWritten(t)
@@ -736,7 +731,7 @@ func TestStoreCardSourceRefusesToMoveAStoredSecretToAnotherOrigin(t *testing.T) 
 			h := newProxyHarness(t)
 			h.proxied("X-Key", "c2VjcmV0")
 
-			err := h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(), newURL)
+			err := h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(), newURL)
 
 			require.ErrorIs(t, err, utils.ErrA2AProxyOriginChangeNeedsAuthReset)
 			assert.Len(t, h.txProxies.GetByEnvUUIDCalls(), 1, "the proxy is read inside the transaction")
@@ -756,7 +751,7 @@ func TestStoreCardSourceRefusesWhenNoRegisteredURLVouchesForTheSecret(t *testing
 		return nil, repositories.ErrA2AAgentCardNotFound
 	}
 
-	err := h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(),
+	err := h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(),
 		"https://agent.example/.well-known/agent-card.json")
 
 	require.ErrorIs(t, err, utils.ErrA2AProxyOriginChangeNeedsAuthReset)
@@ -769,7 +764,7 @@ func TestStoreCardSourceKeepsTheSecretOnTheSameOrigin(t *testing.T) {
 	h.proxied("X-Key", "c2VjcmV0")
 	newURL := "https://AGENT.example:443/v2/.well-known/agent-card.json"
 
-	require.NoError(t, h.svc.StoreCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv(), newURL))
+	require.NoError(t, h.svc.StoreCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv(), newURL))
 
 	written := h.txCards.EnqueueCalls()
 	require.Len(t, written, 1)
@@ -782,12 +777,12 @@ func TestRemoveCardSourceTearsDownAndDeletesTheCard(t *testing.T) {
 	h.acceptsWrites()
 	h.proxied("X-Key", "c2VjcmV0")
 
-	require.NoError(t, h.svc.RemoveCardSource(auditableCtx(t), externalA2AAgent(), "org-1", "checkout", devEnv()))
+	require.NoError(t, h.svc.RemoveCardSource(auditableCtx(t), externalAgent(), "org-1", "checkout", devEnv()))
 
 	assert.Len(t, h.txCards.DeleteForAgentEnvCalls(), 1)
 	assert.Empty(t, h.txCards.RequeueCalls())
 	assert.Len(t, h.txProxies.DeleteCalls(), 1)
-	assert.ErrorIs(t, h.svc.RemoveCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv()),
+	assert.ErrorIs(t, h.svc.RemoveCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv()),
 		audit.ErrRecorderUnavailable, "it discards the stored secret, so it is refused unrecorded")
 }
 
@@ -796,7 +791,7 @@ func TestRemoveCardSourceOnADirectEnvironmentDeletesTheCard(t *testing.T) {
 	h := newProxyHarness(t)
 	h.acceptsWrites()
 
-	require.NoError(t, h.svc.RemoveCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv()))
+	require.NoError(t, h.svc.RemoveCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv()))
 
 	deleted := h.txCards.DeleteForAgentEnvCalls()
 	require.Len(t, deleted, 1)
@@ -809,7 +804,7 @@ func TestRefreshCardSource(t *testing.T) {
 		h := newProxyHarness(t)
 		h.acceptsWrites()
 
-		require.NoError(t, h.svc.RefreshCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv()))
+		require.NoError(t, h.svc.RefreshCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv()))
 
 		requeued := h.txCards.RequeueCalls()
 		require.Len(t, requeued, 1, "update-only, so a removed row is not recreated")
@@ -822,7 +817,7 @@ func TestRefreshCardSource(t *testing.T) {
 			return repositories.ErrA2AAgentCardNotFound
 		}
 
-		err := h.svc.RefreshCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv())
+		err := h.svc.RefreshCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv())
 
 		assert.ErrorIs(t, err, utils.ErrAgentCardNotFound)
 	})
@@ -831,7 +826,7 @@ func TestRefreshCardSource(t *testing.T) {
 		h.acceptsWrites()
 		h.proxied("", "")
 
-		require.NoError(t, h.svc.RefreshCardSource(context.Background(), externalA2AAgent(), "org-1", "checkout", devEnv()))
+		require.NoError(t, h.svc.RefreshCardSource(context.Background(), externalAgent(), "org-1", "checkout", devEnv()))
 
 		assert.Len(t, h.txPubs.EnqueueCalls(), 1)
 		assert.Empty(t, h.txCards.RequeueCalls(), "a requeue would un-park the card before the gateway has the Agent")
@@ -859,7 +854,7 @@ func TestA2AProxyWritesRefuseWhenTheAuditSinkFails(t *testing.T) {
 		},
 		"card source removed": func(h *proxyHarness) error {
 			h.proxied("X-Key", "c2VjcmV0")
-			return h.svc.RemoveCardSource(sinkOutageCtx(), externalA2AAgent(), "org-1", "checkout", devEnv())
+			return h.svc.RemoveCardSource(sinkOutageCtx(), externalAgent(), "org-1", "checkout", devEnv())
 		},
 	}
 	for name, call := range calls {
@@ -873,4 +868,16 @@ func TestA2AProxyWritesRefuseWhenTheAuditSinkFails(t *testing.T) {
 			h.assertNothingWritten(t)
 		})
 	}
+}
+
+func TestSetA2AProxyRejectsAnAgentFromAnotherProject(t *testing.T) {
+	h := newProxyHarness(t)
+	h.oc.GetComponentFunc = func(context.Context, string, string, string) (*models.AgentResponse, error) {
+		agent := externalAgent()
+		agent.ProjectName = "other"
+		return agent, nil
+	}
+	err := h.svc.SetA2AProxy(tierGrantedCtx(t), "org-1", "checkout", "weather", "dev", nil)
+	assert.ErrorIs(t, err, utils.ErrAgentNotFound)
+	assert.Zero(t, h.transactions)
 }

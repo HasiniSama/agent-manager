@@ -300,7 +300,7 @@ describe("A2AAgentCardPanel", () => {
   it("offers no refetch to an external agent with no source", () => {
     mockCard(noSource);
     renderPanel(true);
-    expect(screen.getByText(/register this agent/i)).toBeInTheDocument();
+    expect(screen.getByText(/no agent card url is registered/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Refetch" })).not.toBeInTheDocument();
   });
 

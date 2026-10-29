@@ -1230,7 +1230,7 @@ func (e GetAgentTraceScoresParamsSortOrder) Valid() bool {
 	}
 }
 
-// A2AProxyResponse How an external A2A agent is published through the environment's ingress gateway.
+// A2AProxyResponse How an external agent is published through the environment's ingress gateway.
 type A2AProxyResponse struct {
 	// GatewayUrl The agent's base URL on the environment's ingress gateway, where its card is served at /.well-known/agent-card.json once published. Empty while no ingress gateway is mapped to the environment.
 	GatewayUrl string `json:"gatewayUrl"`
