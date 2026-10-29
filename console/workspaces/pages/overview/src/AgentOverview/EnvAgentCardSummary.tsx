@@ -129,7 +129,7 @@ function useShownBefore(key: string, showingNow: boolean) {
     }
   });
   useEffect(() => {
-    if (!showingNow) {
+    if (!showingNow || shownBefore) {
       return;
     }
     try {
@@ -137,7 +137,7 @@ function useShownBefore(key: string, showingNow: boolean) {
     } catch {
       // The prompt just shows again next time.
     }
-  }, [key, showingNow]);
+  }, [key, showingNow, shownBefore]);
   return shownBefore;
 }
 
@@ -156,7 +156,8 @@ export function EnvAgentCardSummary({
   // An external agent may never speak A2A, so the register prompt shows on the first visit only.
   const promptsForCardURL = isA2A && noSource && !!external;
   const promptShownBefore = useShownBefore(
-    `amp:agent-card-prompt-shown:${orgId}/${projectId}/${agentId}`,
+    // Per agent, not per environment: every environment card shows it on the first visit.
+    `amp.console.agent-card-prompt-shown.${orgId}/${projectId}/${agentId}`,
     promptsForCardURL,
   );
 
