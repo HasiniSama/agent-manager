@@ -52,8 +52,14 @@ const renderSummary = (external = false) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   mockAgent("a2a-agent");
 });
+
+const mockExternalAgent = () =>
+  vi.mocked(useGetAgent).mockReturnValue({
+    data: { agentType: { type: "external-agent-api" }, provisioning: { type: "external" } },
+  } as unknown as ReturnType<typeof useGetAgent>);
 
 describe("EnvAgentCardSummary", () => {
   it("renders nothing for a non-A2A agent", () => {
@@ -64,12 +70,27 @@ describe("EnvAgentCardSummary", () => {
   });
 
   it("offers to register a card URL on an external agent created without a subtype", () => {
-    vi.mocked(useGetAgent).mockReturnValue({
-      data: { agentType: { type: "external-agent-api" }, provisioning: { type: "external" } },
-    } as unknown as ReturnType<typeof useGetAgent>);
+    mockExternalAgent();
     mockCard(notFound);
     renderSummary(true);
     expect(screen.getByRole("link", { name: /Register agent card URL/ })).toHaveAttribute("href", CONFIGURE_HREF);
+  });
+
+  it("offers the card URL prompt on the first visit only", () => {
+    mockExternalAgent();
+    mockCard(notFound);
+    renderSummary(true).unmount();
+    const { container } = renderSummary(true);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("keeps showing a registered card after the prompt was dismissed", () => {
+    mockExternalAgent();
+    mockCard(notFound);
+    renderSummary(true).unmount();
+    mockCard({ data: { card: { provider: { organization: "Acme" } } } as never });
+    renderSummary(true);
+    expect(screen.getByText("Agent Card")).toBeInTheDocument();
   });
 
   it("shows only the provider, interfaces and skill names of a fetched card", () => {

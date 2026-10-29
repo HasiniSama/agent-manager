@@ -18,6 +18,7 @@
 
 import { Box, Chip, CircularProgress, IconButton, Stack, Typography } from "@wso2/oxygen-ui";
 import { ExternalLink, Plus } from "@wso2/oxygen-ui-icons-react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useGetAgent, useGetAgentCard } from "@agent-management-platform/api-client";
 import { OverviewSectionCard, validateEndpointUrl } from "@agent-management-platform/shared-component";
@@ -115,6 +116,31 @@ function CardSummary({ card }: { card: Json }) {
   );
 }
 
+/**
+ * Whether this browser has already shown the prompt under `key`. Read once per mount, so the
+ * prompt stays up for the visit that shows it; storage failures read as never shown.
+ */
+function useShownBefore(key: string, showingNow: boolean) {
+  const [shownBefore] = useState(() => {
+    try {
+      return localStorage.getItem(key) !== null;
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (!showingNow) {
+      return;
+    }
+    try {
+      localStorage.setItem(key, "1");
+    } catch {
+      // The prompt just shows again next time.
+    }
+  }, [key, showingNow]);
+  return shownBefore;
+}
+
 /** Provider, interfaces and skill names from an A2A card; details live on Configure → A2A. */
 export function EnvAgentCardSummary({
   orgId, projectId, agentId, envId, external,
@@ -126,17 +152,24 @@ export function EnvAgentCardSummary({
     { enabled: isA2A },
   );
 
-  if (!isA2A) {
+  const noSource = data === null;
+  // An external agent may never speak A2A, so the register prompt shows on the first visit only.
+  const promptsForCardURL = isA2A && noSource && !!external;
+  const promptShownBefore = useShownBefore(
+    `amp:agent-card-prompt-shown:${orgId}/${projectId}/${agentId}`,
+    promptsForCardURL,
+  );
+
+  if (!isA2A || (promptsForCardURL && promptShownBefore)) {
     return null;
   }
   const configureHref = buildConfigureTabHref(orgId, projectId, agentId, "a2a", envId);
-  const noSource = data === null;
   const card = isObject(data?.card) ? data.card : undefined;
 
   let body;
   if (isLoading) {
     body = <CircularProgress size={16} />;
-  } else if (noSource && external) {
+  } else if (promptsForCardURL) {
     body = (
       <Chip
         component={Link}
