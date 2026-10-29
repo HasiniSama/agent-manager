@@ -320,11 +320,7 @@ export const buildAgentCreationPayload = (
       provisioning: {
         type: "external",
       },
-      agentType: {
-        type: "external-agent-api",
-        // The service ignores an external agent's subtype; registering a card URL makes it A2A.
-        subType: "custom-api",
-      },
+      agentType: { type: "external-agent-api" },
       ...(modelConfig ? { modelConfig } : {}),
     },
   };

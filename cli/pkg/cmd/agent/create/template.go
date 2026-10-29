@@ -32,8 +32,8 @@ spec:
     type: agent-api             # external provisioning: external-agent-api
     subType: chat-api           # internal only: or custom-api, a2a-agent (see inputInterface below)
   provisioning:
-    type: internal              # or: external (then omit repository, build,
-                                #     inputInterface and configurations)
+    type: internal              # or: external (then omit agentType.subType,
+                                #     repository, build, inputInterface and configurations)
     repository:
       url: <https://github.com/org/repo>
       branch: <main>
