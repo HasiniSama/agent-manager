@@ -105,6 +105,9 @@ import (
 //			GetComponentFunc: func(ctx context.Context, ouID string, projectName string, componentName string) (*models.AgentResponse, error) {
 //				panic("mock out the GetComponent method")
 //			},
+//			GetComponentBaseEnvVarsFunc: func(ctx context.Context, ouID string, componentName string) ([]client.EnvVar, error) {
+//				panic("mock out the GetComponentBaseEnvVars method")
+//			},
 //			GetComponentConfigurationsFunc: func(ctx context.Context, ouID string, projectName string, componentName string, environment string) ([]models.EnvVars, error) {
 //				panic("mock out the GetComponentConfigurations method")
 //			},
@@ -354,6 +357,9 @@ type OpenChoreoClientMock struct {
 
 	// GetComponentFunc mocks the GetComponent method.
 	GetComponentFunc func(ctx context.Context, ouID string, projectName string, componentName string) (*models.AgentResponse, error)
+
+	// GetComponentBaseEnvVarsFunc mocks the GetComponentBaseEnvVars method.
+	GetComponentBaseEnvVarsFunc func(ctx context.Context, ouID string, componentName string) ([]client.EnvVar, error)
 
 	// GetComponentConfigurationsFunc mocks the GetComponentConfigurations method.
 	GetComponentConfigurationsFunc func(ctx context.Context, ouID string, projectName string, componentName string, environment string) ([]models.EnvVars, error)
@@ -823,6 +829,15 @@ type OpenChoreoClientMock struct {
 			OuID string
 			// ProjectName is the projectName argument value.
 			ProjectName string
+			// ComponentName is the componentName argument value.
+			ComponentName string
+		}
+		// GetComponentBaseEnvVars holds details about calls to the GetComponentBaseEnvVars method.
+		GetComponentBaseEnvVars []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
 			// ComponentName is the componentName argument value.
 			ComponentName string
 		}
@@ -1450,6 +1465,7 @@ type OpenChoreoClientMock struct {
 	lockGetBuild                               sync.RWMutex
 	lockGetBuildByName                         sync.RWMutex
 	lockGetComponent                           sync.RWMutex
+	lockGetComponentBaseEnvVars                sync.RWMutex
 	lockGetComponentConfigurations             sync.RWMutex
 	lockGetComponentEndpoints                  sync.RWMutex
 	lockGetComponentFileMounts                 sync.RWMutex
@@ -2765,6 +2781,46 @@ func (mock *OpenChoreoClientMock) GetComponentCalls() []struct {
 	mock.lockGetComponent.RLock()
 	calls = mock.calls.GetComponent
 	mock.lockGetComponent.RUnlock()
+	return calls
+}
+
+// GetComponentBaseEnvVars calls GetComponentBaseEnvVarsFunc.
+func (mock *OpenChoreoClientMock) GetComponentBaseEnvVars(ctx context.Context, ouID string, componentName string) ([]client.EnvVar, error) {
+	if mock.GetComponentBaseEnvVarsFunc == nil {
+		panic("OpenChoreoClientMock.GetComponentBaseEnvVarsFunc: method is nil but OpenChoreoClient.GetComponentBaseEnvVars was just called")
+	}
+	callInfo := struct {
+		Ctx           context.Context
+		OuID          string
+		ComponentName string
+	}{
+		Ctx:           ctx,
+		OuID:          ouID,
+		ComponentName: componentName,
+	}
+	mock.lockGetComponentBaseEnvVars.Lock()
+	mock.calls.GetComponentBaseEnvVars = append(mock.calls.GetComponentBaseEnvVars, callInfo)
+	mock.lockGetComponentBaseEnvVars.Unlock()
+	return mock.GetComponentBaseEnvVarsFunc(ctx, ouID, componentName)
+}
+
+// GetComponentBaseEnvVarsCalls gets all the calls that were made to GetComponentBaseEnvVars.
+// Check the length with:
+//
+//	len(mockedOpenChoreoClient.GetComponentBaseEnvVarsCalls())
+func (mock *OpenChoreoClientMock) GetComponentBaseEnvVarsCalls() []struct {
+	Ctx           context.Context
+	OuID          string
+	ComponentName string
+} {
+	var calls []struct {
+		Ctx           context.Context
+		OuID          string
+		ComponentName string
+	}
+	mock.lockGetComponentBaseEnvVars.RLock()
+	calls = mock.calls.GetComponentBaseEnvVars
+	mock.lockGetComponentBaseEnvVars.RUnlock()
 	return calls
 }
 

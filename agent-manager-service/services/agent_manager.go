@@ -5934,8 +5934,11 @@ func (s *agentManagerService) processEnvVars(
 	}
 
 	// Track per-env-var secretRef overrides for system-managed secrets (e.g., LLM config keys).
-	// Keys not in this map use the agent's own secretRefName.
-	secretRefOverrides := make(map[string]string)
+	// Keys not in this map use the agent's own secretRefName and the env var name as the
+	// secret property. A system-managed secret keeps the property it was issued under (an
+	// MCP/LLM proxy secret stores its value under "api-key", not under the variable's name),
+	// so the override carries both.
+	secretRefOverrides := make(map[string]client.SecretKeyRef)
 
 	// Fetch existing secret keys upfront so we can correctly classify sensitive env vars
 	// that come back with secretRef + empty value as either "ours" (key exists in our
@@ -5969,8 +5972,8 @@ func (s *agentManagerService) processEnvVars(
 	//
 	// Fetched lazily: only sensitive env vars/file mounts with an empty value and a
 	// secretRef not already in existingKeys need this lookup at all.
-	var systemManagedSecretRefByKey map[string]string
-	getSystemManagedSecretRefByKey := func() (map[string]string, error) {
+	var systemManagedSecretRefByKey map[string]client.SecretKeyRef
+	getSystemManagedSecretRefByKey := func() (map[string]client.SecretKeyRef, error) {
 		if systemManagedSecretRefByKey != nil {
 			return systemManagedSecretRefByKey, nil
 		}
@@ -5978,10 +5981,14 @@ func (s *agentManagerService) processEnvVars(
 		if cfgErr != nil {
 			return nil, fmt.Errorf("failed to fetch existing configurations for secretRef validation: %w", cfgErr)
 		}
-		systemManagedSecretRefByKey = make(map[string]string)
+		systemManagedSecretRefByKey = make(map[string]client.SecretKeyRef)
 		for _, ec := range existingConfigs {
 			if ec.IsSensitive && ec.SecretRef != "" {
-				systemManagedSecretRefByKey[ec.Key] = ec.SecretRef
+				secretKey := ec.SecretKey
+				if secretKey == "" {
+					secretKey = ec.Key
+				}
+				systemManagedSecretRefByKey[ec.Key] = client.SecretKeyRef{Name: ec.SecretRef, Key: secretKey}
 			}
 		}
 		return systemManagedSecretRefByKey, nil
@@ -5999,17 +6006,17 @@ func (s *agentManagerService) processEnvVars(
 					if refErr != nil {
 						return nil, refErr
 					}
-					realSecretRef, known := refsByKey[env.Key]
+					realRef, known := refsByKey[env.Key]
 					if !known {
 						return nil, fmt.Errorf("%w: no existing secret reference for key %q; provide a value to set it", utils.ErrInvalidInput, env.Key)
 					}
-					if env.GetSecretRef() != realSecretRef {
+					if env.GetSecretRef() != realRef.Name {
 						return nil, fmt.Errorf("%w: secretRef for key %q does not match this agent's own secret reference", utils.ErrInvalidInput, env.Key)
 					}
 					s.logger.Info("Preserving existing system-managed secret-ref",
-						"key", env.Key, "secretRef", realSecretRef,
+						"key", env.Key, "secretRef", realRef.Name, "secretKey", realRef.Key,
 						"ouID", ouID, "projectName", projectName, "environmentName", environmentName, "componentName", componentName)
-					secretRefOverrides[env.Key] = realSecretRef
+					secretRefOverrides[env.Key] = realRef
 				}
 			} else if env.GetValue() != "" {
 				secretData[env.Key] = env.GetValue()
@@ -6031,8 +6038,8 @@ func (s *agentManagerService) processEnvVars(
 					if refErr != nil {
 						return nil, refErr
 					}
-					realSecretRef, known := refsByKey[f.Key]
-					if !known || f.GetSecretRef() != realSecretRef {
+					realRef, known := refsByKey[f.Key]
+					if !known || f.GetSecretRef() != realRef.Name {
 						return nil, fmt.Errorf("%w: secretRef for file mount %q does not match this agent's own secret reference", utils.ErrInvalidInput, f.Key)
 					}
 				}
@@ -6054,17 +6061,14 @@ func (s *agentManagerService) processEnvVars(
 	var result []client.EnvVar
 	for _, env := range envVars {
 		if env.GetIsSensitive() {
-			refName := secretRefName
+			ref := client.SecretKeyRef{Name: secretRefName, Key: env.Key}
 			if override, ok := secretRefOverrides[env.Key]; ok {
-				refName = override
+				ref = override
 			}
 			result = append(result, client.EnvVar{
 				Key: env.Key,
 				ValueFrom: &client.EnvVarValueFrom{
-					SecretKeyRef: &client.SecretKeyRef{
-						Name: refName,
-						Key:  env.Key,
-					},
+					SecretKeyRef: &ref,
 				},
 			})
 		} else {
