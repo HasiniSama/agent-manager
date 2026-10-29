@@ -542,6 +542,7 @@ func ConvertToOrganizationResponse(org *models.OrganizationResponse) spec.Organi
 		DisplayName: org.DisplayName,
 		Description: org.Description,
 		Namespace:   org.Namespace,
+		Handle:      stringToPtr(org.Handle),
 	}
 }
 
@@ -553,6 +554,7 @@ func ConvertToOrganizationListItems(org *models.OrganizationResponse) spec.Organ
 	return spec.OrganizationListItem{
 		Name:        org.Name,
 		DisplayName: org.DisplayName,
+		Handle:      stringToPtr(org.Handle),
 		CreatedAt:   org.CreatedAt,
 	}
 }
