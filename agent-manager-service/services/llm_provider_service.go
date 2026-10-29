@@ -657,6 +657,13 @@ func (s *LLMProviderService) Update(ctx context.Context, providerID, ouID string
 	// Update provider
 	slog.Info("LLMProviderService.Update: updating provider in database", "ouID", ouID, "providerID", providerID)
 	if err := s.providerRepo.Update(ctx, updates, providerID, ouID); err != nil {
+		// Renaming updates the artifact in the same transaction. Only its
+		// name/version constraint is a caller conflict; other DB failures remain errors.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_artifact_name_version_ou_id" {
+			slog.Warn("LLMProviderService.Update: provider name and version already exist", "ouID", ouID, "providerID", providerID)
+			return nil, utils.ErrLLMProviderExists
+		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			slog.Warn("LLMProviderService.Update: provider not found", "ouID", ouID, "providerID", providerID)
 			return nil, utils.ErrLLMProviderNotFound
