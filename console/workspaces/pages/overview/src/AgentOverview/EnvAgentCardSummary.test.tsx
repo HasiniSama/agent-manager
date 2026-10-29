@@ -84,6 +84,21 @@ describe("EnvAgentCardSummary", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("offers the prompt to another agent shown in the same mounted card", () => {
+    mockExternalAgent();
+    mockCard(notFound);
+    const summary = (agentId: string) => (
+      <MemoryRouter>
+        <EnvAgentCardSummary orgId="org" projectId="proj" agentId={agentId} envId="dev" external />
+      </MemoryRouter>
+    );
+    renderSummary(true).unmount();
+    const { container, rerender } = render(summary("agent"));
+    expect(container).toBeEmptyDOMElement();
+    rerender(summary("other"));
+    expect(screen.getByRole("link", { name: /Register agent card URL/ })).toBeInTheDocument();
+  });
+
   it("keeps showing a registered card after the prompt was dismissed", () => {
     mockExternalAgent();
     mockCard(notFound);

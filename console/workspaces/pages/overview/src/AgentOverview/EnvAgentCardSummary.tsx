@@ -116,18 +116,25 @@ function CardSummary({ card }: { card: Json }) {
   );
 }
 
+function readShownBefore(key: string) {
+  try {
+    return localStorage.getItem(key) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Whether this browser has already shown the prompt under `key`. Read once per mount, so the
+ * Whether this browser has already shown the prompt under `key`. Read once per key, so the
  * prompt stays up for the visit that shows it; storage failures read as never shown.
  */
 function useShownBefore(key: string, showingNow: boolean) {
-  const [shownBefore] = useState(() => {
-    try {
-      return localStorage.getItem(key) !== null;
-    } catch {
-      return false;
-    }
-  });
+  const [read, setRead] = useState(() => ({ key, shownBefore: readShownBefore(key) }));
+  if (read.key !== key) {
+    // React re-renders with the new key's read before committing this one.
+    setRead({ key, shownBefore: readShownBefore(key) });
+  }
+  const { shownBefore } = read;
   useEffect(() => {
     if (!showingNow || shownBefore) {
       return;

@@ -389,11 +389,11 @@ func TestA2ACapable(t *testing.T) {
 // OpenChoreo resolves an agent by name across the organization, so one owned by another project is not found.
 func TestSetA2ACardSourceRejectsAnAgentFromAnotherProject(t *testing.T) {
 	hooks := &proxyHooksStub{}
-	svc, repo, oc := cardServiceWithHooks("external", "", hooks)
+	svc, _, oc := cardServiceWithHooks("external", "", hooks)
 	oc.GetComponentFunc = func(_ context.Context, _, _, name string) (*models.AgentResponse, error) {
 		return &models.AgentResponse{Name: name, ProjectName: "other", Provisioning: models.Provisioning{Type: "external"}}, nil
 	}
 	err := svc.SetA2ACardSource(tierGrantedCtx(t), "org", "proj", "agent", "dev", "https://93.184.215.14/.well-known/agent-card.json")
 	assert.ErrorIs(t, err, utils.ErrAgentNotFound)
-	assert.Empty(t, repo.EnqueueCalls())
+	assert.Empty(t, hooks.stored)
 }
