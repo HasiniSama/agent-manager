@@ -19,24 +19,6 @@
 import { globalConfig } from "@agent-management-platform/types";
 
 /**
- * Fallback gateway version when `globalConfig.gatewayVersion` is not injected
- * (e.g. local dev without a runtime config). Released builds have the real
- * version substituted at deploy time.
- */
-export const DEFAULT_GATEWAY_VERSION = "v2026.09.24";
-
-/** The configured gateway version, e.g. "v0.15.0" (carries a leading "v"). */
-export function getGatewayVersion(): string {
-  return globalConfig.gatewayVersion?.trim() || DEFAULT_GATEWAY_VERSION;
-}
-
-/** Gateway version without the leading "v", for contexts that need bare semver. */
-export function getGatewayVersionHelm(): string {
-  const v = getGatewayVersion();
-  return v.startsWith("v") ? v.slice(1) : v;
-}
-
-/**
  * The configured Agent Manager release version (e.g. "v0.15.0"). The deployment
  * scripts live in the Agent Manager repo and are tagged with its release, so the
  * script ref is pinned to this version — not the gateway chart version. Empty
@@ -87,43 +69,10 @@ export function getRawScriptUrl(scriptName: string): string {
   return `${getScriptBaseUrl()}/${scriptName}`;
 }
 
-const DEFAULT_GATEWAY_CONTROL_PLANE_URL = "http://localhost:9243";
-
-export function getGatewayControlPlaneUrl(): string {
-  const url = globalConfig.gatewayControlPlaneUrl?.trim() || globalConfig.apiBaseUrl?.trim();
-  return url || DEFAULT_GATEWAY_CONTROL_PLANE_URL;
-}
-
 const DEFAULT_AGENT_MANAGER_URL = "http://api.amp.localhost:8080";
 
 /** Slash stripped because the scripts append /api/v1. */
 export function getAgentManagerUrl(): string {
   const url = globalConfig.apiBaseUrl?.trim().replace(/\/+$/, "");
   return url || DEFAULT_AGENT_MANAGER_URL;
-}
-
-export function getGatewayEnvFile(): string {
-  return `wso2apip-ai-gateway-${getGatewayVersionHelm()}/configs/keys.env`;
-}
-
-export function getConfigureGatewayDisplayCommand(registrationToken: string | null): string {
-  const controlPlaneHost = new URL(getGatewayControlPlaneUrl());
-  const tokenValue = registrationToken || "<your-gateway-token>";
-  return `cat > "${getGatewayEnvFile()}" << 'ENVFILE'
-GATEWAY_CONTROLPLANE_HOST=${controlPlaneHost}
-GATEWAY_REGISTRATION_TOKEN=${tokenValue}
-ENVFILE`;
-}
-
-export function getK8sGatewayHelmCommand(
-  registrationToken: string | null,
-  verb: "install" | "upgrade" = "install",
-): string {
-  const controlPlaneHost = new URL(getGatewayControlPlaneUrl()).hostname;
-  const tokenValue = registrationToken || "your-gateway-token";
-  return `helm ${verb} gateway oci://ghcr.io/wso2/api-platform/helm-charts/gateway --version ${getGatewayVersionHelm()} \\
-  --set gateway.controller.controlPlane.host="${controlPlaneHost}" \\
-  --set gateway.controller.controlPlane.port=443 \\
-  --set gateway.controller.controlPlane.token.value="${tokenValue}" \\
-  --set gateway.config.analytics.enabled=true`;
 }
