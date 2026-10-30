@@ -46,9 +46,12 @@ import {
 } from "@agent-management-platform/api-client";
 import { globalConfig, type DataPlane } from "@agent-management-platform/types";
 import {
+  buildScriptCommand,
   getAgentManagerUrl,
-  getAmpVersionHelm,
+  getAmpRegistry,
+  getInstalledChartVersion,
   getIsolationTierMeta,
+  getPrivateRegistryEnv,
   getRawScriptUrl,
   useConfirmIfUnsaved,
   useUnsavedChangesGuard,
@@ -175,16 +178,20 @@ function buildScript(
   const thunderHostBaseDomain = globalConfig.idpHostBaseDomain?.trim();
   const tlsEnabled = globalConfig.tlsEnabled;
   // Required by add-environment.sh: the gateway chart version, pinned to the
-  // platform release version so an added environment runs the same gateway chart.
+  // installed chart so an added environment runs the same gateway chart.
 
-  const chartVersion = getAmpVersionHelm();
+  const chartVersion = getInstalledChartVersion();
+  // A private install points the script at its registry, and runs it from the
+  // release bundle (see buildScriptCommand).
+  const registryLines = Object.entries(getPrivateRegistryEnv()).map(
+    ([key, value]) => `    ${key}=${value} \\`,
+  );
 
   // The env-creation script chains into the Thunder provisioning script to also
   // stand up this environment's identity (Thunder) instance. Pass the version-matched
   // URL so the chained call fetches the script from the same git ref as this one.
   const lines = [
-    `curl -fsSL ${getRawScriptUrl("add-environment.sh")} \\`,
-    `  | ENV_NAME=${name || "<env-name>"} \\`,
+    `    ENV_NAME=${name || "<env-name>"} \\`,
     `    DISPLAY_NAME="${displayName || "<display-name>"}" \\`,
     ...(isolationTier !== "runc"
       ? [`    ISOLATION_TIER=${isolationTier} \\`]
@@ -207,9 +214,11 @@ function buildScript(
     // omitted entirely (not an empty string) when unset, so
     // add-environment-thunder.sh's own "unset" default behavior applies.
     ...(thunderHandle ? [`    THUNDER_HANDLE=${thunderHandle} \\`] : []),
-    "    bash",
+    ...registryLines,
   ];
-  return lines.join("\n");
+  return buildScriptCommand("add-environment.sh", lines, {
+    fromBundle: !!getAmpRegistry(),
+  });
 }
 
 // amp.localhost is the local-dev default base domain (config.ThunderHostBaseDomain /

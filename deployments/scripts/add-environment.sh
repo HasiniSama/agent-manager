@@ -343,6 +343,22 @@ if declare -F amp_registry_is_private >/dev/null 2>&1 && amp_registry_is_private
     fi
 fi
 
+# A gateway extension chart in the private registry is pulled by helm on this
+# machine, which neither the pull secret nor a node's registry config covers, so
+# sign helm in with the same credentials. amp_registry_helm_login only acts when
+# the chart is on the image registry's host.
+case "$CHART_REF" in
+    oci://*)
+        if declare -F amp_registry_helm_login >/dev/null 2>&1 && amp_registry_is_private; then
+            HELM_CHART_REGISTRY="${HELM_CHART_REGISTRY:-${CHART_REF#oci://}}"
+            if ! amp_registry_helm_login; then
+                echo "❌ Failed to sign helm in to the chart registry for ${CHART_REF}" >&2
+                exit 1
+            fi
+        fi
+        ;;
+esac
+
 # --- Step 0: Verify Agent Manager is reachable ---
 echo "⏳ Checking Agent Manager is healthy..."
 MAX_WAIT=30
