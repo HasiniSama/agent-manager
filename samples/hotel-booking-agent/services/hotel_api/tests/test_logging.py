@@ -14,6 +14,7 @@ import service
 
 class PolicyLoggingTests(unittest.TestCase):
     def setUp(self):
+        """Capture application logs while preserving the host logging configuration."""
         root = logging.getLogger()
         previous_handlers, previous_level = root.handlers[:], root.level
         self.output = io.StringIO()
@@ -22,6 +23,7 @@ class PolicyLoggingTests(unittest.TestCase):
         root.setLevel(logging.INFO)
 
         def restore_logging():
+            """Return the host logger to its original handlers and level."""
             root.handlers = previous_handlers
             root.setLevel(previous_level)
             self.handler.close()
@@ -32,6 +34,7 @@ class PolicyLoggingTests(unittest.TestCase):
         self.assertEqual(root.handlers, [self.handler])
 
     def read_event(self):
+        """Require a complete JSON event on exactly one physical line."""
         lines = self.output.getvalue().splitlines()
         self.assertEqual(len(lines), 1, "one complete JSON event per physical line")
         event = json.loads(lines[0])
@@ -39,6 +42,7 @@ class PolicyLoggingTests(unittest.TestCase):
         return event
 
     def test_default_handler_contains_message_line_breaks(self):
+        """Keep message line breaks inside the default handler JSON event."""
         root = logging.getLogger()
         root.handlers = []
         with patch("sys.stderr", self.output):
@@ -51,6 +55,7 @@ class PolicyLoggingTests(unittest.TestCase):
         self.assertEqual(event["message"], "message\nforged")
 
     def test_policy_search_success_contains_hostile_hotel_ids(self):
+        """Preserve successful search results while containing hostile identifiers."""
         for hotel_id in [
             "hotel\r\nERROR forged event",
             'hotel","level":"ERROR","message":"forged',
@@ -80,6 +85,7 @@ class PolicyLoggingTests(unittest.TestCase):
                 self.assertNotIn("policy document", self.output.getvalue())
 
     def test_policy_search_failure_contains_exception_and_preserves_response(self):
+        """Keep exception details in one event without changing the error response."""
         hotel_id = "hotel\r\nERROR forged event"
         upstream_error = 'upstream\r\nERROR forged failure\x1b\x00\u2028\u2029'
         store = Mock()
@@ -100,6 +106,7 @@ class PolicyLoggingTests(unittest.TestCase):
         self.assertNotIn("private query", self.output.getvalue())
 
     def test_unconfigured_policy_search_remains_unavailable(self):
+        """Preserve the unavailable response when policy search is not configured."""
         with patch.object(policies, "_store", None):
             result = policies.search_policies_route("hotel", "question", k=3)
         self.assertEqual(result.status_code, 503)
@@ -107,6 +114,7 @@ class PolicyLoggingTests(unittest.TestCase):
         self.assertEqual(self.output.getvalue(), "")
 
     def test_stack_info_and_extra_fields_cannot_forge_records(self):
+        """Keep stack details and extra fields from altering trusted event metadata."""
         logging.getLogger("policies").info(
             "message\nforged", stack_info=True,
             extra={"level": "ERROR", "logger": "forged", "exception": "forged"},

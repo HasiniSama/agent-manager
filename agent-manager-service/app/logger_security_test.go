@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"testing"
@@ -36,9 +37,16 @@ func TestSetupLogger_ContainsUntrustedValuesInJSONRecords(t *testing.T) {
 	output, err := os.CreateTemp(t.TempDir(), "logs")
 	require.NoError(t, err)
 	previousOutput, previousLogger := os.Stdout, slog.Default()
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		require.Same(t, previousWriter, log.Writer(), "standard log output must be restored")
+		require.Equal(t, previousFlags, log.Flags(), "standard log flags must be restored")
+	})
 	t.Cleanup(func() {
 		os.Stdout = previousOutput
 		slog.SetDefault(previousLogger)
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
 		require.NoError(t, output.Close())
 	})
 	os.Stdout = output
