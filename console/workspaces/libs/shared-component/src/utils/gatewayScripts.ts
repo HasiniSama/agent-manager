@@ -69,6 +69,115 @@ export function getRawScriptUrl(scriptName: string): string {
   return `${getScriptBaseUrl()}/${scriptName}`;
 }
 
+/**
+ * Private registry the platform was installed from, as a host and path prefix
+ * (e.g. "registry.example.com/my-project"). Empty for the public registry, where
+ * the generated commands keep the scripts' own public defaults.
+ */
+export function getAmpRegistry(): string {
+  return globalConfig.ampRegistry?.trim().replace(/\/+$/, "") || "";
+}
+
+/** Helm chart registry of a private install; `<registry>/helm-charts` when not configured. */
+export function getAmpChartRegistry(): string {
+  const configured = globalConfig.ampChartRegistry?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  const registry = getAmpRegistry();
+  return registry ? `${registry}/helm-charts` : "";
+}
+
+/**
+ * Version of the installed Agent Manager chart, which an environment's gateway
+ * extension chart is pinned to. An update moves it past the release version
+ * (2.0.0-u1 against 2.0.0), so it is preferred over AMP_VERSION when injected.
+ */
+export function getInstalledChartVersion(): string {
+  return globalConfig.chartVersion?.trim() || getAmpVersionHelm();
+}
+
+/**
+ * Release bundle a private-registry environment command extracts the scripts
+ * from: the GitHub release asset for this version, unless one is configured.
+ * Empty for a dev build, which has no release.
+ */
+export function getReleaseBundleUrl(): string {
+  const configured = globalConfig.bundleUrl?.trim();
+  if (configured) return configured;
+  const ref = getScriptRef();
+  if (ref === "main") return "";
+  const version = ref.slice("amp/v".length);
+  return `https://github.com/wso2/agent-manager/releases/download/${ref}/wso2-agent-manager-${version}.tar.gz`;
+}
+
+const GATEWAY_EXTENSION_CHART = "wso2-amp-api-platform-gateway-extension";
+
+/**
+ * Variables that point a deployment script at a private registry: images, the
+ * gateway, and the gateway extension chart. Empty for a public install.
+ */
+export function getPrivateRegistryEnv(): Record<string, string> {
+  const registry = getAmpRegistry();
+  if (!registry) return {};
+  const chartRegistry = getAmpChartRegistry();
+  return {
+    AMP_IMAGE_REGISTRY: registry,
+    GATEWAY_REGISTRY: registry,
+    HELM_CHART_REGISTRY: chartRegistry,
+    CHART_REF: `oci://${chartRegistry}/${GATEWAY_EXTENSION_CHART}`,
+  };
+}
+
+/** Host of the private chart registry, for `helm registry login`. Empty when public. */
+export function getAmpChartRegistryHost(): string {
+  return getAmpChartRegistry().split("/")[0] ?? "";
+}
+
+/** Host of the private image registry. Empty when public. */
+export function getAmpRegistryHost(): string {
+  return getAmpRegistry().split("/")[0] ?? "";
+}
+
+/** Quote a value as one POSIX shell word without evaluating metacharacters. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/**
+ * Wraps a deployment script's environment lines (each "VAR=value \\") into the
+ * command that runs it. A public install pipes the release-pinned script into
+ * bash. A private install cannot: the script has to create image pull secrets,
+ * which needs lib-registry-auth.sh beside it and a terminal to ask for the
+ * registry credentials, so it runs from the extracted release bundle instead,
+ * with the scripts it chains into read from the bundle too.
+ */
+export function buildScriptCommand(
+  scriptName: string,
+  envLines: string[],
+  { fromBundle }: { fromBundle: boolean },
+): string {
+  if (!fromBundle) {
+    return [`curl -fsSL ${getRawScriptUrl(scriptName)} \\`, ...withPrefix("|", envLines), "    bash"].join("\n");
+  }
+  // A dev build has no release bundle; leave a placeholder rather than pipe a
+  // script that cannot create the pull secrets.
+  const bundleUrl = getReleaseBundleUrl() || "<release-bundle-url>";
+  // The script signs helm in to the image registry's host only, so a chart
+  // registry on another host needs its own sign-in first.
+  const chartHost = getAmpChartRegistryHost();
+  const login = chartHost && chartHost !== getAmpRegistryHost();
+  return [
+    ...(login ? [`helm registry login ${shellQuote(chartHost)} \\`] : []),
+    `${login ? "  && " : ""}AMP_BUNDLE_DIR="$(mktemp -d)" \\`,
+    `  && curl -fsSL ${shellQuote(bundleUrl)} | tar -xz -C "$AMP_BUNDLE_DIR" \\`,
+    ...withPrefix("&&", [...envLines, `    SCRIPT_BASE_URL="file://$AMP_BUNDLE_DIR/deployments/scripts" \\`]),
+    `    bash "$AMP_BUNDLE_DIR/deployments/scripts/${scriptName}"`,
+  ].join("\n");
+}
+
+function withPrefix(prefix: string, envLines: string[]): string[] {
+  return envLines.map((line, i) => (i === 0 ? `  ${prefix} ${line.trimStart()}` : line));
+}
+
 const DEFAULT_AGENT_MANAGER_URL = "http://api.amp.localhost:8080";
 
 /** Slash stripped because the scripts append /api/v1. */
