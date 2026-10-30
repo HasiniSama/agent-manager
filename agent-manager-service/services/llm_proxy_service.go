@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/logger"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories"
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
@@ -67,7 +68,8 @@ func (s *LLMProxyService) Create(ctx context.Context, ouID, createdBy string, pr
 	handle := name
 
 	if handle == "" || name == "" || version == "" || provider == "" {
-		slog.Error("handle, name, version or provider is empty", handle, name, version, provider)
+		logger.GetLogger(ctx).Error("handle, name, version or provider is empty", "ouID", ouID,
+			"nameMissing", name == "", "versionMissing", version == "", "providerMissing", provider == "")
 		return nil, utils.ErrInvalidInput
 	}
 

@@ -28,6 +28,9 @@ echo "==> Installing hotel API"
 "$PYTHON" -m venv "$WORK/hotel"
 "$WORK/hotel/bin/pip" install -q -r services/hotel_api/requirements.txt
 
+echo "==> Testing hotel API logging"
+PYTHONPATH=services/hotel_api "$WORK/hotel/bin/python" -m unittest discover -s services/hotel_api/tests -v
+
 echo "==> Starting hotel API"
 env -u OPENAI_API_KEY -u PINECONE_API_KEY \
   "$WORK/hotel/bin/python" -m uvicorn service:app --app-dir services/hotel_api --port "$HOTEL_PORT" \

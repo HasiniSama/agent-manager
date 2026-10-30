@@ -553,7 +553,7 @@ func (s *PlatformGatewayService) VerifyToken(ctx context.Context, plainToken str
 	// Example: "550e8400-e29b-41d4-a716-446655440000-kQpL8vK9..."
 	parts := strings.SplitN(plainToken, "-", 6) // UUID has 5 dashes, so split into 6 parts
 	if len(parts) < 6 {
-		slog.Warn("token verification failed: invalid token format", "tokenPrefix", plainToken[:min(16, len(plainToken))])
+		slog.Warn("token verification failed: invalid token format")
 		return nil, errors.New("invalid token")
 	}
 
@@ -562,7 +562,7 @@ func (s *PlatformGatewayService) VerifyToken(ctx context.Context, plainToken str
 
 	// Validate UUID format
 	if _, err := uuid.Parse(tokenPrefix); err != nil {
-		slog.Warn("token verification failed: invalid UUID prefix", "tokenPrefix", tokenPrefix)
+		slog.Warn("token verification failed: invalid UUID prefix")
 		return nil, errors.New("invalid token")
 	}
 
