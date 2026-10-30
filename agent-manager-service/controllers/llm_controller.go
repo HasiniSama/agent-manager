@@ -674,6 +674,10 @@ func (c *llmController) UpdateLLMProvider(w http.ResponseWriter, r *http.Request
 		resp, err := c.providerService.UpdateAndSync(ctx, providerID, ouID, provider, req.Gateways, c.deploymentService)
 		if err != nil {
 			switch {
+			case errors.Is(err, utils.ErrLLMProviderExists):
+				log.Warn("UpdateLLMProvider: provider name and version already exist", "ouID", ouID, "providerID", providerID)
+				utils.WriteErrorResponse(w, http.StatusConflict, "Another LLM provider already uses this name and version")
+				return
 			case errors.Is(err, utils.ErrLLMProviderNotFound):
 				log.Warn("UpdateLLMProvider: provider not found", "ouID", ouID, "providerID", providerID)
 				utils.WriteErrorResponse(w, http.StatusNotFound, "LLM provider not found")
@@ -726,6 +730,10 @@ func (c *llmController) UpdateLLMProvider(w http.ResponseWriter, r *http.Request
 		updated, err = c.providerService.Update(ctx, providerID, ouID, provider)
 		if err != nil {
 			switch {
+			case errors.Is(err, utils.ErrLLMProviderExists):
+				log.Warn("UpdateLLMProvider: provider name and version already exist", "ouID", ouID, "providerID", providerID)
+				utils.WriteErrorResponse(w, http.StatusConflict, "Another LLM provider already uses this name and version")
+				return
 			case errors.Is(err, utils.ErrLLMProviderNotFound):
 				log.Warn("UpdateLLMProvider: provider not found", "ouID", ouID, "providerID", providerID)
 				utils.WriteErrorResponse(w, http.StatusNotFound, "LLM provider not found")
