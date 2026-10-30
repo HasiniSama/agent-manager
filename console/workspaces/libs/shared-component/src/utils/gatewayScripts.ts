@@ -132,32 +132,50 @@ export function getAmpChartRegistryHost(): string {
   return getAmpChartRegistry().split("/")[0] ?? "";
 }
 
+/** Host of the private image registry. Empty when public. */
+export function getAmpRegistryHost(): string {
+  return getAmpRegistry().split("/")[0] ?? "";
+}
+
+/** Quote a value as one POSIX shell word without evaluating metacharacters. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 /**
  * Wraps a deployment script's environment lines (each "VAR=value \\") into the
  * command that runs it. A public install pipes the release-pinned script into
  * bash. A private install cannot: the script has to create image pull secrets,
  * which needs lib-registry-auth.sh beside it and a terminal to ask for the
- * registry credentials, so it runs from the extracted release bundle instead.
+ * registry credentials, so it runs from the extracted release bundle instead,
+ * with the scripts it chains into read from the bundle too.
  */
 export function buildScriptCommand(
   scriptName: string,
   envLines: string[],
   { fromBundle }: { fromBundle: boolean },
 ): string {
-  const bundleUrl = fromBundle ? getReleaseBundleUrl() : "";
-  if (!bundleUrl) {
-    return [`curl -fsSL ${getRawScriptUrl(scriptName)} \\`, ...withPipe(envLines), "    bash"].join("\n");
+  if (!fromBundle) {
+    return [`curl -fsSL ${getRawScriptUrl(scriptName)} \\`, ...withPrefix("|", envLines), "    bash"].join("\n");
   }
+  // A dev build has no release bundle; leave a placeholder rather than pipe a
+  // script that cannot create the pull secrets.
+  const bundleUrl = getReleaseBundleUrl() || "<release-bundle-url>";
+  // The script signs helm in to the image registry's host only, so a chart
+  // registry on another host needs its own sign-in first.
+  const chartHost = getAmpChartRegistryHost();
+  const login = chartHost && chartHost !== getAmpRegistryHost();
   return [
-    'AMP_BUNDLE_DIR="$(mktemp -d)" \\',
-    `  && curl -fsSL ${bundleUrl} | tar -xz -C "$AMP_BUNDLE_DIR" \\`,
-    ...envLines.map((line, i) => (i === 0 ? `  && ${line.trimStart()}` : line)),
+    ...(login ? [`helm registry login ${shellQuote(chartHost)} \\`] : []),
+    `${login ? "  && " : ""}AMP_BUNDLE_DIR="$(mktemp -d)" \\`,
+    `  && curl -fsSL ${shellQuote(bundleUrl)} | tar -xz -C "$AMP_BUNDLE_DIR" \\`,
+    ...withPrefix("&&", [...envLines, `    SCRIPT_BASE_URL="file://$AMP_BUNDLE_DIR/deployments/scripts" \\`]),
     `    bash "$AMP_BUNDLE_DIR/deployments/scripts/${scriptName}"`,
   ].join("\n");
 }
 
-function withPipe(envLines: string[]): string[] {
-  return envLines.map((line, i) => (i === 0 ? `  | ${line.trimStart()}` : line));
+function withPrefix(prefix: string, envLines: string[]): string[] {
+  return envLines.map((line, i) => (i === 0 ? `  ${prefix} ${line.trimStart()}` : line));
 }
 
 const DEFAULT_AGENT_MANAGER_URL = "http://api.amp.localhost:8080";

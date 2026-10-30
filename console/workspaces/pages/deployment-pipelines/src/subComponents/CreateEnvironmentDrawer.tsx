@@ -183,6 +183,7 @@ function buildScript(
   const chartVersion = getInstalledChartVersion();
   // A private install points the script at its registry, and runs it from the
   // release bundle (see buildScriptCommand).
+  const fromBundle = !!getAmpRegistry();
   const registryLines = Object.entries(getPrivateRegistryEnv()).map(
     ([key, value]) => `    ${key}=${value} \\`,
   );
@@ -190,6 +191,7 @@ function buildScript(
   // The env-creation script chains into the Thunder provisioning script to also
   // stand up this environment's identity (Thunder) instance. Pass the version-matched
   // URL so the chained call fetches the script from the same git ref as this one.
+  // From the bundle, it is read from the bundle along with its helpers.
   const lines = [
     `    ENV_NAME=${name || "<env-name>"} \\`,
     `    DISPLAY_NAME="${displayName || "<display-name>"}" \\`,
@@ -208,7 +210,9 @@ function buildScript(
       ? [`    THUNDER_HOST_BASE_DOMAIN=${thunderHostBaseDomain} \\`]
       : []),
     ...(tlsEnabled !== undefined ? [`    TLS_ENABLED=${tlsEnabled} \\`] : []),
-    `    THUNDER_SCRIPT_URL=${getRawScriptUrl("add-environment-thunder.sh")} \\`,
+    ...(fromBundle
+      ? []
+      : [`    THUNDER_SCRIPT_URL=${getRawScriptUrl("add-environment-thunder.sh")} \\`]),
     // THUNDER_HANDLE replaces the guessable <org>-<env> segment of this
     // environment's env-Thunder URL with an unguessable, user-chosen label —
     // omitted entirely (not an empty string) when unset, so
@@ -216,9 +220,7 @@ function buildScript(
     ...(thunderHandle ? [`    THUNDER_HANDLE=${thunderHandle} \\`] : []),
     ...registryLines,
   ];
-  return buildScriptCommand("add-environment.sh", lines, {
-    fromBundle: !!getAmpRegistry(),
-  });
+  return buildScriptCommand("add-environment.sh", lines, { fromBundle });
 }
 
 // amp.localhost is the local-dev default base domain (config.ThunderHostBaseDomain /

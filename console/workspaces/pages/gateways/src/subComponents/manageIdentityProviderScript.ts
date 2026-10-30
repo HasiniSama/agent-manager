@@ -21,6 +21,7 @@ import {
   getInstalledChartVersion,
   getPrivateRegistryEnv,
   getRawScriptUrl,
+  shellQuote,
 } from "@agent-management-platform/shared-component";
 
 const SCRIPT_NAME = "manage-identity-provider.sh";
@@ -39,11 +40,6 @@ export interface ScriptInputs {
   token: string;
 }
 
-/** Quote a value as one POSIX shell word without evaluating metacharacters. */
-export function quoteShellWord(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
 export function buildScript(i: ScriptInputs): string {
   // The dev-container quickstart and a real cluster both install the gateway
   // extension from the same OCI chart, so one command works for both: curl the
@@ -52,8 +48,8 @@ export function buildScript(i: ScriptInputs): string {
     i.mode === "delete"
       ? ["    ACTION=delete \\"]
       : [
-          `    IDP_ISSUER=${quoteShellWord(i.issuer || "<issuer>")} \\`,
-          `    IDP_JWKS_URI=${quoteShellWord(i.jwksUri || "<jwks-uri>")} \\`,
+          `    IDP_ISSUER=${shellQuote(i.issuer || "<issuer>")} \\`,
+          `    IDP_JWKS_URI=${shellQuote(i.jwksUri || "<jwks-uri>")} \\`,
           ...(i.skipTlsVerify ? ["    IDP_SKIP_TLS_VERIFY=true \\"] : []),
         ];
   // A private install upgrades the gateway extension chart from its own
@@ -62,16 +58,16 @@ export function buildScript(i: ScriptInputs): string {
   const { CHART_REF: chartRef } = getPrivateRegistryEnv();
   const chartHost = getAmpChartRegistryHost();
   const lines = [
-    ...(chartRef ? [`helm registry login ${quoteShellWord(chartHost)} \\`] : []),
-    `${chartRef ? "  && " : ""}curl -fsSL ${quoteShellWord(getRawScriptUrl(SCRIPT_NAME))} \\`,
-    `  | ORG_NAME=${quoteShellWord(i.orgId || "<org>")} \\`,
-    `    ENV_NAME=${quoteShellWord(i.envName || "<env-name>")} \\`,
-    `    GATEWAY_ID=${quoteShellWord(i.gatewayId || "<gateway-id>")} \\`,
-    `    AGENT_MANAGER_TOKEN=${quoteShellWord(i.token)} \\`,
-    `    AGENT_MANAGER_URL=${quoteShellWord(getAgentManagerUrl())} \\`,
-    `    CHART_VERSION=${quoteShellWord(getInstalledChartVersion())} \\`,
-    ...(chartRef ? [`    CHART_REF=${quoteShellWord(chartRef)} \\`] : []),
-    `    IDP_NAME=${quoteShellWord(i.name || "<identity-provider-name>")} \\`,
+    ...(chartRef ? [`helm registry login ${shellQuote(chartHost)} \\`] : []),
+    `${chartRef ? "  && " : ""}curl -fsSL ${shellQuote(getRawScriptUrl(SCRIPT_NAME))} \\`,
+    `  | ORG_NAME=${shellQuote(i.orgId || "<org>")} \\`,
+    `    ENV_NAME=${shellQuote(i.envName || "<env-name>")} \\`,
+    `    GATEWAY_ID=${shellQuote(i.gatewayId || "<gateway-id>")} \\`,
+    `    AGENT_MANAGER_TOKEN=${shellQuote(i.token)} \\`,
+    `    AGENT_MANAGER_URL=${shellQuote(getAgentManagerUrl())} \\`,
+    `    CHART_VERSION=${shellQuote(getInstalledChartVersion())} \\`,
+    ...(chartRef ? [`    CHART_REF=${shellQuote(chartRef)} \\`] : []),
+    `    IDP_NAME=${shellQuote(i.name || "<identity-provider-name>")} \\`,
     ...actionEnvLines,
     "    bash",
   ];

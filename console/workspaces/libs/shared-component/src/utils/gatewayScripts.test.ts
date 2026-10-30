@@ -109,23 +109,49 @@ describe("buildScriptCommand", () => {
     );
   });
 
-  it("runs the script from the extracted release bundle", () => {
-    set({ ampVersion: "v2.0.0" });
+  it("runs the script and its chained scripts from the extracted release bundle", () => {
+    set({ ampVersion: "v2.0.0", ampRegistry: "registry.example.com/proj/sts" });
     expect(buildScriptCommand("add-environment.sh", env, { fromBundle: true })).toBe(
       [
         'AMP_BUNDLE_DIR="$(mktemp -d)" \\',
-        '  && curl -fsSL https://github.com/wso2/agent-manager/releases/download/amp/v2.0.0/wso2-agent-manager-2.0.0.tar.gz | tar -xz -C "$AMP_BUNDLE_DIR" \\',
+        "  && curl -fsSL 'https://github.com/wso2/agent-manager/releases/download/amp/v2.0.0/wso2-agent-manager-2.0.0.tar.gz' | tar -xz -C \"$AMP_BUNDLE_DIR\" \\",
         "  && ENV_NAME=dev \\",
         "    TLS_ENABLED=true \\",
+        '    SCRIPT_BASE_URL="file://$AMP_BUNDLE_DIR/deployments/scripts" \\',
         '    bash "$AMP_BUNDLE_DIR/deployments/scripts/add-environment.sh"',
       ].join("\n"),
     );
   });
 
-  it("falls back to piping when there is no bundle to run from", () => {
-    set({ ampVersion: "0.0.0-dev" });
-    expect(buildScriptCommand("add-environment.sh", env, { fromBundle: true })).toMatch(
-      /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/wso2\/agent-manager\/main\//,
+  it("quotes a configured bundle URL as one shell word", () => {
+    set({ ampVersion: "v2.0.0", bundleUrl: "https://mirror.example.com/b.tar.gz?sig=a&exp=1" });
+    expect(buildScriptCommand("add-environment.sh", env, { fromBundle: true })).toContain(
+      "curl -fsSL 'https://mirror.example.com/b.tar.gz?sig=a&exp=1' | tar",
+    );
+  });
+
+  it("leaves a placeholder rather than pipe when there is no bundle to run from", () => {
+    set({ ampVersion: "0.0.0-dev", ampRegistry: "registry.example.com/proj" });
+    const command = buildScriptCommand("add-environment.sh", env, { fromBundle: true });
+    expect(command).toContain("curl -fsSL '<release-bundle-url>' | tar");
+    expect(command).not.toContain("raw.githubusercontent.com");
+  });
+
+  it("signs helm in to a chart registry on another host first", () => {
+    set({
+      ampVersion: "v2.0.0",
+      ampRegistry: "registry.example.com/proj",
+      ampChartRegistry: "charts.example.com/proj",
+    });
+    const lines = buildScriptCommand("add-environment.sh", env, { fromBundle: true }).split("\n");
+    expect(lines[0]).toBe("helm registry login 'charts.example.com' \\");
+    expect(lines[1]).toBe('  && AMP_BUNDLE_DIR="$(mktemp -d)" \\');
+  });
+
+  it("leaves the sign-in to the script when charts share the image host", () => {
+    set({ ampVersion: "v2.0.0", ampRegistry: "registry.example.com/proj" });
+    expect(buildScriptCommand("add-environment.sh", env, { fromBundle: true })).not.toContain(
+      "helm registry login",
     );
   });
 });

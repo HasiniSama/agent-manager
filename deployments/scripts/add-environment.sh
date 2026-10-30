@@ -72,12 +72,13 @@ set -euo pipefail
 # CHART_VERSION is required when pulling from OCI but ignored when GATEWAY_CHART is set.
 CHART_VERSION="${CHART_VERSION:-}"
 
-# CHART_VERSION carries the Agent Manager release version here (console sets
-# it from ampVersion, see getAmpVersionHelm()), so pin script fetches (below,
-# and the chained add-environment-thunder.sh) to that release tag instead of
-# `main` — same convention as getScriptRef(). Falls back to main when
-# unset/dev (no matching tag). Computed early so both this script's own
-# thunder-naming.sh fetch and the later Thunder-provisioning fetch agree.
+# CHART_VERSION carries the Agent Manager release version here, so pin script
+# fetches (below, and the chained add-environment-thunder.sh) to that release
+# tag instead of `main` — same convention as getScriptRef(). Falls back to main
+# when unset/dev (no matching tag). Computed early so both this script's own
+# thunder-naming.sh fetch and the later Thunder-provisioning fetch agree. An
+# update's chart version (2.0.0-u1) has no tag of its own, so the console passes
+# SCRIPT_BASE_URL whenever it runs the script from a release bundle.
 script_ref="main"
 if [ -n "$CHART_VERSION" ] && [[ "$CHART_VERSION" != *dev* ]]; then
     script_ref="amp/v${CHART_VERSION#v}"
@@ -351,10 +352,19 @@ case "$CHART_REF" in
     oci://*)
         if declare -F amp_registry_helm_login >/dev/null 2>&1 && amp_registry_is_private; then
             HELM_CHART_REGISTRY="${HELM_CHART_REGISTRY:-${CHART_REF#oci://}}"
-            if ! amp_registry_helm_login; then
+            _chart_host="${CHART_REF#oci://}"
+            _chart_host="${_chart_host%%/*}"
+            if [ "$_chart_host" != "$(amp_registry_host)" ]; then
+                # Different credentials from the image registry's; say so rather
+                # than fail later with a bare 401 from helm.
+                echo "ℹ️  The gateway extension chart is on ${_chart_host}, not the image registry."
+                echo "   If that registry is private, helm must already be signed in to it"
+                echo "   (helm registry login ${_chart_host})."
+            elif ! amp_registry_helm_login; then
                 echo "❌ Failed to sign helm in to the chart registry for ${CHART_REF}" >&2
                 exit 1
             fi
+            unset _chart_host
         fi
         ;;
 esac
