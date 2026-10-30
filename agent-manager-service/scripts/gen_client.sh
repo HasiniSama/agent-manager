@@ -19,7 +19,6 @@ if [ "$CI" = "true" ]; then
     java -jar "$OPENAPI_GENERATOR_JAR" generate \
         -i spec/api_v1_openapi.yaml \
         -g go \
-        -t scripts/openapi-templates \
         -o spec \
         --package-name spec \
         --schema-mappings MetricDateTime=string \
@@ -35,7 +34,6 @@ else
         "openapitools/openapi-generator-cli:v${OPENAPI_GENERATOR_VERSION}" generate \
         -i /local/spec/api_v1_openapi.yaml \
         -g go \
-        -t /local/scripts/openapi-templates \
         -o /local/spec \
         --package-name spec \
         --schema-mappings MetricDateTime=string \
