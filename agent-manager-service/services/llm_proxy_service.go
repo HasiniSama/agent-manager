@@ -67,7 +67,8 @@ func (s *LLMProxyService) Create(ctx context.Context, ouID, createdBy string, pr
 	handle := name
 
 	if handle == "" || name == "" || version == "" || provider == "" {
-		slog.Error("handle, name, version or provider is empty", handle, name, version, provider)
+		slog.Error("handle, name, version or provider is empty",
+			"nameMissing", name == "", "versionMissing", version == "", "providerMissing", provider == "")
 		return nil, utils.ErrInvalidInput
 	}
 
