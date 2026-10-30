@@ -207,24 +207,13 @@ CHART_REF="${CHART_REF:-oci://ghcr.io/wso2/wso2-amp-api-platform-gateway-extensi
 # or a tarball). When unset, the published OCI chart at CHART_REF is used.
 GATEWAY_CHART="${GATEWAY_CHART:-}"
 
-# --- Resolve chart reference and version ---
-# When GATEWAY_CHART is set, use it directly (no --version flag).
-# Otherwise resolve the latest OCI version or use the pinned CHART_VERSION.
+# --- Resolve chart reference ---
+# When GATEWAY_CHART is set, use it directly (no --version flag). The version of
+# an OCI chart is resolved further down, once helm is signed in to its registry.
 if [ -n "$GATEWAY_CHART" ]; then
     echo "📦 Using gateway chart: ${GATEWAY_CHART}"
     CHART_REF="${GATEWAY_CHART}"
     CHART_VERSION=""
-elif [ -z "$CHART_VERSION" ]; then
-    echo "🔎 Resolving latest gateway chart version from ${CHART_REF}..."
-    CHART_VERSION=$(helm show chart "${CHART_REF}" 2>/dev/null | awk '/^version:/ {print $2; exit}')
-    if [ -z "$CHART_VERSION" ]; then
-        echo "❌ Could not resolve the latest chart version from ${CHART_REF}"
-        echo "   Pin a version explicitly and retry (e.g. CHART_VERSION=0.15.0)."
-        exit 1
-    fi
-    echo "✅ Using latest chart version: ${CHART_VERSION}"
-else
-    echo "📌 Using pinned chart version: ${CHART_VERSION}"
 fi
 
 # GATEWAY_VHOST_PORT is resolved further down, together with the other values the
@@ -368,6 +357,24 @@ case "$CHART_REF" in
         fi
         ;;
 esac
+
+# --- Resolve chart version ---
+# Resolve the latest OCI version or use the pinned CHART_VERSION. After the
+# sign-in above, which a private chart needs before helm can read it.
+if [ -z "$GATEWAY_CHART" ]; then
+    if [ -z "$CHART_VERSION" ]; then
+        echo "🔎 Resolving latest gateway chart version from ${CHART_REF}..."
+        CHART_VERSION=$(helm show chart "${CHART_REF}" 2>/dev/null | awk '/^version:/ {print $2; exit}')
+        if [ -z "$CHART_VERSION" ]; then
+            echo "❌ Could not resolve the latest chart version from ${CHART_REF}"
+            echo "   Pin a version explicitly and retry (e.g. CHART_VERSION=0.15.0)."
+            exit 1
+        fi
+        echo "✅ Using latest chart version: ${CHART_VERSION}"
+    else
+        echo "📌 Using pinned chart version: ${CHART_VERSION}"
+    fi
+fi
 
 # --- Step 0: Verify Agent Manager is reachable ---
 echo "⏳ Checking Agent Manager is healthy..."
