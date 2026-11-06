@@ -50,7 +50,7 @@ from .models import (
     ToolCall,
     RetrievedDoc,
 )
-from .fetcher import OTELTrace, OTELSpan, _parse_timestamp
+from .fetcher import OTELTrace, OTELSpan, OTELTraceStatus, _parse_timestamp
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,53 @@ INFRASTRUCTURE_KINDS = {"chain", "unknown", "task", "crewaitask"}
 
 # Semantic span kinds that should be kept for evaluation
 SEMANTIC_KINDS = {"llm", "tool", "agent", "retriever", "embedding"}
+
+# Marks a span a monitor run wrote. The collector sets it from the run token.
+EVAL_RUN_ID_ATTRIBUTE = "amp.eval.run.id"
+
+
+def is_evaluation_span(span: OTELSpan) -> bool:
+    """Report whether a span carries a non-empty amp.eval.run.id."""
+    attributes = span.attributes
+    if not isinstance(attributes, dict):
+        return False
+    run_id = attributes.get(EVAL_RUN_ID_ATTRIBUTE)
+    return isinstance(run_id, str) and run_id != ""
+
+
+def drop_evaluation_spans(spans: List[OTELSpan]) -> List[OTELSpan]:
+    """Remove evaluation spans, re-attaching any child to its nearest kept ancestor."""
+    dropped: Dict[str, Optional[str]] = {s.spanId: s.parentSpanId for s in spans if is_evaluation_span(s)}
+    if not dropped:
+        return spans
+
+    kept: List[OTELSpan] = []
+    for span in spans:
+        if span.spanId in dropped:
+            continue
+        parent_id = span.parentSpanId
+        visited: Set[str] = set()
+        while parent_id in dropped and parent_id not in visited:
+            visited.add(parent_id)
+            parent_id = dropped[parent_id]
+        if parent_id in dropped:
+            # Evaluation spans form a cycle; make the child a root
+            parent_id = None
+        kept.append(span if parent_id == span.parentSpanId else dataclass_replace(span, parentSpanId=parent_id))
+    return kept
+
+
+def _without_evaluation_spans(trace: OTELTrace) -> OTELTrace:
+    """Return the trace without evaluation spans or their errors in its status."""
+    spans = drop_evaluation_spans(trace.spans)
+    if len(spans) == len(trace.spans):
+        return trace
+    status = trace.status
+    if status is not None:
+        dropped_errors = sum(1 for s in trace.spans if is_evaluation_span(s) and s.ampAttributes.status.error)
+        status = OTELTraceStatus(errorCount=max(0, status.errorCount - dropped_errors))
+    logger.debug(f"Dropped {len(trace.spans) - len(spans)} evaluation spans from trace {trace.traceId}")
+    return dataclass_replace(trace, spans=spans, status=status)
 
 
 def filter_infrastructure_spans(spans: List[OTELSpan]) -> List[OTELSpan]:
@@ -244,10 +291,11 @@ def parse_trace_for_evaluation(trace: OTELTrace, filter_infrastructure: bool = T
     Parse an OTEL/AMP Trace model into Trace format for evaluation.
 
     This function:
-    1. Extracts trace_id and top-level I/O from the Trace model
-    2. Optionally filters infrastructure spans (chain, unknown, task, crewaitask)
-    3. Parses spans into typed collections (LLM, Tool, Retriever, Agent)
-    4. Aggregates metrics (tokens, duration, counts)
+    1. Drops evaluation spans written by monitor runs
+    2. Extracts trace_id and top-level I/O from the Trace model
+    3. Optionally filters infrastructure spans (chain, unknown, task, crewaitask)
+    4. Parses spans into typed collections (LLM, Tool, Retriever, Agent)
+    5. Aggregates metrics (tokens, duration, counts)
 
     Args:
         trace: Trace object from fetcher (OTEL/AMP attribute model)
@@ -256,6 +304,9 @@ def parse_trace_for_evaluation(trace: OTELTrace, filter_infrastructure: bool = T
     Returns:
         Trace: Evaluation-optimized trace structure with metrics
     """
+    # Evaluators see only the agent's own spans
+    trace = _without_evaluation_spans(trace)
+
     # Extract trace-level info from Trace model
     trace_id = trace.traceId
     trace_input = trace.input if trace.input is not None else ""

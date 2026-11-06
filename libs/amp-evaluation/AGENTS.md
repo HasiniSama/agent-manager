@@ -70,5 +70,6 @@ Config: **ruff/black** line-length 120; **mypy** ignores missing imports for dee
 - `RequestsInstrumentor` is initialized once at module level (global guard) to avoid double instrumentation.
 - LLM-judge built-ins need LLM config via the `any-llm` extra; `semantic_similarity` needs `expected_output` on the task.
 - The dataset loader auto-generates task IDs when missing.
+- `parse_trace_for_evaluation` drops evaluation spans (a non-empty `amp.eval.run.id`, written by monitor runs) before building any view. Spans with `gen_ai.evaluation.*` but no run ID are kept.
 
 Consumed as a dependency by `../../evaluation-job/AGENTS.md` (the K8s job that runs Monitor evaluations).

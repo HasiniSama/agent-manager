@@ -29,13 +29,15 @@ from amp_evaluation.trace import (
 )
 from amp_evaluation.trace.fetcher import _parse_trace, OTELSpan, OTELTrace, AmpAttributes
 from amp_evaluation.trace.parser import (
+    drop_evaluation_spans,
     filter_infrastructure_spans,
+    is_evaluation_span,
     INFRASTRUCTURE_KINDS,
     SEMANTIC_KINDS,
 )
 
 
-def _make_span(span_id, kind, parent_span_id=None, name=""):
+def _make_span(span_id, kind, parent_span_id=None, name="", attributes=None):
     """Helper to create a minimal OTELSpan for unit tests."""
     return OTELSpan(
         traceId="test-trace",
@@ -47,6 +49,7 @@ def _make_span(span_id, kind, parent_span_id=None, name=""):
         durationInNanos=1_000_000_000,
         status="OK",
         parentSpanId=parent_span_id,
+        attributes=attributes or {},
         ampAttributes=AmpAttributes(kind=kind),
     )
 
@@ -669,6 +672,155 @@ class TestParsedTraceStructure:
         trace = request.getfixturevalue(trace_fixture)
         roots = [s for s in trace.spans if getattr(s, "parent_span_id", None) is None]
         assert len(roots) == 1
+
+
+def _evaluation_span_dict(trace_dict, span_id, kind, error, run_id="run-1"):
+    """Build a raw span like one a monitor run writes under the trace's root."""
+    root = next(s for s in trace_dict["spans"] if s["spanId"] == trace_dict["rootSpanId"])
+    attributes = {
+        "gen_ai.evaluation.name": "Relevance",
+        "gen_ai.evaluation.score.value": 0.7,
+        "gen_ai.operation.name": "chat",
+        "amp.evaluation.level": "llm",
+    }
+    if error:
+        attributes["error.type"] = "skipped"
+    if run_id is not None:
+        attributes["amp.eval.run.id"] = run_id
+    return {
+        "traceId": trace_dict["traceId"],
+        "spanId": span_id,
+        "name": "evaluation Relevance",
+        "service": root["service"],
+        "startTime": root["startTime"],
+        "endTime": root["startTime"],
+        "durationInNanos": 1_000,
+        "status": "ERROR" if error else "UNSET",
+        "parentSpanId": root["spanId"],
+        "attributes": attributes,
+        "ampAttributes": {
+            "kind": kind,
+            "input": "What is the capital of France?",
+            "output": "Paris",
+            "data": {"model": "gpt-4o", "tokenUsage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}},
+            "status": {"error": error, "errorType": "skipped" if error else None},
+        },
+    }
+
+
+def _with_spans(trace_dict, *spans):
+    """Copy a raw trace, adding spans and counting their errors in its status like the observer does."""
+    copied = copy.deepcopy(trace_dict)
+    copied["spans"].extend(spans)
+    errors = sum(1 for s in spans if s["status"] == "ERROR")
+    copied["status"] = {"errorCount": (copied.get("status") or {}).get("errorCount", 0) + errors}
+    return copied
+
+
+class TestEvaluationSpanFiltering:
+    """Spans a monitor run wrote are dropped before evaluators see the trace."""
+
+    @pytest.mark.parametrize("trace_index", range(14))
+    @pytest.mark.parametrize("filter_infrastructure", [True, False])
+    def test_trace_with_evaluation_spans_parses_the_same(self, sample_traces, trace_index, filter_infrastructure):
+        """Two evaluation spans, one an errored LLM-like span, leave the parsed trace unchanged."""
+        base = sample_traces[trace_index]
+        with_eval = _with_spans(
+            base,
+            _evaluation_span_dict(base, "eval-trace", "unknown", error=False),
+            _evaluation_span_dict(base, "eval-llm", "llm", error=True, run_id="run-2"),
+        )
+
+        expected = parse_trace_for_evaluation(_parse_trace(base), filter_infrastructure=filter_infrastructure)
+        actual = parse_trace_for_evaluation(_parse_trace(with_eval), filter_infrastructure=filter_infrastructure)
+
+        assert actual == expected
+        assert actual.get_llm_calls() == expected.get_llm_calls()
+        assert [actual._create_agent_trace(a.span_id) for a in actual.get_agents()] == [
+            expected._create_agent_trace(a.span_id) for a in expected.get_agents()
+        ]
+
+    @pytest.mark.parametrize("run_id", [None, ""])
+    def test_span_without_run_id_is_kept(self, sample_traces, run_id):
+        """Inline gen_ai.evaluation.* spans (DeepEval and others) stay ordinary spans."""
+        base = sample_traces[2]
+        with_inline = _with_spans(base, _evaluation_span_dict(base, "deepeval", "llm", error=True, run_id=run_id))
+
+        expected = parse_trace_for_evaluation(_parse_trace(base))
+        actual = parse_trace_for_evaluation(_parse_trace(with_inline))
+
+        assert [s.span_id for s in actual.get_llm_calls()] == [s.span_id for s in expected.get_llm_calls()] + [
+            "deepeval"
+        ]
+        assert actual.metrics.error_count == expected.metrics.error_count + 1
+
+    @pytest.mark.parametrize(
+        "attributes,expected",
+        [
+            ({"amp.eval.run.id": "run-1"}, True),
+            ({"amp.eval.run.id": ""}, False),
+            ({"amp.eval.run.id": 42}, False),
+            ({"gen_ai.evaluation.name": "Relevance"}, False),
+            ({}, False),
+            (None, False),
+        ],
+    )
+    def test_is_evaluation_span(self, attributes, expected):
+        span = _make_span("s", "llm")
+        span.attributes = attributes
+        assert is_evaluation_span(span) is expected
+
+    def test_no_evaluation_spans_returns_input(self):
+        spans = [_make_span("root", "agent"), _make_span("llm1", "llm", parent_span_id="root")]
+        assert drop_evaluation_spans(spans) is spans
+
+    def test_child_of_evaluation_span_reattached_to_kept_ancestor(self):
+        """Children of nested evaluation spans move to the nearest kept ancestor."""
+        run = {"amp.eval.run.id": "run-1"}
+        spans = [
+            _make_span("root", "agent"),
+            _make_span("eval1", "unknown", parent_span_id="root", attributes=run),
+            _make_span("eval2", "unknown", parent_span_id="eval1", attributes=run),
+            _make_span("llm1", "llm", parent_span_id="eval2"),
+            _make_span("tool1", "tool", parent_span_id="root"),
+            _make_span("orphan", "tool", parent_span_id="missing"),
+        ]
+
+        kept = {s.spanId: s.parentSpanId for s in drop_evaluation_spans(spans)}
+
+        assert kept == {"root": None, "llm1": "root", "tool1": "root", "orphan": "missing"}
+
+    def test_evaluation_span_cycle_does_not_hang(self):
+        run = {"amp.eval.run.id": "run-1"}
+        spans = [
+            _make_span("eval1", "unknown", parent_span_id="eval2", attributes=run),
+            _make_span("eval2", "unknown", parent_span_id="eval1", attributes=run),
+            _make_span("llm1", "llm", parent_span_id="eval1"),
+        ]
+
+        kept = drop_evaluation_spans(spans)
+
+        assert [(s.spanId, s.parentSpanId) for s in kept] == [("llm1", None)]
+
+    def test_parse_trace_with_evaluation_span_child(self):
+        """A child under an evaluation span is parsed under the root."""
+        spans = [
+            _make_span("root", "agent"),
+            _make_span("eval1", "llm", parent_span_id="root", attributes={"amp.eval.run.id": "run-1"}),
+            _make_span("llm1", "llm", parent_span_id="eval1"),
+        ]
+        otel_trace = OTELTrace(
+            traceId="test-trace",
+            rootSpanId="root",
+            rootSpanName="root",
+            startTime="2025-01-01T00:00:00Z",
+            endTime="2025-01-01T00:00:01Z",
+            spans=spans,
+        )
+
+        trace = parse_trace_for_evaluation(otel_trace)
+
+        assert [(s.span_id, s.parent_span_id) for s in trace.spans] == [("root", None), ("llm1", "root")]
 
 
 if __name__ == "__main__":
