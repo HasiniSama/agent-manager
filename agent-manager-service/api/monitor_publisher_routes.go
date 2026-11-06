@@ -30,4 +30,9 @@ func RegisterMonitorPublisherRoutes(rr *middleware.RouteRegistrar, ctrl controll
 	handler := jwtassertion.PublisherClientAuthMiddleware()(http.HandlerFunc(ctrl.PublishScores))
 	rr.HandleFuncWithValidation(route("POST", "/publisher/monitors/{monitorId}/runs/{runId}/scores"),
 		handler.ServeHTTP)
+
+	// POST /publisher/monitors/{monitorId}/runs/{runId}/otel-token - Issue the run's span write token
+	tokenHandler := jwtassertion.PublisherClientAuthMiddleware()(http.HandlerFunc(ctrl.IssueRunToken))
+	rr.HandleFuncWithValidation(route("POST", "/publisher/monitors/{monitorId}/runs/{runId}/otel-token"),
+		tokenHandler.ServeHTTP)
 }

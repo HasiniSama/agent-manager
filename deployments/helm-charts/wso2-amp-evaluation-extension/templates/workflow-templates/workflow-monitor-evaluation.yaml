@@ -121,6 +121,10 @@ spec:
               type: string
               default: "value"
               description: Key within the KV secret (remoteRef.property for ExternalSecret)
+            otelEndpoint:
+              type: string
+              default: ""
+              description: "/otel URL of the agent's environment gateway, where the job sends evaluation spans. Empty sends none."
 
   # WorkflowRuns are automatically deleted after completion so that the OpenChoreo
   # finalizer cleans up the ExternalSecrets created alongside each run.
@@ -188,6 +192,8 @@ spec:
             value: ${parameters.publishing.monitorId}
           - name: run-id
             value: ${parameters.publishing.runId}
+          - name: otel-endpoint
+            value: ${parameters.publishing.otelEndpoint}
           - name: publisher-endpoint
             value: {{ .Values.ampEvaluation.publisher.endpoint | quote }}
           - name: idp-token-url

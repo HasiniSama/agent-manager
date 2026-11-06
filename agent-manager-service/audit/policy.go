@@ -367,9 +367,10 @@ var actionOverrides = map[string]Action{
 	"POST /artifacts/exists":        "artifact:check-exists",
 
 	// Reads expressed as POST because they carry a request body.
-	// The score-publish route carries no rbac.Permission at all — it is gated
+	// The publisher routes carry no rbac.Permission at all — they are gated
 	// only by an audience check — so there is nothing to derive from.
-	"POST /publisher/monitors/{monitorId}/runs/{runId}/scores": "monitor-score:publish",
+	"POST /publisher/monitors/{monitorId}/runs/{runId}/scores":     "monitor-score:publish",
+	"POST /publisher/monitors/{monitorId}/runs/{runId}/otel-token": "monitor-run-token:mint",
 
 	"POST /orgs/{orgName}/repositories/branches":         "repository:list-branches",
 	"POST /orgs/{orgName}/repositories/commits":          "repository:list-commits",

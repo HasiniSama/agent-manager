@@ -47,6 +47,8 @@ import (
 type AgentTokenManagerService interface {
 	// GenerateToken creates a signed JWT token for an agent
 	GenerateToken(ctx context.Context, req GenerateTokenRequest) (*spec.TokenResponse, error)
+	// GenerateRunToken creates a signed JWT that lets a monitor run write spans for its agent
+	GenerateRunToken(ctx context.Context, req GenerateRunTokenRequest) (*spec.TokenResponse, error)
 	// GetJWKS returns the JSON Web Key Set for token verification
 	GetJWKS(ctx context.Context) (*spec.JWKS, error)
 }
@@ -69,6 +71,26 @@ type AgentTokenClaims struct {
 	ProjectUid     string `json:"project_uid,omitempty"`
 	OrgId          string `json:"org_id"`
 	Namespace      string `json:"namespace"`
+}
+
+// GenerateRunTokenRequest contains the parameters for a monitor run token
+type GenerateRunTokenRequest struct {
+	OrgId           string
+	ProjectName     string
+	AgentName       string
+	ComponentUid    string
+	EnvironmentUid  string
+	EnvironmentName string
+	MonitorId       string
+	RunId           string
+	ExpiresAt       time.Time
+}
+
+// RunTokenClaims are agent token claims plus the monitor run they write for
+type RunTokenClaims struct {
+	AgentTokenClaims
+	EvalRunId     string `json:"eval_run_id"`
+	EvalMonitorId string `json:"eval_monitor_id"`
 }
 
 // KeyPair holds a private/public RSA key pair with its metadata
@@ -330,30 +352,16 @@ func (s *agentTokenManagerService) GenerateToken(ctx context.Context, req Genera
 		Namespace:      namespace,
 	}
 
-	// Get the active signing key
-	s.keyPairMutex.RLock()
-	keyPair, exists := s.keyPairs[s.activeKeyID]
-	s.keyPairMutex.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("active signing key not found: %s", s.activeKeyID)
-	}
-
-	// Create and sign the token
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = keyPair.KeyID
-
-	signedToken, err := token.SignedString(keyPair.PrivateKey)
+	signedToken, keyID, err := s.signToken(claims)
 	if err != nil {
-		s.logger.Error("Failed to sign token", "error", err)
-		return nil, fmt.Errorf("failed to sign token: %w", err)
+		return nil, err
 	}
 
 	s.logger.Info(
 		"Token generated successfully",
 		"agentName", req.AgentName,
 		"expiresAt", expiresAt,
-		"keyID", keyPair.KeyID,
+		"keyID", keyID,
 	)
 
 	// Recorded before the token is handed back. Minting is local and stateless,
@@ -381,6 +389,104 @@ func (s *agentTokenManagerService) GenerateToken(ctx context.Context, req Genera
 		IssuedAt:  now.Unix(),
 		TokenType: "Bearer",
 	}, nil
+}
+
+// GenerateRunToken creates a signed JWT that lets a monitor run write spans for its agent
+func (s *agentTokenManagerService) GenerateRunToken(ctx context.Context, req GenerateRunTokenRequest) (*spec.TokenResponse, error) {
+	if req.OrgId == "" {
+		return nil, fmt.Errorf("org id is required: %w", utils.ErrInvalidInput)
+	}
+
+	project, err := s.ocClient.GetProject(ctx, req.OrgId, req.ProjectName)
+	if err != nil {
+		s.logger.Error("Failed to get project", "projectName", req.ProjectName, "error", err)
+		return nil, fmt.Errorf("failed to get project: %w", err)
+	}
+
+	namespace, err := ResolveNamespace(ctx, s.ocClient)
+	if err != nil {
+		s.logger.Error("Failed to resolve namespace", "ouID", req.OrgId, "error", err)
+		return nil, err
+	}
+
+	now := time.Now()
+	claims := RunTokenClaims{
+		AgentTokenClaims: AgentTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    s.config.Issuer,
+				Subject:   req.AgentName,
+				ID:        uuid.NewString(),
+				IssuedAt:  jwt.NewNumericDate(now),
+				ExpiresAt: jwt.NewNumericDate(req.ExpiresAt),
+				NotBefore: jwt.NewNumericDate(now),
+			},
+			ComponentUid:   req.ComponentUid,
+			EnvironmentUid: req.EnvironmentUid,
+			ProjectUid:     project.UUID,
+			OrgId:          req.OrgId,
+			Namespace:      namespace,
+		},
+		EvalRunId:     req.RunId,
+		EvalMonitorId: req.MonitorId,
+	}
+
+	signedToken, keyID, err := s.signToken(claims)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fail-closed like agent tokens: an unrecorded token is never returned.
+	if err := audit.RecordSync(
+		ctx, audit.ActionMonitorRunTokenMint,
+		audit.Org(req.OrgId),
+		audit.ResourceNamed("monitor-run", req.RunId, req.RunId),
+		audit.Project(req.ProjectName),
+		audit.Environment(req.EnvironmentName),
+		audit.SurfaceOpt(audit.SurfacePublisher),
+		audit.Detail("agentName", req.AgentName),
+		audit.Detail("monitorId", req.MonitorId),
+		audit.Detail("runId", req.RunId),
+		audit.Detail("expiresIn", int64(req.ExpiresAt.Sub(now).Seconds())),
+	); err != nil {
+		s.logger.Error("Refusing to issue run token: audit record could not be written",
+			"runId", req.RunId, "error", err)
+		return nil, err
+	}
+
+	s.logger.Info("Run token generated",
+		"monitorId", req.MonitorId,
+		"runId", req.RunId,
+		"expiresAt", req.ExpiresAt,
+		"keyID", keyID,
+	)
+
+	return &spec.TokenResponse{
+		Token:     signedToken,
+		ExpiresAt: req.ExpiresAt.Unix(),
+		IssuedAt:  now.Unix(),
+		TokenType: "Bearer",
+	}, nil
+}
+
+// signToken signs claims with the active key and returns the token and key ID.
+func (s *agentTokenManagerService) signToken(claims jwt.Claims) (string, string, error) {
+	s.keyPairMutex.RLock()
+	keyPair, exists := s.keyPairs[s.activeKeyID]
+	s.keyPairMutex.RUnlock()
+
+	if !exists {
+		return "", "", fmt.Errorf("active signing key not found: %s", s.activeKeyID)
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = keyPair.KeyID
+
+	signedToken, err := token.SignedString(keyPair.PrivateKey)
+	if err != nil {
+		s.logger.Error("Failed to sign token", "error", err)
+		return "", "", fmt.Errorf("failed to sign token: %w", err)
+	}
+	return signedToken, keyPair.KeyID, nil
 }
 
 // parseExpiryDuration parses the expiry duration string and validates it

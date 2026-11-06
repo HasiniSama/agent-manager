@@ -70,6 +70,7 @@ func TestDomainActionsMatchRouteDerivedActions(t *testing.T) {
 		{"POST /orgs/{orgName}/gateways/{gatewayID}/tokens", nil, ActionGatewayTokenRotate},
 		{"DELETE /orgs/{orgName}/gateways/{gatewayID}/tokens/{tokenID}", nil, ActionGatewayTokenRevoke},
 		{"POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/token", nil, ActionAgentTokenMint},
+		{"POST /publisher/monitors/{monitorId}/runs/{runId}/otel-token", nil, ActionMonitorRunTokenMint},
 		{
 			"POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/tracing-token/regenerate",
 			nil, ActionAgentTokenRegenerateTracing,

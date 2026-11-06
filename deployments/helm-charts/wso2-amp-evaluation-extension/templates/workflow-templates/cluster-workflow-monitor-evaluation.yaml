@@ -61,6 +61,8 @@ spec:
       - name: traces-api-endpoint
       - name: monitor-id
       - name: run-id
+      - name: otel-endpoint
+        value: ""
       - name: publisher-endpoint
       - name: llm-proxy-secret-name
         value: "no-llm-proxy-configured"
@@ -107,6 +109,8 @@ spec:
               secretKeyRef:
                 name: '{{ "{{" }}workflow.parameters.publisher-secret-name{{ "}}" }}'
                 key: client-secret
+          - name: EVAL_OTEL_ENDPOINT
+            value: '{{ "{{" }}workflow.parameters.otel-endpoint{{ "}}" }}'
         resources:
           requests:
             cpu: "100m"

@@ -57,7 +57,7 @@ func (s *MonitorScoresService) PublishScores(
 	callerOUID string,
 	req *models.PublishScoresRequest,
 ) error {
-	if err := s.authorizeRun(monitorID, runID, callerOUID); err != nil {
+	if _, _, err := authorizeRun(s.monitorRepo, s.logger, monitorID, runID, callerOUID); err != nil {
 		return err
 	}
 
@@ -180,37 +180,43 @@ func (s *MonitorScoresService) PublishScores(
 	return nil
 }
 
-// authorizeRun is the publisher route's only tenancy check: it has no {orgName}
-// segment, so RequireOrgMatch never runs for it.
-func (s *MonitorScoresService) authorizeRun(monitorID, runID uuid.UUID, callerOUID string) error {
+// authorizeRun is the publisher routes' only tenancy check: they have no
+// {orgName} segment, so RequireOrgMatch never runs for them.
+func authorizeRun(
+	monitorRepo repositories.MonitorRepository,
+	logger *slog.Logger,
+	monitorID, runID uuid.UUID,
+	callerOUID string,
+) (*models.Monitor, *models.MonitorRun, error) {
 	if callerOUID == "" {
-		return fmt.Errorf("%w: publisher token carries no organization", utils.ErrForbidden)
+		return nil, nil, fmt.Errorf("%w: publisher token carries no organization", utils.ErrForbidden)
 	}
 
-	monitor, err := s.monitorRepo.GetMonitorByID(monitorID)
+	monitor, err := monitorRepo.GetMonitorByID(monitorID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w: monitor %s", utils.ErrNotFound, monitorID)
+			return nil, nil, fmt.Errorf("%w: monitor %s", utils.ErrNotFound, monitorID)
 		}
-		return fmt.Errorf("failed to look up monitor %s: %w", monitorID, err)
+		return nil, nil, fmt.Errorf("failed to look up monitor %s: %w", monitorID, err)
 	}
 
 	if monitor.OUID != callerOUID {
-		s.logger.Warn("Rejected cross-organization score publish",
+		logger.Warn("Rejected cross-organization publisher request",
 			"monitorID", monitorID,
 			"runID", runID,
 			"callerOUID", callerOUID)
-		return fmt.Errorf("%w: monitor %s belongs to another organization", utils.ErrForbidden, monitorID)
+		return nil, nil, fmt.Errorf("%w: monitor %s belongs to another organization", utils.ErrForbidden, monitorID)
 	}
 
-	if _, err := s.monitorRepo.GetMonitorRunByID(runID, monitorID); err != nil {
+	run, err := monitorRepo.GetMonitorRunByID(runID, monitorID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w: run %s for monitor %s", utils.ErrNotFound, runID, monitorID)
+			return nil, nil, fmt.Errorf("%w: run %s for monitor %s", utils.ErrNotFound, runID, monitorID)
 		}
-		return fmt.Errorf("failed to look up run %s: %w", runID, err)
+		return nil, nil, fmt.Errorf("failed to look up run %s: %w", runID, err)
 	}
 
-	return nil
+	return monitor, run, nil
 }
 
 // GetMonitorScores returns aggregated scores for a monitor within a time range

@@ -36,18 +36,22 @@ import (
 // MonitorScoresPublisherController defines the interface for monitor scores publishing HTTP handlers
 type MonitorScoresPublisherController interface {
 	PublishScores(w http.ResponseWriter, r *http.Request)
+	IssueRunToken(w http.ResponseWriter, r *http.Request)
 }
 
 type monitorScoresPublisherController struct {
-	scoresService *services.MonitorScoresService
+	scoresService   *services.MonitorScoresService
+	runTokenService *services.MonitorRunTokenService
 }
 
 // NewMonitorScoresPublisherController creates a new monitor scores publisher controller
 func NewMonitorScoresPublisherController(
 	scoresService *services.MonitorScoresService,
+	runTokenService *services.MonitorRunTokenService,
 ) MonitorScoresPublisherController {
 	return &monitorScoresPublisherController{
-		scoresService: scoresService,
+		scoresService:   scoresService,
+		runTokenService: runTokenService,
 	}
 }
 
@@ -115,6 +119,45 @@ func (c *monitorScoresPublisherController) PublishScores(w http.ResponseWriter, 
 	if _, err := w.Write([]byte(`{"message":"scores published successfully"}`)); err != nil {
 		log.Error("Failed to write response", "error", err)
 	}
+}
+
+// IssueRunToken handles POST /monitors/{monitorId}/runs/{runId}/otel-token
+// Returns a short-lived token the evaluation job uses to write evaluation spans
+func (c *monitorScoresPublisherController) IssueRunToken(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	monitorID, err := uuid.Parse(r.PathValue(utils.PathParamMonitorId))
+	if err != nil {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid monitor ID")
+		return
+	}
+
+	runID, err := uuid.Parse(r.PathValue(utils.PathParamRunId))
+	if err != nil {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid run ID")
+		return
+	}
+
+	audit.IdentifyActor(ctx, audit.ActorService, publisherAudience(ctx), "publisher-client")
+
+	resp, err := c.runTokenService.IssueRunToken(ctx, monitorID, runID, publisherOUID(ctx))
+	if err != nil {
+		log.Error("Failed to issue run token", "monitorId", monitorID, "runId", runID, "error", err)
+		switch {
+		case errors.Is(err, utils.ErrForbidden):
+			utils.WriteErrorResponse(w, http.StatusForbidden, "insufficient permissions")
+		case errors.Is(err, utils.ErrNotFound):
+			utils.WriteErrorResponse(w, http.StatusNotFound, "Monitor run not found")
+		case errors.Is(err, utils.ErrConflict):
+			utils.WriteErrorResponse(w, http.StatusConflict, "Monitor run is not active")
+		default:
+			utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to issue run token")
+		}
+		return
+	}
+
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
 }
 
 // publisherOUID returns the token's organization; empty is rejected downstream.

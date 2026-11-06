@@ -129,6 +129,7 @@ const (
 
 	// Score publishing by the evaluation job.
 	ActionMonitorScorePublish Action = "monitor-score:publish"
+	ActionMonitorRunTokenMint Action = "monitor-run-token:mint"
 
 	// Monitors: scheduled evaluations that read agent traces and call an LLM
 	// judge, so starting or rerunning one spends money and reads data.
@@ -243,6 +244,12 @@ func init() {
 	})
 	registerCredential(ActionAgentTokenRegenerateTracing, map[string]FieldKind{
 		"agentName": KindName,
+	})
+	registerCredential(ActionMonitorRunTokenMint, map[string]FieldKind{
+		"agentName": KindName,
+		"monitorId": KindIdentifier,
+		"runId":     KindIdentifier,
+		"expiresIn": KindCount,
 	})
 
 	registerCredential(ActionAgentIdentityProvision, map[string]FieldKind{

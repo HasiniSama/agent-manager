@@ -18,6 +18,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,6 +43,10 @@ type stubTokenManager struct {
 func (s *stubTokenManager) GenerateToken(ctx context.Context, req GenerateTokenRequest) (*spec.TokenResponse, error) {
 	s.gotRequests = append(s.gotRequests, req)
 	return s.generateFunc(ctx, req)
+}
+
+func (s *stubTokenManager) GenerateRunToken(_ context.Context, _ GenerateRunTokenRequest) (*spec.TokenResponse, error) {
+	return nil, errors.New("not used")
 }
 
 func (s *stubTokenManager) GetJWKS(_ context.Context) (*spec.JWKS, error) {

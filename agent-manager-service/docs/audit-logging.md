@@ -311,6 +311,7 @@ The operations below emit a record describing what actually changed, not just th
 | Git secrets | `git-secret:create` / `:delete` | Fail-closed |
 | Gateway tokens | `gateway-token:rotate` / `:revoke` | Fail-closed |
 | Agent tokens | `agent-token:mint`, `agent-token:regenerate-tracing` | Fail-closed |
+| Monitor run tokens | `monitor-run-token:mint` (evaluation job, publisher client) | Fail-closed |
 | Agent OAuth identity | `agent-identity:provision` / `:regenerate-secret` / `:revoke-secret` / `:retry-provisioning` | Fail-closed |
 | Agent OAuth identity | `system:agent-identity-provisioned` / `system:agent-identity-exhausted` (reconciler, system actor) | Fail-open |
 | Env identity credential | `service-account:configure` / `:remove` | Fail-closed |
@@ -394,6 +395,7 @@ The registry is the source of truth (`audit/actions.go`, `audit/actions_domain.g
 | `git-secret:delete` | credential | 4 critical | — |
 | `group:add-member` | identity | 4 critical | `groupName`, `memberCount`, `memberTypes`, `members` |
 | `group:remove-member` | identity | 4 critical | `groupName`, `memberCount`, `memberTypes`, `members` |
+| `monitor-run-token:mint` | credential | 4 critical | `agentName`, `expiresIn`, `monitorId`, `runId` |
 | `monitor-score:publish` | config | 1 info | `monitorId`, `runId`, `scoreCount` |
 | `monitor:create` | config | 1 info | `agentName`, `evaluators`, `monitorName`, `monitorType` |
 | `monitor:delete` | config | 2 notice | `agentName`, `evaluators`, `monitorName`, `monitorType` |

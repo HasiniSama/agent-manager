@@ -315,6 +315,13 @@ func (e *monitorExecutor) buildWorkflowRunRequest(
 		return nil, err
 	}
 
+	// The run still starts without it; the job then sends no evaluation spans.
+	otelEndpoint, err := e.resolveOTelEndpoint(monitor)
+	if err != nil {
+		e.logger.Warn("No /otel endpoint for monitor run", "monitor", monitor.Name, "runID", runID, "error", err)
+	}
+	publishingParams["otelEndpoint"] = otelEndpoint
+
 	return &client.CreateWorkflowRunRequest{
 		Name:         workflowRunName,
 		WorkflowName: models.MonitorWorkflowName,
@@ -389,6 +396,26 @@ func (e *monitorExecutor) buildPublishingParams(ctx context.Context, monitor *mo
 	params["secretKVPath"] = provisioned.SecretKVPath
 	params["secretKey"] = provisioned.SecretKey
 	return params, nil
+}
+
+// resolveOTelEndpoint returns the /otel URL of the gateway the monitor's agent sends traces to.
+func (e *monitorExecutor) resolveOTelEndpoint(monitor *models.Monitor) (string, error) {
+	envUUID, err := uuid.Parse(monitor.EnvironmentID)
+	if err != nil {
+		return "", fmt.Errorf("invalid environment UUID %q: %w", monitor.EnvironmentID, err)
+	}
+	gateway, err := findIngressGateway(e.gatewayRepo, monitor.OUID, envUUID)
+	if err != nil {
+		return "", err
+	}
+	if gateway == nil {
+		return "", errNoGatewayForEnvironment
+	}
+	otelPath := "/otel"
+	if config.GetConfig().EvalJobsUsePublicGatewayURL {
+		return buildPublicProxyURL(gateway, &otelPath), nil
+	}
+	return buildInternalProxyURL(gateway, &otelPath)
 }
 
 // evalJobEvaluator is the JSON structure passed to the evaluation job for each evaluator.

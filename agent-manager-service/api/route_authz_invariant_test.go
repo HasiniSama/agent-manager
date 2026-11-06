@@ -85,6 +85,8 @@ var unguardedRouteAllowlist = map[routeKey]string{
 		"(no org data). Still org-resolved via RequireOrgMatch.",
 	{"RegisterMonitorPublisherRoutes", "HandleFuncWithValidation", "POST /publisher/monitors/{monitorId}/runs/{runId}/scores"}: "POST /publisher/.../scores is guarded by jwtassertion.PublisherClientAuthMiddleware, " +
 		"which requires an amp-publisher-* audience instead of an amp: scope.",
+	{"RegisterMonitorPublisherRoutes", "HandleFuncWithValidation", "POST /publisher/monitors/{monitorId}/runs/{runId}/otel-token"}: "POST /publisher/.../otel-token is guarded by jwtassertion.PublisherClientAuthMiddleware, " +
+		"which requires an amp-publisher-* audience instead of an amp: scope.",
 	{"RegisterWebSocketRoutes", "HandleFunc", "GET /ws/gateways/connect"}: "GET /ws/gateways/connect is on internalMux and authenticates the gateway with an " +
 		"api-key header verified in the handler (gatewayService.VerifyToken), not a user JWT.",
 	{"registerJWKSRoute", "HandleFunc", "GET /auth/external/jwks.json"}: "publishes public signing keys and must be unauthenticated.",
@@ -173,7 +175,7 @@ var declaredButUnenforcedPermissions = map[string]string{
 	"ObservabilityBuildLogRead": "enforced by agent-manager-observer",
 
 	// --- Enforced by a different mechanism ---------------------------------
-	"MonitorScorePublish": "the publisher route uses PublisherClientAuthMiddleware (audience check) " +
+	"MonitorScorePublish": "the publisher routes use PublisherClientAuthMiddleware (audience check) " +
 		"rather than a scope check; the permission is granted to roles but never consulted",
 
 	// --- NOT ENFORCED ANYWHERE ---------------------------------------------
