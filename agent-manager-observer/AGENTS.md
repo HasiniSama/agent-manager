@@ -168,6 +168,14 @@ Response flags:
 
 The export fails only when `ctx` is done or it could read none of the traces it selected.
 
+### Evaluation spans
+
+- A span with a non-empty `amp.eval.run.id` is an evaluation span, written by a monitor run (`opensearch.IsEvaluationSpan`). Only the collector sets it.
+- `querySpans` leaves them out of every span list, so the trace list, span tree, export, MCP tools and CLI never see them. `GetSpanDetail` returns `ErrSpanNotFound` (404) for one.
+- A list without attributes can't tell them apart. Spans named like the job's `evaluation <evaluator>` (`MayBeEvaluationSpanName`) are checked by `GetSpanDetails`, in parallel under the fetch semaphore. Past **20** (`maxEvaluationSpanChecks`) the list is fetched again with attributes instead. A failed check fails the list. A trace without such a name costs no extra call.
+- The trace list's `spanCount` is upstream's and counts them, as the `minSpanCount` filter and the span caps do. The export's `spanCount` leaves them out, matching its spans.
+- Spans with `gen_ai.evaluation.*` and no run ID (DeepEval and others run inline by an agent) are ordinary spans.
+
 ## Gotchas
 
 - Service **cannot run in isolation** — it needs a reachable Observer (`OPENCHOREO_OBSERVER_URL` + IDP creds). For local work set `IS_LOCAL_DEV_ENV=true`.

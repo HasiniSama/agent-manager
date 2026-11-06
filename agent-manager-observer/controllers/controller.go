@@ -19,6 +19,7 @@ package controllers
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -57,6 +58,8 @@ const (
 	maxMCPHandshakesPerTrace = 5
 	// maxMCPHandshakesPerRequest ends a filtered walk before its next chunk once it has fetched this many handshakes.
 	maxMCPHandshakesPerRequest = 100
+	// maxEvaluationSpanChecks caps the spans a list without attributes checks one by one for evaluation spans.
+	maxEvaluationSpanChecks = 20
 	// lookBackBatchSize is a filtered list request's first fetch size and the
 	// number of traces it enriches at a time.
 	lookBackBatchSize = 50
@@ -992,9 +995,9 @@ func (c *TracingController) enrichTrace(
 
 // fetchTraceSpanSummaries calls QueryTraceSpans for one trace and returns
 // the span-summary list, mirroring the request shape used elsewhere in this
-// controller, with inline attributes when includeAttributes is set. Acquires a
-// slot on fetchSem for the duration of the call so the call counts against the
-// shared cross-trace fetch budget. Returns ok=false on error (logged as a
+// controller, with inline attributes when includeAttributes is set. Each of its
+// upstream calls takes a slot on fetchSem so it counts against the shared
+// cross-trace fetch budget. Returns ok=false on error (logged as a
 // warning unless ctx is done); callers fall back gracefully to whatever they
 // already extracted.
 func (c *TracingController) fetchTraceSpanSummaries(
@@ -1010,8 +1013,7 @@ func (c *TracingController) fetchTraceSpanSummaries(
 	if spanLimit <= 0 || spanLimit > MaxSpansPerRequest {
 		spanLimit = MaxSpansPerRequest
 	}
-	fetchSem <- struct{}{}
-	spansResp, err := c.observerClient.QueryTraceSpans(ctx, traceInfo.TraceID, observer.TracesQueryRequest{
+	spansResp, _, err := c.querySpans(ctx, traceInfo.TraceID, observer.TracesQueryRequest{
 		StartTime:         params.StartTime,
 		EndTime:           params.EndTime,
 		Limit:             &spanLimit,
@@ -1022,8 +1024,7 @@ func (c *TracingController) fetchTraceSpanSummaries(
 			Component:   params.Agent,
 			Environment: params.Environment,
 		},
-	})
-	<-fetchSem
+	}, fetchSem)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Warn("fetchTraceSpanSummaries: QueryTraceSpans failed, skipping enrichment",
@@ -1032,6 +1033,92 @@ func (c *TracingController) fetchTraceSpanSummaries(
 		return nil, false
 	}
 	return spansResp.Spans, true
+}
+
+// querySpans calls QueryTraceSpans and leaves out evaluation spans, lowering
+// Total to match; dropped is how many it left out. In a list without
+// attributes, the spans whose names may be evaluation spans' are checked by
+// their details, or past maxEvaluationSpanChecks by fetching the list again
+// with attributes. Each upstream call takes a slot on fetchSem.
+func (c *TracingController) querySpans(
+	ctx context.Context,
+	traceID string,
+	req observer.TracesQueryRequest,
+	fetchSem chan struct{},
+) (resp *observer.TraceSpansQueryResponse, dropped int, err error) {
+	fetchSem <- struct{}{}
+	resp, err = c.observerClient.QueryTraceSpans(ctx, traceID, req)
+	<-fetchSem
+	if err != nil {
+		return nil, 0, err
+	}
+	isEvaluation := func(s observer.SpanInfo) bool { return opensearch.IsEvaluationSpan(s.Attributes) }
+	if !req.IncludeAttributes {
+		var candidates []string
+		for _, s := range resp.Spans {
+			if opensearch.MayBeEvaluationSpanName(s.SpanName) {
+				candidates = append(candidates, s.SpanID)
+			}
+		}
+		switch {
+		case len(candidates) == 0:
+			return resp, 0, nil
+		case len(candidates) > maxEvaluationSpanChecks:
+			withAttrs := req
+			withAttrs.IncludeAttributes = true
+			return c.querySpans(ctx, traceID, withAttrs, fetchSem)
+		}
+		ids, err := c.evaluationSpanIDs(ctx, traceID, candidates, fetchSem)
+		if err != nil {
+			return nil, 0, err
+		}
+		isEvaluation = func(s observer.SpanInfo) bool { return ids[s.SpanID] }
+	}
+	kept := make([]observer.SpanInfo, 0, len(resp.Spans))
+	for _, s := range resp.Spans {
+		if !isEvaluation(s) {
+			kept = append(kept, s)
+		}
+	}
+	dropped = len(resp.Spans) - len(kept)
+	if dropped == 0 {
+		return resp, 0, nil
+	}
+	return &observer.TraceSpansQueryResponse{Spans: kept, Total: resp.Total - dropped, TookMs: resp.TookMs}, dropped, nil
+}
+
+// evaluationSpanIDs fetches the candidates' details in parallel and returns
+// those that are evaluation spans. It fails when any fetch fails.
+func (c *TracingController) evaluationSpanIDs(ctx context.Context, traceID string, candidates []string, fetchSem chan struct{}) (map[string]bool, error) {
+	isEvaluation := make([]bool, len(candidates))
+	errs := make([]error, len(candidates))
+	var wg sync.WaitGroup
+	for i, id := range candidates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fetchSem <- struct{}{}
+			details, err := c.observerClient.GetSpanDetails(ctx, traceID, id)
+			<-fetchSem
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			isEvaluation[i] = opensearch.IsEvaluationSpan(details.Attributes)
+		}()
+	}
+	wg.Wait()
+
+	ids := make(map[string]bool, len(candidates))
+	for i, id := range candidates {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		if isEvaluation[i] {
+			ids[id] = true
+		}
+	}
+	return ids, nil
 }
 
 // modelsFromSpanList returns the distinct model names across the leaf LLM
@@ -1382,7 +1469,8 @@ func (c *TracingController) aggregateFromLeafLLMSpans(
 	return input, output, tokens, models, conversationID, unread, idUnread
 }
 
-// GetTraceSpans fetches span summaries for a specific trace (no attributes).
+// GetTraceSpans fetches span summaries for a specific trace (no attributes),
+// without evaluation spans.
 func (c *TracingController) GetTraceSpans(ctx context.Context, traceID string, params TraceQueryParams) (*SpanListResponse, error) {
 	log := logger.GetLogger(ctx)
 
@@ -1400,7 +1488,7 @@ func (c *TracingController) GetTraceSpans(ctx context.Context, traceID string, p
 		},
 	}
 
-	spansResp, err := c.observerClient.QueryTraceSpans(ctx, traceID, req)
+	spansResp, _, err := c.querySpans(ctx, traceID, req, make(chan struct{}, maxConcurrentFetches))
 	if err != nil {
 		return nil, err
 	}
@@ -1434,11 +1522,18 @@ func (c *TracingController) GetTraceSpans(ctx context.Context, traceID string, p
 	}, nil
 }
 
+// ErrSpanNotFound is returned for a span the observer doesn't show.
+var ErrSpanNotFound = errors.New("span not found")
+
 // GetSpanDetail fetches full span details including enriched AmpAttributes.
+// An evaluation span is ErrSpanNotFound.
 func (c *TracingController) GetSpanDetail(ctx context.Context, traceID, spanID string) (*opensearch.Span, error) {
 	details, err := c.observerClient.GetSpanDetails(ctx, traceID, spanID)
 	if err != nil {
 		return nil, err
+	}
+	if opensearch.IsEvaluationSpan(details.Attributes) {
+		return nil, fmt.Errorf("controllers.GetSpanDetail: %w", ErrSpanNotFound)
 	}
 
 	span := observer.ConvertSpanDetailsToSpan(traceID, details)
@@ -1448,7 +1543,8 @@ func (c *TracingController) GetSpanDetail(ctx context.Context, traceID, spanID s
 
 // ExportTraces fetches complete traces with all spans fully enriched for export.
 // The traces come from selectExportTraces; each then costs one QueryTraceSpans
-// (spans carry attributes inline via includeAttributes). Concurrency is bounded
+// (spans carry attributes inline via includeAttributes), and its evaluation
+// spans are left out. Concurrency is bounded
 // by maxConcurrentTraces outer goroutines. A failed QueryTraceSpans is retried
 // once; a trace that still can't be read, or has no root span, is left out and
 // listed in FailedTraceIDs. The export fails when ctx is done, it runs past
@@ -1478,6 +1574,8 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 	var truncated atomic.Bool
 
 	outerSem := make(chan struct{}, maxConcurrentTraces)
+	// fetchSem bounds querySpans' calls; it outsizes outerSem, so it never holds back a span list.
+	fetchSem := make(chan struct{}, maxConcurrentFetches)
 	var wg sync.WaitGroup
 
 	for i, t := range traces {
@@ -1509,9 +1607,9 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 					Environment: params.Environment,
 				},
 			}
-			spansResp, err := c.observerClient.QueryTraceSpans(ctx, traceInfo.TraceID, spansReq)
+			spansResp, dropped, err := c.querySpans(ctx, traceInfo.TraceID, spansReq, fetchSem)
 			if err != nil && ctx.Err() == nil {
-				spansResp, err = c.observerClient.QueryTraceSpans(ctx, traceInfo.TraceID, spansReq)
+				spansResp, dropped, err = c.querySpans(ctx, traceInfo.TraceID, spansReq, fetchSem)
 			}
 			if err != nil {
 				results[idx] = traceResult{idx: idx, err: fmt.Errorf("trace %s: query spans: %w", traceInfo.TraceID, err)}
@@ -1569,6 +1667,8 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 
 			tokenUsage := opensearch.ExtractTokenUsage(spans)
 			traceStatus := opensearch.ExtractTraceStatus(spans)
+			// Upstream's count includes the evaluation spans left out.
+			spanCount := traceInfo.SpanCount - dropped
 
 			// Extract taskId / trialId from root span baggage attributes.
 			var taskID, trialID string
@@ -1591,7 +1691,7 @@ func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryP
 					StartTime:       traceInfo.StartTime.Format(time.RFC3339Nano),
 					EndTime:         traceInfo.EndTime.Format(time.RFC3339Nano),
 					DurationInNanos: traceInfo.DurationNs,
-					SpanCount:       traceInfo.SpanCount,
+					SpanCount:       spanCount,
 					TokenUsage:      tokenUsage,
 					Status:          traceStatus,
 					Input:           input,

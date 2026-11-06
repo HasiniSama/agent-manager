@@ -361,6 +361,8 @@ type fakeObserverClient struct {
 	traces       []observer.TraceInfo
 	lastLogsReq  observer.LogsQueryRequest
 	lastSpansReq observer.TracesQueryRequest
+	// spanAttrs are the attributes GetSpanDetails returns.
+	spanAttrs map[string]interface{}
 }
 
 // QueryTraces returns the configured traces.
@@ -374,8 +376,8 @@ func (f *fakeObserverClient) QueryTraceSpans(_ context.Context, _ string, req ob
 	return &observer.TraceSpansQueryResponse{}, nil
 }
 
-func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, _ string) (*observer.SpanDetailsResponse, error) {
-	return &observer.SpanDetailsResponse{}, nil
+func (f *fakeObserverClient) GetSpanDetails(_ context.Context, _, spanID string) (*observer.SpanDetailsResponse, error) {
+	return &observer.SpanDetailsResponse{SpanID: spanID, Attributes: f.spanAttrs}, nil
 }
 
 func (f *fakeObserverClient) QueryLogs(_ context.Context, req observer.LogsQueryRequest) (*observer.LogsQueryResponse, error) {
@@ -773,5 +775,29 @@ func TestParseMissingRepeatedValues(t *testing.T) {
 	}
 	if _, err := parseMissing([]string{"conversationId,conversationId,unknown"}); err == nil {
 		t.Error("unknown fields must still be rejected after duplicates")
+	}
+}
+
+// An evaluation span's details are 404; a span with an empty run ID is shown.
+func TestGetSpanDetail_EvaluationSpan(t *testing.T) {
+	tests := []struct {
+		name       string
+		runID      string
+		wantStatus int
+	}{
+		{name: "evaluation span", runID: "run-1", wantStatus: http.StatusNotFound},
+		{name: "empty run ID", runID: "", wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeObserverClient{spanAttrs: map[string]interface{}{"amp.eval.run.id": tt.runID}}
+			h := NewHandler(controllers.NewTracingController(fake), nil)
+
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/traces/trace-1/spans/span-1", nil)
+			rec := httptest.NewRecorder()
+			h.GetSpanDetail(rec, r)
+
+			assertStatus(t, rec, tt.wantStatus)
+		})
 	}
 }

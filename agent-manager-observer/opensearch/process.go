@@ -2271,6 +2271,22 @@ func MCPServerFromHandshake(attrs map[string]interface{}) string {
 	return strings.TrimSpace(result.ServerInfo.Title)
 }
 
+// EvalRunIDAttribute marks a span a monitor run wrote. The collector sets it from the run token.
+const EvalRunIDAttribute = "amp.eval.run.id"
+
+// IsEvaluationSpan reports whether a span's attributes carry a non-empty amp.eval.run.id.
+func IsEvaluationSpan(attrs map[string]interface{}) bool {
+	id, ok := attrs[EvalRunIDAttribute].(string)
+	return ok && id != ""
+}
+
+// MayBeEvaluationSpanName reports whether a name is one the evaluation job
+// gives its spans, "evaluation <evaluator>". Only IsEvaluationSpan decides.
+func MayBeEvaluationSpanName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return lower == "evaluation" || strings.HasPrefix(lower, "evaluation ")
+}
+
 func hasLLMAttributes(attrs map[string]interface{}) bool {
 	// Check for gen_ai.operation.name (as requested)
 	if opName, ok := attrs["gen_ai.operation.name"].(string); ok {

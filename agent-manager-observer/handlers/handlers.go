@@ -18,6 +18,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -339,6 +340,10 @@ func (h *Handler) GetSpanDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.controller.GetSpanDetail(r.Context(), traceID, spanID)
+	if errors.Is(err, controllers.ErrSpanNotFound) {
+		writeError(w, http.StatusNotFound, "Span not found")
+		return
+	}
 	if err != nil {
 		log.Error("Failed to get v1 span detail", "traceId", traceID, "spanId", spanID, "error", err)
 		writeError(w, http.StatusInternalServerError, "Failed to retrieve span detail")
